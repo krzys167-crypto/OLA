@@ -329,7 +329,11 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         expected_model=expected_model,
         expected_run_id=run_id,
     )
-    replay = build_replay(run_record_dicts)
+    execution_records = [
+        record for record in run_record_dicts
+        if record.get("record_type", "").startswith("agent.")
+    ]
+    replay = build_replay(execution_records)
     replay_verification = verify_replay(replay, expected_run_id=run_id)
 
     review = ReviewDecision(
