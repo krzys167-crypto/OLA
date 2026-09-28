@@ -334,6 +334,45 @@ def create_business_invoice_run(body: dict, x_api_key: str | None = Header(defau
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/evidence")
+def list_evidence(
+    limit: int = 20,
+    before_seq: int | None = None,
+    x_api_key: str | None = Header(default=None),
+):
+    tenant_id = tenant_from_key(x_api_key)
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+
+    with SessionLocal() as db:
+        query = select(EvidenceRecord).where(EvidenceRecord.tenant_id == tenant_id)
+        if before_seq is not None:
+            if before_seq < 0:
+                raise HTTPException(status_code=400, detail="before_seq must be >= 0")
+            query = query.where(EvidenceRecord.seq < before_seq)
+        records = db.scalars(
+            query.order_by(EvidenceRecord.seq.desc()).limit(limit)
+        ).all()
+
+    return {
+        "records": [
+            {
+                "id": record.id,
+                "tenant_id": record.tenant_id,
+                "seq": record.seq,
+                "record_type": record.record_type,
+                "payload": json.loads(record.payload_json),
+                "prev_hash": record.prev_hash,
+                "record_hash": record.record_hash,
+            }
+            for record in records
+        ],
+        "count": len(records),
+        "limit": limit,
+        "before_seq": before_seq,
+    }
+
+
 @app.get("/evidence/{record_id}")
 def get_evidence(record_id: str, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
