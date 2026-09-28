@@ -1,0 +1,98 @@
+name: CodeQL Security Gate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language:
+          - actions
+          - python
+
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
+
+  security-gate:
+    name: Enforce no open high/critical CodeQL alerts
+    needs: analyze
+    if: ${{ always() && needs.analyze.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: read
+
+    steps:
+      - name: Check current ref for high/critical alerts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            REF="refs/pull/${PR_NUMBER}/merge"
+          else
+            REF="${GITHUB_SHA}"
+          fi
+
+          echo "CodeQL gate target: ${REF}"
+
+          for severity in critical high; do
+            echo "Checking ${severity} alerts..."
+            response="$(gh api               --method GET               -H "Accept: application/vnd.github+json"               -H "X-GitHub-Api-Version: 2026-03-10"               "repos/${REPOSITORY}/code-scanning/alerts"               -f state=open               -f severity="${severity}"               -f ref="${REF}"               -f per_page=100)"
+
+            count="$(printf '%s' "${response}" | jq 'length')"
+            echo "${severity}_open_alerts=${count}"
+
+            if [ "${count}" -gt 0 ]; then
+              printf '%s' "${response}" | jq -r '.[] | [
+                .number,
+                .rule.id,
+                .rule.description,
+                (.rule.security_severity_level // "unknown"),
+                .most_recent_instance.location.path,
+                .most_recent_instance.location.start_line
+              ] | @tsv'
+              echo "CODEQL_GATE=BLOCKED"
+              echo "REASON=open_${severity}_alerts"
+              exit 1
+            fi
+          done
+
+          echo "CODEQL_GATE=PASS"
