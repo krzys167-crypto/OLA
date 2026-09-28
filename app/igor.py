@@ -19,7 +19,7 @@ class IgorVerifier:
     classification from the supplied records and expected provenance/outcome.
     """
 
-    def verify_records(self, records, expected_commit, expected_task, expected_result, expected_provider=None, expected_model=None):
+    def verify_records(self, records, expected_commit, expected_task, expected_result, expected_provider=None, expected_model=None, expected_run_id=None):
         if not records:
             return IgorVerification("UNKNOWN", "missing evidence", {"chain": False})
 
@@ -29,6 +29,19 @@ class IgorVerifier:
             return IgorVerification("BLOCK", chain_reason, checks)
 
         payloads = [json.loads(record["payload_json"]) for record in records]
+        if expected_run_id is not None:
+            payloads = [
+                payload for payload in payloads
+                if payload.get("run_id") == expected_run_id
+            ]
+            scoped_records = [
+                record for record in records
+                if json.loads(record["payload_json"]).get("run_id") == expected_run_id
+            ]
+        else:
+            scoped_records = list(records)
+        if not payloads:
+            return IgorVerification("UNKNOWN", "missing current-run evidence", checks)
         provenance_values = {payload.get("commit") for payload in payloads if payload.get("commit") is not None}
         checks["commit"] = bool(expected_commit) and expected_commit in provenance_values
         if not checks["commit"]:
@@ -70,5 +83,5 @@ class IgorVerifier:
                 return IgorVerification("BLOCK", "model provenance mismatch", checks)
 
         checks["evidence"] = True
-        evidence_ids = tuple(record.get("id") for record in records if record.get("id"))
+        evidence_ids = tuple(record.get("id") for record in scoped_records if record.get("id"))
         return IgorVerification("VERIFIED", "independent verification passed", checks, evidence_ids)
