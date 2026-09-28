@@ -20,6 +20,7 @@ from .decision_report import build_decision_report
 from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout, payment_verified
 from .stripe_webhook import process_checkout_event
+from .gate_impact import build_gate_funnel, classify_impact
 
 app = FastAPI(title="OLA Execution Gate")
 Base.metadata.create_all(bind=engine)
@@ -371,6 +372,30 @@ def list_evidence(
         "limit": limit,
         "before_seq": before_seq,
     }
+
+
+@app.get("/gate-funnel")
+def get_gate_funnel(x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    with SessionLocal() as db:
+        rows = db.scalars(
+            select(EvidenceRecord)
+            .where(EvidenceRecord.tenant_id == tenant_id)
+            .order_by(EvidenceRecord.seq.asc())
+        ).all()
+    return build_gate_funnel(rows)
+
+
+@app.get("/impact-classification")
+def get_impact_classification(x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    with SessionLocal() as db:
+        rows = db.scalars(
+            select(EvidenceRecord)
+            .where(EvidenceRecord.tenant_id == tenant_id)
+            .order_by(EvidenceRecord.seq.asc())
+        ).all()
+    return classify_impact(rows)
 
 
 @app.get("/evidence/{record_id}")
