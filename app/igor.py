@@ -63,17 +63,22 @@ class IgorVerifier:
 
         execution_payloads = [
             payload for payload in payloads
-            if payload.get("agent_instance_id") is not None
+            if payload.get("provider") is not None
+            or payload.get("model") is not None
+            or payload.get("invocation_type") is not None
         ]
         if expected_provider is not None:
             checks["provider"] = bool(execution_payloads) and all(
                 payload.get("provider") == expected_provider
                 and payload.get("invocation_type") == "real_llm"
-                and payload.get("response_id")
                 for payload in execution_payloads
             )
             if not checks["provider"]:
                 return IgorVerification("BLOCK", "provider provenance mismatch", checks)
+            if expected_provider != "local" and any(
+                not payload.get("response_id") for payload in execution_payloads
+            ):
+                return IgorVerification("BLOCK", "real LLM response id missing", checks)
         if expected_model is not None:
             checks["model"] = bool(execution_payloads) and all(
                 payload.get("model") == expected_model
