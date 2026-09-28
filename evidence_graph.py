@@ -25,7 +25,7 @@ class GraphStore:
     def _schema(self):
         with self._lock:
             self.db.executescript("""CREATE TABLE IF NOT EXISTS nodes(
-              node_id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,node_type TEXT NOT NULL,canonical_id TEXT NOT NULL,
+              node_id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,node_type TEXT NOT NULL,canonical_id TEXT NOT NULL,label TEXT NOT NULL,
               source_type TEXT NOT NULL,source_id TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
               metadata_json TEXT NOT NULL,UNIQUE(tenant_id,canonical_id));
             CREATE TABLE IF NOT EXISTS edges(
@@ -50,12 +50,12 @@ class GraphStore:
             CREATE TRIGGER IF NOT EXISTS reject_reactivation BEFORE UPDATE OF status ON edges
               WHEN OLD.status='REJECTED' AND NEW.status<>'REJECTED' BEGIN
               SELECT RAISE(ABORT,'rejected edge cannot be reactivated'); END;"""); self.db.commit()
-    def add_node(self,*,tenant_id,node_type,canonical_id,source_type,source_id,status,created_at,updated_at,metadata=None,node_id=None):
+    def add_node(self,*,tenant_id,node_type,canonical_id,source_type,source_id,status,created_at,updated_at,metadata=None,node_id=None,label=None):
         if node_type not in NODE_TYPES: raise GraphInvariantError(f"invalid node_type: {node_type}")
         if not all((tenant_id,canonical_id,source_type,source_id)): raise GraphInvariantError("required node fields missing")
         node_id=node_id or str(uuid.uuid4())
         with self._lock:
-            try:self.db.execute("INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?,?,?)",(node_id,tenant_id,node_type,canonical_id,source_type,source_id,status,created_at,updated_at,_j(metadata))); self.db.commit()
+            try:self.db.execute("INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?,?,?,?)",(node_id,tenant_id,node_type,canonical_id,label or canonical_id,source_type,source_id,status,created_at,updated_at,_j(metadata))); self.db.commit()
             except sqlite3.IntegrityError as e:raise GraphInvariantError(str(e)) from e
         return node_id
     def _node(self,r):
@@ -67,6 +67,7 @@ class GraphStore:
         return self._node(r)
     def add_edge(self,tenant_id,from_node_id,to_node_id,relation,status,confidence,*,source_type,source_id,source_hash,source_version,captured_at,created_at=None,verifier_node_id=None,evidence_node_id=None,metadata=None,edge_id=None):
         if relation not in RELATIONS or status not in STATUSES:raise GraphInvariantError("invalid relation or status")
+        if not all((source_type,source_id,source_hash,source_version,captured_at)):raise GraphInvariantError("complete provenance is required")
         if status=="INFERRED" and confidence is None:raise GraphInvariantError("INFERRED requires confidence")
         if confidence is not None and not 0<=confidence<=1:raise GraphInvariantError("confidence must be 0..1")
         a,b=self.get_node(from_node_id),self.get_node(to_node_id)
