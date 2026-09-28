@@ -1,0 +1,190 @@
+name: NINA IGOR Ollama Full Flow
+
+on:
+  pull_request:
+  push:
+    branches:
+      - feat/evidence-graph-v0.1
+
+permissions:
+  contents: read
+
+env:
+  OLA_LLM_PROVIDER: ollama
+  OLA_LLM_MODE: required
+  OLLAMA_MODEL: qwen2.5:0.5b-instruct
+  OLA_LLM_MODEL: qwen2.5:0.5b-instruct
+  OLA_LLM_TIMEOUT: "60"
+
+jobs:
+  nina-igor-ollama-full-flow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Ollama
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve >/tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:11434/api/tags >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          ollama pull "$OLLAMA_MODEL"
+          curl --fail --silent http://127.0.0.1:11434/api/tags > ollama-models.json
+
+      - name: Build OLA
+        run: docker build --tag ola-nina-ollama --file Dockerfile .
+
+      - name: Start OLA
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach --rm \
+            --name ola-nina-ollama \
+            --network host \
+            -e OLA_EG_DB_PATH=/data/ola.db \
+            -e OLA_RUNTIME_COMMIT="$GITHUB_SHA" \
+            -e OLA_LLM_PROVIDER="$OLA_LLM_PROVIDER" \
+            -e OLA_LLM_MODE="$OLA_LLM_MODE" \
+            -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
+            -e OLLAMA_MODEL="$OLLAMA_MODEL" \
+            -e OLLAMA_BASE_URL="http://127.0.0.1:11434" \
+            -e OLA_LLM_TIMEOUT="$OLA_LLM_TIMEOUT" \
+            ola-nina-ollama
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs ola-nina-ollama
+          exit 1
+
+      - name: Run NINA to IGOR to provenance to replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec -i ola-nina-ollama python - <<'PY' > nina-igor-ollama-proof.json
+          import hashlib
+          import json
+          import sqlite3
+          import urllib.request
+          import uuid
+
+          tenant_id=str(uuid.uuid4())
+          raw_key="ci-nina-ollama-key"
+          db_path="/data/ola.db"
+          db=sqlite3.connect(db_path)
+          db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tenant_id,"ci-nina-ollama"))
+          db.execute(
+              "INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",
+              (str(uuid.uuid4()),tenant_id,hashlib.sha256(raw_key.encode()).hexdigest()),
+          )
+          db.commit()
+          db.close()
+
+          task="Calculate 17 * 23 and return the exact verified result 391."
+          request_body={
+              "task":task,
+              "requested_tools":["safe_expression"],
+              "human_approved":False,
+              "human_actor":"ci-machine",
+              "human_reason":"human confirmation intentionally left pending in CI",
+          }
+          req=urllib.request.Request(
+              "http://127.0.0.1:8000/nina-run",
+              data=json.dumps(request_body).encode(),
+              headers={"Content-Type":"application/json","X-API-Key":raw_key},
+              method="POST",
+          )
+          with urllib.request.urlopen(req,timeout=300) as resp:
+              body=json.load(resp)
+
+          assert body["nina"]["status"]=="VERIFIED", body
+          assert body["nina"]["provider"]=="ollama", body
+          assert body["nina"]["model"]=="qwen2.5:0.5b-instruct", body
+          assert body["nina"]["invocation_type"]=="real_llm", body
+          assert body["nina"]["llm_invocations"]==6, body
+          assert body["igor"]["status"]=="VERIFIED", body
+          assert body["igor"]["checks"]["chain"] is True, body
+          assert body["igor"]["checks"]["commit"] is True, body
+          assert body["igor"]["checks"]["task"] is True, body
+          assert body["igor"]["checks"]["result"] is True, body
+          assert body["igor"]["checks"]["provider"] is True, body
+          assert body["igor"]["checks"]["model"] is True, body
+          assert body["provenance"]["status"]=="VERIFIED", body
+          assert body["provenance"]["commit"]=="${{ github.sha }}", body
+          assert body["provenance"]["provider"]=="ollama", body
+          assert body["provenance"]["model"]=="qwen2.5:0.5b-instruct", body
+          assert body["provenance"]["invocation_type"]=="real_llm", body
+          assert body["provenance"]["llm_invocations"]==6, body
+          assert len(body["provenance"]["response_ids"])==6, body
+          assert body["replay_verification"]["status"]=="PASS", body
+          assert body["replay_verification"]["event_count"]==7, body
+          assert len(body["replay"])==7, body
+          assert body["policy"]["status"]=="REVIEW", body
+          assert body["human_gate"]["status"]=="BLOCK", body
+
+          proof={
+              "status":"VERIFIED",
+              "flow":["NINA","REAL_OLLAMA_LLM","IGOR","PROVENANCE","REPLAY","HUMAN_GATE"],
+              "provider":body["provenance"]["provider"],
+              "model":body["provenance"]["model"],
+              "llm_invocations":body["provenance"]["llm_invocations"],
+              "nina_status":body["nina"]["status"],
+              "igor_status":body["igor"]["status"],
+              "provenance_status":body["provenance"]["status"],
+              "replay_status":body["replay_verification"]["status"],
+              "policy_status":body["policy"]["status"],
+              "human_gate_status":body["human_gate"]["status"],
+              "run_id":body["run_id"],
+              "tenant_id":tenant_id,
+              "commit":"${{ github.sha }}",
+          }
+          print(json.dumps(proof,sort_keys=True))
+          with open("/data/nina-ollama-proof-context.json","w",encoding="utf-8") as stream:
+              json.dump({"tenant_id":tenant_id,"run_id":body["run_id"],"task":task},stream,sort_keys=True)
+          PY
+
+      - name: Standalone verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          TENANT_ID=$(docker exec ola-nina-ollama python -c 'import json; print(json.load(open("/data/nina-ollama-proof-context.json"))["tenant_id"])')
+          RUN_ID=$(docker exec ola-nina-ollama python -c 'import json; print(json.load(open("/data/nina-ollama-proof-context.json"))["run_id"])')
+          docker exec ola-nina-ollama \
+            python scripts/verify_agent_runtime.py \
+              --tenant-id "$TENANT_ID" \
+              --run-id "$RUN_ID" \
+              --expected-commit "$GITHUB_SHA" \
+              --expected-task "Calculate 17 * 23 and return the exact verified result 391." \
+              --expected-result "391" \
+              --expected-provider "ollama" \
+              --expected-model "$OLLAMA_MODEL" \
+              --expected-invocation-type "real_llm"
+
+      - name: Capture OLA flow evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker logs ola-nina-ollama > ola-nina-ollama-runtime.log 2>&1 || true
+
+      - name: Upload full-flow evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: nina-igor-ollama-full-flow-\${{ github.sha }}
+          path: |
+            ollama-models.json
+            nina-igor-ollama-proof.json
+            ola-nina-ollama-runtime.log
+
+      - name: Stop OLA
+        if: always()
+        run: docker rm --force ola-nina-ollama >/dev/null 2>&1 || true
