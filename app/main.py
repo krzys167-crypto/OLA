@@ -258,44 +258,118 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
             "task_id": nina_task.task_id,
             "nina": {"status": plan.status, "reason": plan.reason},
             "igor": {"status": "UNKNOWN", "reason": "execution did not start"},
+            "provenance": {"status": "NOT_CREATED"},
+            "replay": [],
+            "replay_verification": {"status": "UNKNOWN", "reason": "execution did not start"},
             "human_gate": {"status": "BLOCK", "reason": "NINA blocked execution"},
             "status": "BLOCK",
         }
 
     runtime = nina.execute(nina_task)
     run_id = runtime["runtime"]["run_id"]
+    execution = runtime["runtime"].get("execution", [])
     runtime_commit = os.getenv("OLA_RUNTIME_COMMIT")
+    provider = execution[0].get("provider") if execution else None
+    model = execution[0].get("model") if execution else None
+    invocation_type = execution[0].get("invocation_type") if execution else None
+    response_ids = [item.get("response_id") for item in execution if item.get("response_id")]
+    append_record(
+        tenant_id,
+        "provenance.runtime",
+        {
+            "run_id": run_id,
+            "commit": runtime_commit or "UNKNOWN",
+            "task": task_text,
+            "result": runtime["runtime"].get("final_result"),
+            "provider": provider,
+            "model": model,
+            "invocation_type": invocation_type,
+            "llm_invocations": len(execution),
+            "response_ids": response_ids,
+        },
+    )
+
     with SessionLocal() as db:
         rows = db.scalars(
             select(EvidenceRecord)
             .where(EvidenceRecord.tenant_id == tenant_id)
             .order_by(EvidenceRecord.seq.asc())
         ).all()
-    if runtime_commit:
-        append_record(tenant_id, "provenance.runtime", {"run_id": run_id, "commit": runtime_commit, "task": task_text, "result": runtime["runtime"].get("final_result")})
-        with SessionLocal() as db:
-            rows = db.scalars(select(EvidenceRecord).where(EvidenceRecord.tenant_id == tenant_id).order_by(EvidenceRecord.seq.asc())).all()
 
     record_dicts = [
-        {"id": row.id, "tenant_id": row.tenant_id, "seq": row.seq, "prev_hash": row.prev_hash, "record_hash": row.record_hash, "record_type": row.record_type, "payload_json": row.payload_json}
+        {
+            "id": row.id,
+            "tenant_id": row.tenant_id,
+            "seq": row.seq,
+            "prev_hash": row.prev_hash,
+            "record_hash": row.record_hash,
+            "record_type": row.record_type,
+            "payload_json": row.payload_json,
+        }
         for row in rows
     ]
-    expected_result = runtime["runtime"].get("execution", [{}])[0].get("tool_output", "")
-    igor = IgorVerifier().verify_records(record_dicts, runtime_commit, task_text, expected_result)
-    replay = build_replay(record_dicts)
-    review = ReviewDecision(bool(body.get("human_approved", False)), str(body.get("human_actor", "")), str(body.get("human_reason", "")))
+    run_record_dicts = []
+    for record in record_dicts:
+        try:
+            payload = json.loads(record["payload_json"])
+        except json.JSONDecodeError:
+            continue
+        if payload.get("run_id") == run_id:
+            run_record_dicts.append(record)
+
+    expected_provider = provider if invocation_type == "real_llm" else None
+    expected_model = model if invocation_type == "real_llm" else None
+    expected_result = execution[0].get("tool_output", "") if execution else ""
+    igor = IgorVerifier().verify_records(
+        run_record_dicts,
+        runtime_commit,
+        task_text,
+        expected_result,
+        expected_provider=expected_provider,
+        expected_model=expected_model,
+    )
+    replay = build_replay(run_record_dicts)
+    replay_verification = verify_replay(replay, expected_run_id=run_id)
+
+    review = ReviewDecision(
+        bool(body.get("human_approved", False)),
+        str(body.get("human_actor", "")),
+        str(body.get("human_reason", "")),
+    )
     terminal = NinaIgorChain.finalize(runtime.get("status", "UNKNOWN"), igor.status, review)
-    nina_summary = {"status": runtime.get("status", "UNKNOWN"), "decision": plan.reason}
+    nina_summary = {
+        "status": runtime.get("status", "UNKNOWN"),
+        "decision": plan.reason,
+        "provider": provider,
+        "model": model,
+        "invocation_type": invocation_type,
+        "llm_invocations": len(execution),
+    }
     igor_summary = {"status": igor.status, "reason": igor.reason, "checks": igor.checks}
+    provenance = {
+        "status": "VERIFIED" if (
+            runtime_commit
+            and provider
+            and model
+            and invocation_type
+            and len(response_ids) == len(execution)
+        ) else "BLOCK",
+        "commit": runtime_commit or "UNKNOWN",
+        "provider": provider,
+        "model": model,
+        "invocation_type": invocation_type,
+        "llm_invocations": len(execution),
+        "response_ids": response_ids,
+    }
     report = build_decision_report(
         task_id=nina_task.task_id,
         run_id=run_id,
         task=task_text,
         nina=nina_summary,
         igor=igor_summary,
-        replay=replay,
+        replay={"status": replay_verification["status"], "events": replay, "verification": replay_verification},
         human_gate=terminal,
-        evidence_ids=[record["id"] for record in record_dicts],
+        evidence_ids=[record["id"] for record in run_record_dicts],
         human_approved=review.approved,
         human_actor=review.actor,
         human_reason=review.reason,
@@ -305,13 +379,14 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         "run_id": run_id,
         "nina": nina_summary,
         "igor": igor_summary,
+        "provenance": provenance,
         "replay": replay,
+        "replay_verification": replay_verification,
         "human_gate": terminal,
         "policy": report["policy"],
         "decision_report": report,
         "status": terminal["status"],
     }
-
 
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request, stripe_signature: str | None = Header(default=None)):
