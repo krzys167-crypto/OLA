@@ -109,7 +109,7 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
         }
         if expected_invocation_type == "real_llm" and not payload.get("response_id"):
             return fail(f"missing real LLM response id for {agent}")
-        if invocation != EXPECTED_INVOCATION:
+        if invocation != expected_invocation:
             return fail(f"unexpected invocation metadata for {agent}")
         instance_ids.add(payload["agent_instance_id"])
         context_digests.add(payload["context_digest"])
