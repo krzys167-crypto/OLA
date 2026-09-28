@@ -76,3 +76,14 @@ def test_decision_to_evidence_is_representable_without_execution_authority():
     s.add_edge("t1",decision,evidence,"PRODUCES","OBSERVED",None,**P("decision-evidence"))
     assert [n["canonical_id"] for n in s.path(decision,evidence)]==["decision","evidence"]
     assert not hasattr(s,"authorize_execution")
+
+
+def test_cross_tenant_path_and_lineage_fail_closed():
+    s=GraphStore()
+    a=s.add_node(**N("t1","REQUEST","a"))
+    b=s.add_node(**N("t2","EVIDENCE","b"))
+    app=create_app(s,lambda t,r:True)
+    c=TestClient(app)
+    assert c.get("/api/v1/graph/path",params={"from_node_id":a,"to_node_id":b},headers={"X-Tenant-ID":"t1"}).status_code==404
+    assert c.get(f"/api/v1/graph/subgraph/{b}",headers={"X-Tenant-ID":"t1"}).status_code==404
+    assert c.get(f"/api/v1/graph/evidence/{b}/lineage",headers={"X-Tenant-ID":"t1"}).status_code==404
