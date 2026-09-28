@@ -105,12 +105,33 @@ jobs:
           assert audit["status"] == "VERIFIED", audit
           assert audit["evidence_count"] == 5, audit
 
-          listed = call("GET", "/evidence?limit=5")
-          assert listed["count"] == 5, listed
+          gate_record = call("POST", "/evidence", {
+              "record_type": "runtime.gate-proof",
+              "payload": {
+                  "nina_status": "ALLOW",
+                  "igor_status": "VERIFIED",
+                  "human_gate_status": "BLOCK",
+                  "risk": "HIGH",
+              },
+          })
+          assert gate_record["seq"] == 5, gate_record
+
+          listed = call("GET", "/evidence?limit=6")
+          assert listed["count"] == 6, listed
           records = listed["records"]
-          assert [r["seq"] for r in records] == [4, 3, 2, 1, 0], records
+          assert [r["seq"] for r in records] == [5, 4, 3, 2, 1, 0], records
           assert all(r["tenant_id"] == tenant_id for r in records)
           assert all(len(r["prev_hash"]) == 64 and len(r["record_hash"]) == 64 for r in records)
+
+          funnel = call("GET", "/gate-funnel")
+          assert funnel["source"] == "evidence_records.payload_json", funnel
+          assert funnel["stages"]["nina"]["status"] == "ALLOW", funnel
+          assert funnel["stages"]["igor"]["status"] == "VERIFIED", funnel
+          assert funnel["stages"]["human_gate"]["status"] == "BLOCK", funnel
+
+          impact = call("GET", "/impact-classification")
+          assert impact["classification"] == "HIGH", impact
+          assert impact["confidence"] == "EXPLICIT", impact
 
           print(json.dumps({
               "status": "VERIFIED",
@@ -118,6 +139,8 @@ jobs:
               "audit_status": audit["status"],
               "evidence_list": "PASS",
               "evidence_count": listed["count"],
+              "gate_funnel": "PASS",
+              "impact_classification": "PASS",
               "hash_fields": "PASS",
           }, sort_keys=True))
           PY
