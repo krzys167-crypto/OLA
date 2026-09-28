@@ -18,8 +18,6 @@ jobs:
   watchdog:
     runs-on: ubuntu-latest
     timeout-minutes: 8
-    env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,7 +45,6 @@ jobs:
           pytest -q tests/test_decision_report.py tests/test_igor.py tests/test_independent_verifier_tamper.py tests/test_contradiction_replay.py
 
       - name: Dispatch full evidence flow when healthy and stale
-        if: ${{ env.OPENAI_API_KEY != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -78,13 +75,12 @@ jobs:
             exit "$status"
           fi
 
-      - name: Record credential blocker without bypass
-        if: ${{ env.OPENAI_API_KEY == '' }}
+      - name: Record provider policy
         run: |
           echo "24x7 watchdog active"
-          echo "REAL_LLM_CREDENTIAL=BLOCKED"
-          echo "REASON=OPENAI_API_KEY missing"
-          echo "No full-runtime dispatch performed. Fail-closed."
+          echo "AUTO_PROVIDER=ollama"
+          echo "OPENAI_REQUIRED_FOR_AUTO_FLOW=false"
+          echo "OpenAI remains an optional separate verification lane."
 
       - name: Watchdog result
         if: ${{ always() }}
