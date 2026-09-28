@@ -353,7 +353,10 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
             and provider
             and model
             and invocation_type
-            and len(response_ids) == len(execution)
+            and (
+                invocation_type != "real_llm"
+                or len(response_ids) == len(execution)
+            )
         ) else "BLOCK",
         "commit": runtime_commit or "UNKNOWN",
         "provider": provider,
