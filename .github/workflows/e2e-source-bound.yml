@@ -65,32 +65,6 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import hashlib
-          import json
-          import sqlite3
-          import urllib.request
-          import uuid
-
-          db_path = "/tmp/ola-source-bound.db"
-          raw_key = "source-bound-key"
-          tenant_id = str(uuid.uuid4())
-
-          db = sqlite3.connect(db_path)
-          db.execute("PRAGMA journal_mode=WAL")
-          db.execute(
-              "CREATE TABLE IF NOT EXISTS tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL)"
-          )
-          db.execute(
-              "CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, key_hash TEXT NOT NULL)"
-          )
-          db.close()
-
-          import os
-          os.environ["OLA_EG_DB_PATH"] = db_path
-
-          # The runtime uses /data/ola.db, so seed its actual database.
-          db = sqlite3.connect("/data/ola.db") if False else None
-          PY
           docker exec -i ola-source-bound python - <<'PY' > runtime-proof.json
           import hashlib
           import json
@@ -165,7 +139,7 @@ jobs:
           docker inspect ola-source-bound > docker-inspect.json 2>&1 || true
           docker logs ola-source-bound > docker-runtime.log 2>&1 || true
           sha256sum runtime-proof.json docker-inspect.json docker-runtime.log > runtime-file-hashes.txt || true
-          printf '%s\\n' "commit=${EXPECTED_COMMIT}" "run=${GITHUB_RUN_ID}" > provenance.txt
+          printf '%s\n' "commit=${EXPECTED_COMMIT}" "run=${GITHUB_RUN_ID}" > provenance.txt
           sha256sum provenance.txt >> runtime-file-hashes.txt || true
 
       - name: Upload immutable evidence
