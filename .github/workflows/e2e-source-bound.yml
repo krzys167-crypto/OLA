@@ -64,7 +64,6 @@ jobs:
       - name: Prove audit to read-only evidence flow
         run: |
           set -euo pipefail
-          python - <<'PY'
           docker exec -i ola-source-bound python - <<'PY' > runtime-proof.json
           import hashlib
           import json
