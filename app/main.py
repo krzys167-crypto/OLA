@@ -13,7 +13,7 @@ from .agent_runtime import run_agent_task
 from .business_runtime import run_invoice_task
 from .nina import NinaOrchestrator, NinaTask
 from .igor import IgorVerifier
-from .replay import build_replay
+from .replay import build_replay, verify_replay
 from .human_gate import HumanGate, ReviewDecision
 from .nina_igor import NinaIgorChain
 from .decision_report import build_decision_report
