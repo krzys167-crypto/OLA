@@ -61,7 +61,7 @@ jobs:
           set -euo pipefail
           if [ "${EVENT_NAME}" = "pull_request" ]; then
             for severity in critical high; do
-              response="$(gh api --method GET                 -H "Accept: application/vnd.github+json"                 -H "X-GitHub-Api-Version: 2026-03-10"                 "repos/${REPOSITORY}/code-scanning/alerts"                 -f state=open                 -f severity="${severity}"                 -f pr="${PR_NUMBER}"                 -f per_page=100)"
+              response="$(gh api --method GET                 -H "Accept: application/vnd.github+json"                 -H "X-GitHub-Api-Version: 2026-03-10"                 "repos/${REPOSITORY}/code-scanning/alerts"                 -f state=open                 -f severity="${severity}"                 -f ref="refs/pull/${PR_NUMBER}/merge"                 -f per_page=100)"
               count="$(printf '%s' "${response}" | jq 'length')"
               echo "${severity}_open_alerts=${count}"
               if [ "${count}" -gt 0 ]; then
