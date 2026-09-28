@@ -63,6 +63,8 @@ def test_evidence_list_is_read_only_and_tenant_scoped():
     assert [record["seq"] for record in body["records"]] == [second["seq"], first["seq"]]
     assert all(record["tenant_id"] == tenant_a for record in body["records"])
     assert all(record["record_type"].startswith("test.") for record in body["records"])
+    assert all(len(record["prev_hash"]) == 64 for record in body["records"])
+    assert all(len(record["record_hash"]) == 64 for record in body["records"])
 
     assert _count_tenant_records(tenant_a) == before_count
     assert CLIENT.get(
