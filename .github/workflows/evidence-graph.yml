@@ -23,3 +23,21 @@ jobs:
         run: python -m compileall -q evidence_graph.py tests
       - name: Contract tests
         run: pytest -q -ra
+
+  evidence-graph-ubuntu26-compat:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install repo dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Install Evidence Graph package
+        run: python -m pip install -e . --no-deps
+      - name: Compile
+        run: python -m compileall -q evidence_graph.py tests
+      - name: Contract tests
+        run: pytest -q -ra
