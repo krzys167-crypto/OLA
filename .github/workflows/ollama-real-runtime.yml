@@ -175,7 +175,7 @@ jobs:
       - name: Upload Ollama LLM evidence
         uses: actions/upload-artifact@v4
         with:
-          name: ollama-real-llm-proof-\${{ github.sha }}
+          name: ollama-real-llm-proof-${{ github.sha }}
           path: |
             ollama-tags-before-pull.json
             ollama-models.json
