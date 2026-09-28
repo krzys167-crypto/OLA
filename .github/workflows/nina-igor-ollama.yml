@@ -2,6 +2,8 @@ name: NINA IGOR Ollama Full Flow
 
 on:
   pull_request:
+  workflow_dispatch:
+  workflow_call:
   push:
     branches:
       - feat/evidence-graph-v0.1
