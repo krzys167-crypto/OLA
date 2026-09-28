@@ -179,7 +179,7 @@ jobs:
       - name: Upload full-flow evidence
         uses: actions/upload-artifact@v4
         with:
-          name: nina-igor-ollama-full-flow-\${{ github.sha }}
+          name: nina-igor-ollama-full-flow-${{ github.sha }}
           path: |
             ollama-models.json
             nina-igor-ollama-proof.json
