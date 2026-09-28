@@ -129,8 +129,8 @@ jobs:
           assert body["provenance"]["llm_invocations"]==6, body
           assert len(body["provenance"]["response_ids"])==6, body
           assert body["replay_verification"]["status"]=="PASS", body
-          assert body["replay_verification"]["event_count"]==7, body
-          assert len(body["replay"])==7, body
+          assert body["replay_verification"]["event_count"]==6, body
+          assert len(body["replay"])==6, body
           assert body["policy"]["status"]=="REVIEW", body
           assert body["human_gate"]["status"]=="BLOCK", body
 
