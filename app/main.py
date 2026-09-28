@@ -321,12 +321,13 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
     expected_model = model if invocation_type == "real_llm" else None
     expected_result = execution[0].get("tool_output", "") if execution else ""
     igor = IgorVerifier().verify_records(
-        run_record_dicts,
+        record_dicts,
         runtime_commit,
         task_text,
         expected_result,
         expected_provider=expected_provider,
         expected_model=expected_model,
+        expected_run_id=run_id,
     )
     replay = build_replay(run_record_dicts)
     replay_verification = verify_replay(replay, expected_run_id=run_id)
