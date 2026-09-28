@@ -195,13 +195,25 @@ def create_app(store:GraphStore,authorize:Callable[[str,str],bool])->FastAPI:
         except TenantBoundaryError:raise HTTPException(404,"not found")
     @app.get("/api/v1/graph/path")
     def get_path(from_node_id:str,to_node_id:str,max_depth:int=8,status:list[str]|None=None,relation:list[str]|None=None,x_tenant_id:str=Header(...),x_role:str=Header("graph_reader")):
-        hdr(x_tenant_id,x_role);return {"nodes":store.path(from_node_id,to_node_id,max_depth=max_depth,allowed_statuses=set(status) if status else None,allowed_relations=set(relation) if relation else None,tenant_id=x_tenant_id)}
+        hdr(x_tenant_id,x_role)
+        try:
+            return {"nodes":store.path(from_node_id,to_node_id,max_depth=max_depth,allowed_statuses=set(status) if status else None,allowed_relations=set(relation) if relation else None,tenant_id=x_tenant_id)}
+        except (GraphInvariantError,TenantBoundaryError):
+            raise HTTPException(404,"not found")
     @app.get("/api/v1/graph/subgraph/{node_id}")
     def get_subgraph(node_id:str,max_depth:int=1,status:list[str]|None=None,x_tenant_id:str=Header(...),x_role:str=Header("graph_reader")):
-        hdr(x_tenant_id,x_role);return store.subgraph(node_id,max_depth=max_depth,allowed_statuses=set(status) if status else None,tenant_id=x_tenant_id)
+        hdr(x_tenant_id,x_role)
+        try:
+            return store.subgraph(node_id,max_depth=max_depth,allowed_statuses=set(status) if status else None,tenant_id=x_tenant_id)
+        except (GraphInvariantError,TenantBoundaryError):
+            raise HTTPException(404,"not found")
     @app.get("/api/v1/graph/evidence/{evidence_id}/lineage")
     def get_lineage(evidence_id:str,max_depth:int=32,x_tenant_id:str=Header(...),x_role:str=Header("graph_reader")):
-        hdr(x_tenant_id,x_role);return store.evidence_lineage(evidence_id,max_depth=max_depth,tenant_id=x_tenant_id)
+        hdr(x_tenant_id,x_role)
+        try:
+            return store.evidence_lineage(evidence_id,max_depth=max_depth,tenant_id=x_tenant_id)
+        except (GraphInvariantError,TenantBoundaryError):
+            raise HTTPException(404,"not found")
     @app.post("/api/v1/graph/discovery")
     def discovery(body:DiscoveryRequest,x_tenant_id:str=Header(...),x_role:str=Header("graph_discovery")):
         hdr(x_tenant_id,x_role);return store.create_discovery(x_tenant_id,body.input_nodes,body.hypothesis,body.proposed_relation,body.confidence,body.proposed_assertion,body.reason)
