@@ -8,6 +8,7 @@ jobs:
   product-gate:
     runs-on: ubuntu-latest
     env:
+      EXPECTED_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       OLA_LLM_MODE: required
       OLA_LLM_MODEL: gpt-5.6-luna
     steps:
@@ -15,6 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ env.EXPECTED_COMMIT }}
       - name: Require real OpenAI credential
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -31,19 +33,19 @@ jobs:
           python -m pip install -r requirements.txt
           OLA_LLM_MODE=deterministic python -m pytest -q
       - name: Build exact-source runtime
-        run: docker build --tag "ola-product:${GITHUB_SHA}" .
+        run: docker build --tag "ola-product:${EXPECTED_COMMIT}" .
       - name: Start runtime
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${EXPECTED_COMMIT}"
           docker run --detach --rm --name ola-product --publish 8000:8000 \
             -e OPENAI_API_KEY="$OPENAI_API_KEY" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
             -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
-            -e OLA_RUNTIME_COMMIT="${GITHUB_SHA}" \
-            "ola-product:${GITHUB_SHA}"
+            -e OLA_RUNTIME_COMMIT="${EXPECTED_COMMIT}" \
+            "ola-product:${EXPECTED_COMMIT}"
           for i in $(seq 1 30); do curl --fail --silent http://127.0.0.1:8000/health >/dev/null && break; sleep 1; done
           curl --fail --silent http://127.0.0.1:8000/health >/dev/null
       - name: Verify product surface
@@ -77,7 +79,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" -e OLA_RUNTIME_COMMIT="${GITHUB_SHA}" ola-product python - <<'PY'
+          docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" -e OLA_RUNTIME_COMMIT="${EXPECTED_COMMIT}" ola-product python - <<'PY'
           import hashlib,json,sqlite3,urllib.request,uuid
           tid=str(uuid.uuid4()); key="nina-chain-key"; db=sqlite3.connect("/data/ola.db")
           db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tid,"nina-chain"))
@@ -106,7 +108,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ola-product-gate-${{ github.sha }}
+          name: ola-product-gate-${{ env.EXPECTED_COMMIT }}
           path: |
             docker-inspect.json
             docker-runtime.log
