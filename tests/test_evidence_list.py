@@ -4,7 +4,7 @@ import uuid
 from fastapi.testclient import TestClient
 
 from app.database import SessionLocal
-from app.models import ApiKey, Tenant
+from app.models import ApiKey, EvidenceRecord, Tenant
 from app.main import app
 
 
@@ -36,6 +36,11 @@ def _create_evidence(api_key, record_type, payload):
     return response.json()
 
 
+def _count_tenant_records(tenant_id):
+    with SessionLocal() as db:
+        return db.query(EvidenceRecord).filter_by(tenant_id=tenant_id).count()
+
+
 def test_evidence_list_is_read_only_and_tenant_scoped():
     tenant_a = _seed_tenant("evidence-list-a")
     tenant_b = _seed_tenant("evidence-list-b")
@@ -44,9 +49,7 @@ def test_evidence_list_is_read_only_and_tenant_scoped():
     second = _create_evidence("evidence-list-a", "test.second", {"value": 2})
     _create_evidence("evidence-list-b", "test.other", {"value": 99})
 
-    before_count = None
-    with SessionLocal() as db:
-        before_count = sum(1 for row in db.query(__import__("app.models", fromlist=["EvidenceRecord"]).EvidenceRecord).filter_by(tenant_id=tenant_a))
+    before_count = _count_tenant_records(tenant_a)
 
     response = CLIENT.get(
         "/evidence",
@@ -59,10 +62,14 @@ def test_evidence_list_is_read_only_and_tenant_scoped():
     assert body["count"] == 2
     assert [record["seq"] for record in body["records"]] == [second["seq"], first["seq"]]
     assert all(record["tenant_id"] == tenant_a for record in body["records"])
+    assert all(record["record_type"].startswith("test.") for record in body["records"])
 
-    with SessionLocal() as db:
-        after_count = sum(1 for row in db.query(__import__("app.models", fromlist=["EvidenceRecord"]).EvidenceRecord).filter_by(tenant_id=tenant_a))
-    assert after_count == before_count
+    assert _count_tenant_records(tenant_a) == before_count
+    assert CLIENT.get(
+        "/evidence",
+        headers={"X-API-Key": "evidence-list-b"},
+        params={"limit": 20},
+    ).json()["count"] == 1
 
 
 def test_evidence_list_cursor_and_bounds():
@@ -85,16 +92,22 @@ def test_evidence_list_cursor_and_bounds():
         rows[1]["seq"],
     ]
 
-    oldest_seq = rows[1]["seq"]
+    before_seq = rows[1]["seq"]
     cursor_response = CLIENT.get(
         "/evidence",
         headers={"X-API-Key": api_key},
-        params={"limit": 20, "before_seq": oldest_seq},
+        params={"limit": 20, "before_seq": before_seq},
     )
     assert cursor_response.status_code == 200
     assert [record["seq"] for record in cursor_response.json()["records"]] == [rows[0]["seq"]]
 
-    assert CLIENT.get("/evidence", headers={"X-API-Key": api_key}, params={"limit": 0}).status_code == 400
-    assert CLIENT.get("/evidence", headers={"X-API-Key": api_key}, params={"limit": 101}).status_code == 400
-    assert CLIENT.get("/evidence", headers={"X-API-Key": api_key}, params={"before_seq": -1}).status_code == 400
+    assert CLIENT.get(
+        "/evidence", headers={"X-API-Key": api_key}, params={"limit": 0}
+    ).status_code == 400
+    assert CLIENT.get(
+        "/evidence", headers={"X-API-Key": api_key}, params={"limit": 101}
+    ).status_code == 400
+    assert CLIENT.get(
+        "/evidence", headers={"X-API-Key": api_key}, params={"before_seq": -1}
+    ).status_code == 400
     assert CLIENT.get("/evidence").status_code == 401
