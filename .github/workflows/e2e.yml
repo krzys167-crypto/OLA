@@ -9,6 +9,7 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     env:
+      EXPECTED_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       OLA_LLM_MODE: deterministic
       OLA_LLM_MODEL: deterministic-runtime-v1
     steps:
