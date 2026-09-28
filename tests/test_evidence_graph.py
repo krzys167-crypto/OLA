@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from evidence_graph import GraphInvariantError, GraphStore, TenantBoundaryError, create_app
 
 def ts(s=0): return (datetime(2026,1,1,tzinfo=timezone.utc)+timedelta(seconds=s)).isoformat()
-def N(t,typ,c,s=0): return dict(tenant_id=t,node_type=typ,canonical_id=c,source_type="canonical",source_id=c,status="ACTIVE",created_at=ts(s),updated_at=ts(s),metadata={})
+def N(t,typ,c,s=0): return dict(tenant_id=t,node_type=typ,canonical_id=c,label=c,source_type="canonical",source_id=c,status="ACTIVE",created_at=ts(s),updated_at=ts(s),metadata={})
 def P(i): return dict(source_type="canonical",source_id=i,source_hash="sha256:"+i,source_version="1",captured_at=ts(1),created_at=ts(1))
 
 def chain(s):
@@ -58,3 +58,21 @@ def test_cross_tenant_api_visibility():
     app=create_app(s,lambda t,r:True); c=TestClient(app)
     assert c.get(f"/api/v1/graph/nodes/{a}",headers={"X-Tenant-ID":"t1"}).status_code==200
     assert c.get(f"/api/v1/graph/nodes/{b}",headers={"X-Tenant-ID":"t1"}).status_code==404
+
+
+def test_label_and_complete_provenance_are_required():
+    s=GraphStore()
+    n=s.add_node(**N("t1","REQUEST","req"))
+    assert s.get_node(n)["label"]=="req"
+    m=s.add_node(**N("t1","EVIDENCE","ev"))
+    with pytest.raises(GraphInvariantError):
+        s.add_edge("t1",n,m,"PRODUCES","OBSERVED",None,source_type="canonical",source_id="x",source_hash="",source_version="1",captured_at=ts(1),created_at=ts(1))
+
+
+def test_decision_to_evidence_is_representable_without_execution_authority():
+    s=GraphStore()
+    decision=s.add_node(**N("t1","DECISION","decision"))
+    evidence=s.add_node(**N("t1","EVIDENCE","evidence"))
+    s.add_edge("t1",decision,evidence,"PRODUCES","OBSERVED",None,**P("decision-evidence"))
+    assert [n["canonical_id"] for n in s.path(decision,evidence)]==["decision","evidence"]
+    assert not hasattr(s,"authorize_execution")
