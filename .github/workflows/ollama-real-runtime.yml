@@ -1,0 +1,187 @@
+name: Real LLM Ollama Runtime Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - feat/evidence-graph-v0.1
+
+permissions:
+  contents: read
+
+env:
+  OLA_LLM_PROVIDER: ollama
+  OLA_LLM_MODE: required
+  OLLAMA_MODEL: qwen2.5:0.5b-instruct
+  OLA_LLM_MODEL: qwen2.5:0.5b-instruct
+  OLA_LLM_TIMEOUT: "60"
+
+jobs:
+  ollama-real-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Ollama
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve >/tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:11434/api/tags >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1:11434/api/tags >/tmp/ollama-tags-before.json
+          ollama pull "$OLLAMA_MODEL"
+
+      - name: Verify live model inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent http://127.0.0.1:11434/api/tags > ollama-models.json
+          python - <<'PY'
+          import json
+          data=json.load(open("ollama-models.json",encoding="utf-8"))
+          names={item.get("name") for item in data.get("models",[])}
+          assert "qwen2.5:0.5b-instruct" in names, names
+          print(json.dumps({"status":"VERIFIED","models":sorted(names)},sort_keys=True))
+          PY
+
+      - name: Build OLA image
+        run: docker build --tag ola-ollama-e2e --file Dockerfile .
+
+      - name: Start OLA against live Ollama
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach --rm \
+            --name ola-ollama-e2e \
+            --network host \
+            -e OLA_EG_DB_PATH=/data/ola.db \
+            -e OLA_RUNTIME_COMMIT="$GITHUB_SHA" \
+            -e OLA_LLM_PROVIDER="$OLA_LLM_PROVIDER" \
+            -e OLA_LLM_MODE="$OLA_LLM_MODE" \
+            -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
+            -e OLLAMA_MODEL="$OLLAMA_MODEL" \
+            -e OLLAMA_BASE_URL="http://127.0.0.1:11434" \
+            -e OLA_LLM_TIMEOUT="$OLA_LLM_TIMEOUT" \
+            ola-ollama-e2e
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs ola-ollama-e2e
+          exit 1
+
+      - name: Real six-agent LLM runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec -i \
+            -e EXPECTED_COMMIT="$GITHUB_SHA" \
+            -e OLLAMA_MODEL="$OLLAMA_MODEL" \
+            ola-ollama-e2e python - <<'PY' > ollama-runtime-proof.json
+          import hashlib
+          import json
+          import os
+          import sqlite3
+          import urllib.request
+          import uuid
+
+          tenant_id=str(uuid.uuid4())
+          raw_key="ci-ollama-real-llm-key"
+          db_path="/data/ola.db"
+
+          db=sqlite3.connect(db_path)
+          db.execute(
+              "INSERT INTO tenants(id,name) VALUES (?,?)",
+              (tenant_id,"ci-ollama-real-llm"),
+          )
+          db.execute(
+              "INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",
+              (str(uuid.uuid4()),tenant_id,hashlib.sha256(raw_key.encode()).hexdigest()),
+          )
+          db.commit()
+          db.close()
+
+          task="Calculate 17 * 23 and return the exact verified result 391."
+          req=urllib.request.Request(
+              "http://127.0.0.1:8000/agent-run",
+              data=json.dumps({"task":task}).encode(),
+              headers={"Content-Type":"application/json","X-API-Key":raw_key},
+              method="POST",
+          )
+          with urllib.request.urlopen(req,timeout=300) as resp:
+              result=json.load(resp)
+
+          assert result["status"]=="VERIFIED", result
+          assert result["final_result"]=="391", result
+          assert len(result["execution"])==6, result
+          assert all(item["provider"]=="ollama" for item in result["execution"]), result
+          assert all(item["model"]==os.environ["OLLAMA_MODEL"] for item in result["execution"]), result
+          assert all(item["invocation_type"]=="real_llm" for item in result["execution"]), result
+          assert all(item.get("response_id") for item in result["execution"]), result
+
+          proof={
+              "gate":"REAL_OLLAMA_LLM_E2E",
+              "status":"VERIFIED",
+              "provider":"ollama",
+              "model":os.environ["OLLAMA_MODEL"],
+              "agents":6,
+              "llm_invocations":6,
+              "final_result":result["final_result"],
+              "evidence_count":result["evidence_count"],
+              "commit":os.environ["EXPECTED_COMMIT"],
+              "run_id":result["run_id"],
+          }
+          print(json.dumps(proof,sort_keys=True))
+          with open("/data/ollama-proof-context.json","w",encoding="utf-8") as stream:
+              json.dump({"tenant_id":tenant_id,"run_id":result["run_id"],"task":task},stream,sort_keys=True)
+
+          PY
+
+      - name: Standalone verifier over captured runtime evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          TENANT_ID=$(docker exec ola-ollama-e2e python -c 'import json; print(json.load(open("/data/ollama-proof-context.json"))["tenant_id"])')
+          RUN_ID=$(docker exec ola-ollama-e2e python -c 'import json; print(json.load(open("/data/ollama-proof-context.json"))["run_id"])')
+          docker exec ola-ollama-e2e \
+            python scripts/verify_agent_runtime.py \
+              --tenant-id "$TENANT_ID" \
+              --run-id "$RUN_ID" \
+              --expected-commit "$GITHUB_SHA" \
+              --expected-task "Calculate 17 * 23 and return the exact verified result 391." \
+              --expected-result "391" \
+              --expected-provider "ollama" \
+              --expected-model "$OLLAMA_MODEL" \
+              --expected-invocation-type "real_llm"
+
+      - name: Capture Ollama provider evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/ollama-tags-before.json ollama-tags-before-pull.json
+          curl --fail --silent http://127.0.0.1:11434/api/tags > ollama-models.json
+          docker logs ola-ollama-e2e > ola-ollama-runtime.log 2>&1 || true
+
+      - name: Upload Ollama LLM evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ollama-real-llm-proof-\${{ github.sha }}
+          path: |
+            ollama-tags-before-pull.json
+            ollama-models.json
+            ollama-runtime-proof.json
+            ola-ollama-runtime.log
+
+      - name: Stop OLA
+        if: always()
+        run: docker rm --force ola-ollama-e2e >/dev/null 2>&1 || true
