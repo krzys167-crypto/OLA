@@ -1,0 +1,186 @@
+name: OLA Source-Bound E2E
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - feat/evidence-read-list
+
+permissions:
+  contents: read
+
+jobs:
+  source-bound-e2e:
+    runs-on: ubuntu-latest
+    env:
+      EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify source SHA
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXPECTED_COMMIT}"
+          echo "SOURCE_SHA=${EXPECTED_COMMIT}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Full pytest
+        env:
+          OLA_LLM_MODE: deterministic
+          OLA_LLM_MODEL: deterministic-runtime-v1
+        run: python -m pytest -q
+
+      - name: Build exact-source container
+        run: docker build --tag "ola-source-bound:${EXPECTED_COMMIT}" .
+
+      - name: Start exact-source runtime
+        env:
+          OLA_LLM_MODE: deterministic
+          OLA_LLM_MODEL: deterministic-runtime-v1
+        run: |
+          set -euo pipefail
+          docker run --detach --rm --name ola-source-bound --publish 8000:8000             -e OLA_LLM_MODE="${OLA_LLM_MODE}"             -e OLA_LLM_MODEL="${OLA_LLM_MODEL}"             -e OLA_RUNTIME_COMMIT="${EXPECTED_COMMIT}"             "ola-source-bound:${EXPECTED_COMMIT}"
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          docker logs ola-source-bound
+          exit 1
+
+      - name: Prove audit to read-only evidence flow
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import sqlite3
+          import urllib.request
+          import uuid
+
+          db_path = "/tmp/ola-source-bound.db"
+          raw_key = "source-bound-key"
+          tenant_id = str(uuid.uuid4())
+
+          db = sqlite3.connect(db_path)
+          db.execute("PRAGMA journal_mode=WAL")
+          db.execute(
+              "CREATE TABLE IF NOT EXISTS tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL)"
+          )
+          db.execute(
+              "CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, key_hash TEXT NOT NULL)"
+          )
+          db.close()
+
+          import os
+          os.environ["OLA_EG_DB_PATH"] = db_path
+
+          # The runtime uses /data/ola.db, so seed its actual database.
+          db = sqlite3.connect("/data/ola.db") if False else None
+          PY
+          docker exec -i ola-source-bound python - <<'PY' > runtime-proof.json
+          import hashlib
+          import json
+          import sqlite3
+          import urllib.request
+          import uuid
+          import os
+
+          db_path = "/data/ola.db"
+          raw_key = "source-bound-key"
+          tenant_id = str(uuid.uuid4())
+          db = sqlite3.connect(db_path)
+          db.execute("INSERT INTO tenants(id,name) VALUES (?,?)", (tenant_id, "source-bound"))
+          db.execute(
+              "INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",
+              (str(uuid.uuid4()), tenant_id, hashlib.sha256(raw_key.encode()).hexdigest()),
+          )
+          db.commit()
+          db.close()
+
+          def call(method, path, body=None):
+              payload = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(
+                  "http://127.0.0.1:8000" + path,
+                  data=payload,
+                  headers={
+                      "Content-Type": "application/json",
+                      "X-API-Key": raw_key,
+                  },
+                  method=method,
+              )
+              with urllib.request.urlopen(req, timeout=15) as response:
+                  return json.load(response)
+
+          audit = call("POST", "/audit", {
+              "task": "source-bound evidence proof",
+              "scenario": "fault_then_recovery",
+          })
+          assert audit["status"] == "VERIFIED", audit
+          assert audit["evidence_count"] == 5, audit
+
+          listed = call("GET", "/evidence?limit=5")
+          assert listed["count"] == 5, listed
+          records = listed["records"]
+          assert [r["seq"] for r in records] == [4, 3, 2, 1, 0], records
+          assert all(r["tenant_id"] == tenant_id for r in records)
+          assert all(len(r["prev_hash"]) == 64 and len(r["record_hash"]) == 64 for r in records)
+
+          print(json.dumps({
+              "status": "VERIFIED",
+              "commit": os.environ.get("OLA_RUNTIME_COMMIT", "UNKNOWN"),
+              "audit_status": audit["status"],
+              "evidence_list": "PASS",
+              "evidence_count": listed["count"],
+              "hash_fields": "PASS",
+          }, sort_keys=True))
+          PY
+          cat runtime-proof.json
+
+      - name: Real OpenAI credential gate
+        if: ${{ always() }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${OPENAI_API_KEY}"
+          echo "REAL_LLM_CREDENTIAL=AVAILABLE"
+
+      - name: Capture immutable evidence
+        if: ${{ always() }}
+        run: |
+          docker inspect ola-source-bound > docker-inspect.json 2>&1 || true
+          docker logs ola-source-bound > docker-runtime.log 2>&1 || true
+          sha256sum runtime-proof.json docker-inspect.json docker-runtime.log > runtime-file-hashes.txt || true
+          printf '%s\\n' "commit=${EXPECTED_COMMIT}" "run=${GITHUB_RUN_ID}" > provenance.txt
+          sha256sum provenance.txt >> runtime-file-hashes.txt || true
+
+      - name: Upload immutable evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ola-source-bound-e2e-${{ env.EXPECTED_COMMIT }}
+          path: |
+            runtime-proof.json
+            docker-inspect.json
+            docker-runtime.log
+            runtime-file-hashes.txt
+            provenance.txt
+          if-no-files-found: warn
+
+      - name: Stop runtime
+        if: ${{ always() }}
+        run: docker stop ola-source-bound || true
