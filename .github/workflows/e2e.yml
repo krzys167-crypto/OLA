@@ -9,11 +9,15 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     env:
+      EXPECTED_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       OLA_LLM_MODE: deterministic
       OLA_LLM_MODEL: deterministic-runtime-v1
     steps:
-      - name: Checkout
+      - name: Checkout exact source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.EXPECTED_COMMIT }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,11 +35,11 @@ jobs:
         run: python scripts/verify_readme_claims.py
 
       - name: Build deployment image
-        run: docker build --tag ola:${GITHUB_SHA} .
+        run: docker build --tag ola:${EXPECTED_COMMIT} .
 
       - name: Run deployment image
         run: |
-          docker run --detach --rm --name ola-e2e --publish 8000:8000 -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola:${GITHUB_SHA}
+          docker run --detach --rm --name ola-e2e --publish 8000:8000 -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola:${EXPECTED_COMMIT}
           for i in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
               exit 0
@@ -47,8 +51,7 @@ jobs:
 
       - name: Independent runtime E2E proof
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
-        run: |
+                  run: |
           docker exec -i -e EXPECTED_COMMIT="$EXPECTED_COMMIT" ola-e2e python - <<'PY'
           import hashlib, json, os, sqlite3, urllib.request, uuid
           db_path = "/data/ola.db"
@@ -111,8 +114,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OLA_LLM_MODE: required
           OLA_LLM_MODEL: gpt-5.6-luna
-          EXPECTED_COMMIT: ${{ github.sha }}
-          EXPECTED_TASK: Calculate 17 * 23 and return the verified result.
+                    EXPECTED_TASK: Calculate 17 * 23 and return the verified result.
           EXPECTED_RESULT: "391"
         run: |
           set -euo pipefail
@@ -167,8 +169,7 @@ jobs:
 
       - name: Controlled invoice six-agent business E2E and independent verifier
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
-          INVOICE_JSON: '{"invoice_id":"INV-CI-2026-001","supplier":"TEST-SUPPLIER","currency":"EUR","net":1000.0,"vat_rate":0.21}'
+                    INVOICE_JSON: '{"invoice_id":"INV-CI-2026-001","supplier":"TEST-SUPPLIER","currency":"EUR","net":1000.0,"vat_rate":0.21}'
         run: |
           set -euo pipefail
           docker exec -i -e EXPECTED_COMMIT="$EXPECTED_COMMIT" -e INVOICE_JSON="$INVOICE_JSON" ola-e2e python - <<'PY' > business-invoice-proof.json
@@ -217,8 +218,7 @@ jobs:
 
       - name: Real runtime fault injection and recovery
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
-        run: |
+                  run: |
           set -euo pipefail
           curl --fail --silent http://127.0.0.1:8000/health >/dev/null
           docker pause ola-e2e
@@ -239,14 +239,14 @@ jobs:
           docker inspect ola-e2e > docker-inspect.json 2>&1 || true
           docker logs ola-e2e > docker-runtime.log 2>&1 || true
           sha256sum docker-inspect.json docker-runtime.log agent-runtime-proof.json business-invoice-proof.json > runtime-file-hashes.txt || true
-          printf '%s\n' "commit=${GITHUB_SHA}" "run=${GITHUB_RUN_ID}" > provenance.txt
+          printf '%s\n' "commit=${EXPECTED_COMMIT}" "run=${GITHUB_RUN_ID}" > provenance.txt
           sha256sum provenance.txt >> runtime-file-hashes.txt || true
 
       - name: Upload runtime evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ola-runtime-e2e-${{ github.sha }}
+          name: ola-runtime-e2e-${{ env.EXPECTED_COMMIT }}
           path: |
             docker-inspect.json
             docker-runtime.log
