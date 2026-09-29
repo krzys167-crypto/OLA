@@ -64,3 +64,9 @@ def test_derive_status_is_fail_closed_for_every_non_verified_field():
             assert NinaIgorChain.derive_status(status) != "VERIFIED", (
                 f"{field}={value} incorrectly derived VERIFIED"
             )
+
+
+def test_derive_status_rejects_missing_field():
+    status = {field: "VERIFIED" for field in STATUS_FIELDS}
+    del status["EVIDENCE"]
+    assert NinaIgorChain.derive_status(status) == "BLOCK"
