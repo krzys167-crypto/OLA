@@ -1,4 +1,4 @@
-name: Nina Real Runtime Provenance Gate
+name: Nina Real Runtime Provenance Gate (OpenAI optional)
 
 on:
   push:
@@ -8,6 +8,7 @@ on:
 
 jobs:
   runtime-proof:
+    if: ${{ secrets.OPENAI_API_KEY != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
