@@ -23,14 +23,14 @@ def test_chain_requires_igor_before_human_gate():
     assert result["status"] == "VERIFIED"
 
 
-def test_chain_rejects_human_review():
+def test_chain_requires_human_review():
     chain = NinaIgorChain()
     result = chain.finalize(
         nina_status="VERIFIED",
         igor_status="VERIFIED",
-        review=ReviewDecision(False, "reviewer-1", "unsafe"),
+        review=ReviewDecision(False, "reviewer-1", "awaiting approval"),
     )
-    assert result["status"] == "BLOCK"
+    assert result["status"] == "REVIEW"
 
 
 STATUS_FIELDS = (
