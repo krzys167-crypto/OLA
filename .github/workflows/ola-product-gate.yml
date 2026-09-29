@@ -8,7 +8,8 @@ jobs:
   product-gate:
     runs-on: ubuntu-latest
     env:
-      OLA_LLM_MODE: ${{ secrets.OPENAI_API_KEY != '' && 'required' || 'deterministic' }}
+      OPENAI_AVAILABLE: ${{ secrets.OPENAI_API_KEY != '' }}
+      OLA_LLM_MODE: deterministic
       OLA_LLM_MODEL: gpt-5.6-luna
     steps:
       - name: Checkout exact source
@@ -39,6 +40,7 @@ jobs:
       - name: Start runtime
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OLA_LLM_MODE: ${{ env.OPENAI_AVAILABLE == 'true' && 'required' || 'deterministic' }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
@@ -56,7 +58,7 @@ jobs:
           curl --fail --silent http://127.0.0.1:8000/ | grep -q "NINA"
           curl --fail --silent http://127.0.0.1:8000/ | grep -q "X-API-Key"
       - name: Verify real six-agent runtime
-        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
@@ -78,7 +80,7 @@ jobs:
           print("REAL_SIX_AGENT_RUNTIME=VERIFIED")
           PY
       - name: Verify NINA to IGOR to Human Gate
-        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
