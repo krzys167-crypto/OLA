@@ -42,7 +42,7 @@ def test_igor_verifies_real_ollama_provenance():
         "provider": "ollama",
         "model": "qwen2.5:0.5b-instruct",
         "invocation_type": "real_llm",
-        "response_id": "ollama:resp-1",
+        "response_ids": ["ollama:resp-1"],
     }
     record = {
         "id": "e1",
@@ -77,7 +77,6 @@ def test_igor_scopes_checks_to_current_run_but_verifies_full_chain():
         "model": "qwen2.5:0.5b-instruct",
         "invocation_type": "real_llm",
         "response_id": "ollama:resp-2",
-        "agent_instance_id": "agent-1",
     }
 
     first = {
