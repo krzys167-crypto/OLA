@@ -128,14 +128,15 @@ jobs:
           assert body["provenance"]["invocation_type"]=="real_llm", body
           assert body["provenance"]["llm_invocations"]==6, body
           assert len(body["provenance"]["response_ids"])==6, body
-          assert body["replay_verification"]["status"]=="PASS", body
-          assert body["replay_verification"]["event_count"]==6, body
-          assert len(body["replay"])==6, body
+          assert body["replay_verification"]["status"]=="VERIFIED", body
+          assert body["replay_verification"]["event_count"]==7, body
+          assert len(body["replay"])==7, body
           assert body["policy"]["status"]=="REVIEW", body
-          assert body["human_gate"]["status"]=="BLOCK", body
+          assert body["human_gate"]["status"]=="REVIEW", body
+          assert body["status"]=="REVIEW", body
 
           proof={
-              "status":"VERIFIED",
+              "status":body["status"],
               "flow":["NINA","REAL_OLLAMA_LLM","IGOR","PROVENANCE","REPLAY","HUMAN_GATE"],
               "provider":body["provenance"]["provider"],
               "model":body["provenance"]["model"],
