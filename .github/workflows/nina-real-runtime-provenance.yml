@@ -8,12 +8,11 @@ on:
 
 jobs:
   runtime-proof:
-    env:
-      OPENAI_AVAILABLE: ${{ secrets.OPENAI_API_KEY != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     env:
+      OPENAI_AVAILABLE: ${{ secrets.OPENAI_API_KEY != '' }}
       EXPECTED_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       OLA_LLM_MODE: required
       OLA_LLM_MODEL: gpt-5.6-luna
