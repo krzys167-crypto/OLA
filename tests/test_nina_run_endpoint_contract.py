@@ -54,6 +54,14 @@ def test_nina_run_executes_full_chain():
     assert body["provenance"]["invocation_type"] == "local_deterministic_model", body
     assert body["replay_verification"]["status"] == "PASS", body
     assert body["human_gate"]["status"] == "VERIFIED", body
+    assert body["status_fields"] == {
+        "RUNTIME": "VERIFIED",
+        "EVIDENCE": "VERIFIED",
+        "REPLAY_INTEGRITY": "VERIFIED",
+        "POLICY": "VERIFIED",
+        "HUMAN_GATE": "VERIFIED",
+        "EXECUTION_ALLOWED": "VERIFIED",
+    }, body
     assert body["status"] == "VERIFIED", body
     assert body["replay_verification"]["status"] == "PASS", body
     assert len(body["replay"]) == 6
