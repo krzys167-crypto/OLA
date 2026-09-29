@@ -132,10 +132,11 @@ jobs:
           assert body["replay_verification"]["event_count"]==7, body
           assert len(body["replay"])==7, body
           assert body["policy"]["status"]=="REVIEW", body
-          assert body["human_gate"]["status"]=="BLOCK", body
+          assert body["human_gate"]["status"]=="REVIEW", body
+          assert body["status"]=="REVIEW", body
 
           proof={
-              "status":"VERIFIED",
+              "status":body["status"],
               "flow":["NINA","REAL_OLLAMA_LLM","IGOR","PROVENANCE","REPLAY","HUMAN_GATE"],
               "provider":body["provenance"]["provider"],
               "model":body["provenance"]["model"],
