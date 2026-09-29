@@ -56,4 +56,4 @@ def test_nina_run_executes_full_chain():
     assert body["human_gate"]["status"] == "VERIFIED", body
     assert body["status"] == "VERIFIED", body
     assert body["replay_verification"]["status"] == "VERIFIED", body
-    assert len(body["replay"]) == 6
+    assert len(body["replay"]) == 7
