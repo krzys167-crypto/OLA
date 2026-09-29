@@ -95,46 +95,94 @@ def _mcp_tool_call(name, arguments):
 
 
 def _invoke_llm(agent, task, context):
-    """Invoke a real LLM when configured; fail closed when required but unavailable."""
-    api_key = os.getenv("OPENAI_API_KEY")
+    """Invoke the configured real LLM provider; fail closed when required but unavailable."""
+    provider = os.getenv("OLA_LLM_PROVIDER", "openai").strip().lower()
     mode = os.getenv("OLA_LLM_MODE", "deterministic")
-    if not api_key:
-        if mode == "required":
-            raise RuntimeError("OLA_LLM_MODE=required but OPENAI_API_KEY is missing")
-        return None
-
-    model = os.getenv("OLA_LLM_MODEL", "gpt-5.6-luna")
-    endpoint = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") + "/responses"
     prompt = canonical_json({"agent": agent, "task": task, "context": context})
-    payload = {
-        "model": model,
-        "input": [
-            {"role": "system", "content": "You are one agent in OLA di-OS. Return concise JSON-compatible reasoning output. Do not claim tools or evidence you did not actually use."},
-            {"role": "user", "content": prompt},
-        ],
-    }
+    system_message = (
+        "You are one agent in OLA di-OS. Return concise JSON-compatible reasoning output. "
+        "Do not claim tools or evidence you did not actually use."
+    )
     import httpx
-    response = httpx.post(endpoint, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json=payload, timeout=float(os.getenv("OLA_LLM_TIMEOUT", "30")))
-    response.raise_for_status()
-    body = response.json()
-    output = body.get("output_text")
-    if not output:
-        parts = []
-        for item in body.get("output", []):
-            for content in item.get("content", []):
-                if content.get("type") in {"output_text", "text"} and content.get("text"):
-                    parts.append(content["text"])
-        output = "\\n".join(parts)
-    if not output:
-        raise RuntimeError("LLM response contained no output text")
-    return {
-        "provider": "openai",
-        "model": model,
-        "invocation_type": "real_llm",
-        "prompt_digest": _digest(prompt),
-        "output": output,
-        "response_id": body.get("id"),
-    }
+
+    if provider == "openai":
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            if mode == "required":
+                raise RuntimeError("OLA_LLM_MODE=required but OPENAI_API_KEY is missing")
+            return None
+        model = os.getenv("OLA_LLM_MODEL", "gpt-5.6-luna")
+        endpoint = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") + "/responses"
+        payload = {
+            "model": model,
+            "input": [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt},
+            ],
+        }
+        response = httpx.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=float(os.getenv("OLA_LLM_TIMEOUT", "30")),
+        )
+        response.raise_for_status()
+        body = response.json()
+        output = body.get("output_text")
+        if not output:
+            parts = []
+            for item in body.get("output", []):
+                for content in item.get("content", []):
+                    if content.get("type") in {"output_text", "text"} and content.get("text"):
+                        parts.append(content["text"])
+            output = "\\n".join(parts)
+        if not output:
+            raise RuntimeError("OpenAI response contained no output text")
+        return {
+            "provider": "openai",
+            "model": model,
+            "invocation_type": "real_llm",
+            "prompt_digest": _digest(prompt),
+            "output": output,
+            "response_id": body.get("id"),
+        }
+
+    if provider == "ollama":
+        model = os.getenv("OLA_LLM_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5:0.5b-instruct"))
+        base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "options": {"temperature": 0},
+        }
+        response = httpx.post(
+            f"{base_url}/api/chat",
+            headers={"Content-Type": "application/json"},
+            json=payload,
+            timeout=float(os.getenv("OLA_LLM_TIMEOUT", "60")),
+        )
+        response.raise_for_status()
+        body = response.json()
+        output = body.get("message", {}).get("content")
+        if not output:
+            raise RuntimeError("Ollama response contained no message content")
+        response_id = body.get("id") or f"ollama:{_digest(canonical_json(body))}"
+        return {
+            "provider": "ollama",
+            "model": model,
+            "invocation_type": "real_llm",
+            "prompt_digest": _digest(prompt),
+            "output": output,
+            "response_id": response_id,
+        }
+
+    if mode == "required":
+        raise RuntimeError(f"OLA_LLM_MODE=required but unsupported provider: {provider}")
+    return None
 
 def _invoke_local_deterministic_model(agent, task, context):
     prompt = canonical_json({"agent": agent, "task": task, "context": context})

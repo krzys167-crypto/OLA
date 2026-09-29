@@ -49,6 +49,11 @@ def test_nina_run_executes_full_chain():
     assert body["igor"]["checks"]["commit"] is True, body
     assert body["igor"]["checks"]["task"] is True, body
     assert body["igor"]["checks"]["result"] is True, body
+    assert body["provenance"]["status"] == "VERIFIED", body
+    assert body["provenance"]["commit"] == commit, body
+    assert body["provenance"]["invocation_type"] == "local_deterministic_model", body
+    assert body["replay_verification"]["status"] == "PASS", body
     assert body["human_gate"]["status"] == "VERIFIED", body
     assert body["status"] == "VERIFIED", body
-    assert len(body["replay"]) >= 7
+    assert body["replay_verification"]["status"] == "PASS", body
+    assert len(body["replay"]) == 6

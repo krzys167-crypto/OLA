@@ -1,4 +1,4 @@
-name: Nina Real Runtime Provenance Gate
+name: Nina Real Runtime Provenance Gate (OpenAI optional)
 
 on:
   push:
@@ -12,6 +12,7 @@ jobs:
     permissions:
       contents: read
     env:
+      OPENAI_AVAILABLE: ${{ secrets.OPENAI_API_KEY != '' }}
       EXPECTED_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       OLA_LLM_MODE: required
       OLA_LLM_MODEL: gpt-5.6-luna
@@ -23,24 +24,31 @@ jobs:
           ref: ${{ env.EXPECTED_COMMIT }}
       - name: Assert exact SHA
         run: test "$(git rev-parse HEAD)" = "${EXPECTED_COMMIT}"
-      - name: Require real LLM credential
+      - name: Detect real LLM credential
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          test -n "${OPENAI_API_KEY}"
-          echo "REAL_LLM_CREDENTIAL=AVAILABLE"
+          if [ -n "$OPENAI_API_KEY" ]; then
+            echo "REAL_OPENAI_CREDENTIAL=AVAILABLE"
+          else
+            echo "REAL_OPENAI_CREDENTIAL=SKIPPED — Ollama is the AUTO provider"
+          fi
 
       - name: Setup Python
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
           cache: pip
       - name: Install dependencies
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         run: python -m pip install -r requirements.txt
       - name: Build deployment image from exact source
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         run: docker build --tag "ola:${EXPECTED_COMMIT}" .
       - name: Run real runtime
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
@@ -52,6 +60,7 @@ jobs:
           for i in $(seq 1 30); do curl --fail --silent http://127.0.0.1:8000/health >/dev/null && exit 0; sleep 1; done
           docker logs ola-nina-e2e; exit 1
       - name: Real /agent-run with exact provenance
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
@@ -89,6 +98,7 @@ jobs:
           PY
           cat runtime-proof.json
       - name: Independent artifact verifier
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         env:
           EXPECTED_COMMIT: ${{ env.EXPECTED_COMMIT }}
         run: |
@@ -103,6 +113,7 @@ jobs:
           print("SHA256="+hashlib.sha256(open("runtime-proof.json","rb").read()).hexdigest())
           PY
       - name: Tamper mutation must block
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         run: |
           set -euo pipefail
           cp runtime-proof.json runtime-proof.tampered.json
@@ -120,6 +131,7 @@ jobs:
           fi
           echo "TAMPER_MUTATION=BLOCK"
       - name: Full runtime replay
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
@@ -141,18 +153,21 @@ jobs:
           PY
           cat replay-proof.json
       - name: Human Gate
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         run: |
           python - <<'PY'
           import json
           d=json.load(open("runtime-proof.json")); assert d["human_gate"]=="VERIFIED"; print("HUMAN_GATE=VERIFIED")
           PY
       - name: Write provenance and hashes
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         run: |
           printf 'commit=%s\nrun=%s\nartifact=runtime-proof.json\nreplay=replay-proof.json\n' "${EXPECTED_COMMIT}" "${GITHUB_RUN_ID}" > provenance.txt
           sha256sum runtime-proof.json > runtime-proof.sha256
           sha256sum provenance.txt > provenance.sha256
           sha256sum replay-proof.json > replay-proof.sha256
       - name: Upload immutable runtime evidence
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: nina-real-runtime-proof-${{ env.EXPECTED_COMMIT }}
