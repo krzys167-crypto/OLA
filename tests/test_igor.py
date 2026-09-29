@@ -76,7 +76,7 @@ def test_igor_scopes_checks_to_current_run_but_verifies_full_chain():
         "provider": "ollama",
         "model": "qwen2.5:0.5b-instruct",
         "invocation_type": "real_llm",
-        "response_id": "ollama:resp-2",
+        "response_ids": ["ollama:resp-2"],
     }
 
     first = {
