@@ -33,21 +33,33 @@ def test_chain_requires_human_review():
     assert result["status"] == "REVIEW"
 
 
+def test_human_gate_candidate_block_wins_before_approval_state():
+    result = HumanGate.evaluate(
+        "BLOCK",
+        ReviewDecision(False, "reviewer-1", "awaiting approval"),
+    )
+    assert result.status == "BLOCK"
+
+
 STATUS_FIELDS = (
     "RUNTIME",
     "EVIDENCE",
     "REPLAY_INTEGRITY",
     "POLICY",
-    "HUMAN_GATE",
-    "EXECUTION_ALLOWED",
 )
 
 NON_VERIFIED_STATUSES = ("NOT_RUN", "REVIEW", "UNKNOWN")
 
 
-def test_derive_status_is_verified_only_when_every_field_is_verified():
+def test_derive_status_is_verified_only_when_every_input_field_is_verified():
     status = {field: "VERIFIED" for field in STATUS_FIELDS}
     assert NinaIgorChain.derive_status(status) == "VERIFIED"
+
+
+def test_derive_status_rejects_execution_allowed_as_an_input():
+    status = {field: "VERIFIED" for field in STATUS_FIELDS}
+    status["EXECUTION_ALLOWED"] = "VERIFIED"
+    assert NinaIgorChain.derive_status(status) == "BLOCK"
 
 
 def test_derive_status_rejects_unknown_status_value():
