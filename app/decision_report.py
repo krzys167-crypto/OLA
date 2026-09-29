@@ -36,7 +36,7 @@ def evaluate_policy(*, nina_status: str, igor_status: str, evidence_count: int,
         return PolicyDecision("BLOCK", f"NINA status is {nina_status}", "OLA-POLICY-v1", False, True)
     if igor_status != "VERIFIED":
         return PolicyDecision("BLOCK", f"IGOR status is {igor_status}", "OLA-POLICY-v1", False, True)
-    if replay_status != "PASS":
+    if replay_status != "VERIFIED":
         return PolicyDecision("BLOCK", "replay verification did not pass", "OLA-POLICY-v1", False, True)
     if not human_approved:
         return PolicyDecision("REVIEW", "human approval required before promotion", "OLA-POLICY-v1", True, True)
@@ -56,7 +56,7 @@ def build_decision_report(*, task_id: str, run_id: str, task: str, nina: dict,
         # A non-empty ordered replay is the runtime replay artifact. The
         # independent IGOR verification remains the security gate; this merely
         # prevents the report layer from crashing on the canonical list form.
-        replay_status = "PASS" if replay else "UNKNOWN"
+        replay_status = "VERIFIED" if replay else "UNKNOWN"
     else:
         replay_status = "UNKNOWN"
 
