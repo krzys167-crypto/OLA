@@ -382,6 +382,25 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         human_actor=review.actor,
         human_reason=review.reason,
     )
+
+    replay_integrity_status = (
+        "VERIFIED"
+        if replay_verification["status"] == "PASS"
+        else replay_verification["status"]
+    )
+    human_gate_status = "VERIFIED" if review.approved else "REVIEW"
+    status_fields = {
+        "RUNTIME": nina_summary["status"],
+        "EVIDENCE": provenance["status"],
+        "REPLAY_INTEGRITY": replay_integrity_status,
+        "POLICY": report["policy"]["status"],
+        "HUMAN_GATE": human_gate_status,
+        "EXECUTION_ALLOWED": "VERIFIED",
+    }
+    execution_allowed_status = NinaIgorChain.derive_status(status_fields)
+    status_fields["EXECUTION_ALLOWED"] = execution_allowed_status
+    derived_status = NinaIgorChain.derive_status(status_fields)
+
     return {
         "task_id": nina_task.task_id,
         "run_id": run_id,
@@ -392,8 +411,9 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         "replay_verification": replay_verification,
         "human_gate": terminal,
         "policy": report["policy"],
+        "status_fields": status_fields,
         "decision_report": report,
-        "status": terminal["status"],
+        "status": derived_status,
     }
 
 @app.post("/stripe/webhook")
