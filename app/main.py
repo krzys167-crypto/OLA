@@ -335,6 +335,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         expected_run_id=run_id,
         expected_tenant_id=tenant_id,
         expected_record_count=len(record_dicts),
+        expected_tip_hash=record_dicts[-1]["record_hash"] if record_dicts else None,
     )
 
     review = ReviewDecision(
