@@ -20,7 +20,7 @@ class HumanGate:
         if not decision.actor.strip():
             return GateResult("BLOCK", "review actor is required")
         if not decision.approved:
-            return GateResult("BLOCK", decision.reason or "review rejected")
+            return GateResult("REVIEW", decision.reason or "human approval required before promotion")
         if candidate_status != "VERIFIED":
             return GateResult("BLOCK", f"cannot promote {candidate_status} to VERIFIED")
         return GateResult("VERIFIED", "human review confirmed verified candidate")
