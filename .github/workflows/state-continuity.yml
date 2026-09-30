@@ -27,34 +27,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker exec ola-state python - <<'PY' > first.json
-          import json, os, uuid
-          os.environ['OLA_LLM_MODE']='deterministic'
-          from app.database import SessionLocal
-          from app.models import Tenant, EvidenceRecord
-          from app.agent_runtime import run_agent_task
-          tenant=str(uuid.uuid4())
-          with SessionLocal() as db:
-              db.add(Tenant(id=tenant,name='state-continuity'))
-              db.commit()
-          result=run_agent_task(tenant,'Calculate 17 * 23 and return the verified result.')
-          assert result['status']=='VERIFIED', result
-          print(json.dumps({'tenant_id':tenant,'result_status':result['status'],'final_result':result['final_result'],'execution_count':len(result['execution'])},sort_keys=True))
-          PY
+          docker exec ola-state python scripts/state_continuity_runtime.py > first.json
           tenant=$(python -c 'import json; print(json.load(open("first.json"))["tenant_id"])')
           echo "OLA_TEST_TENANT=$tenant" >> "$GITHUB_ENV"
-          docker exec ola-state python - "$tenant" <<'PY' > checkpoint.json
-          import json,sys
-          from app.hashchain import verify_chain
-          from app.models import EvidenceRecord
-          from app.database import SessionLocal
-          tenant=sys.argv[1]
-          with SessionLocal() as db:
-              rows=db.query(EvidenceRecord).filter(EvidenceRecord.tenant_id==tenant).order_by(EvidenceRecord.seq.asc()).all()
-              assert rows, 'no evidence rows persisted'
-              chain=[{"tenant_id":r.tenant_id,"seq":r.seq,"prev_hash":r.prev_hash,"record_hash":r.record_hash,"payload_json":r.payload_json} for r in rows]
-              ok,reason=verify_chain(chain); assert ok,reason
-              print(json.dumps({'count':len(rows),'tip_hash':rows[-1].record_hash,'next_seq':rows[-1].seq+1},sort_keys=True))
+          docker exec ola-state python scripts/state_continuity_runtime.py --tenant "$tenant" --inspect > checkpoint.json
+          python - <<'PY'
+          import json
+          first=json.load(open('first.json'))
+          checkpoint=json.load(open('checkpoint.json'))
+          assert first['result_status']=='VERIFIED', first
+          assert first['final_result']=='391', first
+          assert first['execution_count']==6, first
+          assert checkpoint['chain_status']=='VERIFIED', checkpoint
+          assert checkpoint['count']>0, checkpoint
           PY
       - name: Restart runtime and verify persisted checkpoint
         shell: bash
@@ -63,45 +48,33 @@ jobs:
           docker rm -f ola-state
           docker run -d --name ola-state --mount source=ola-state-data,target=/data -p 8000:8000 ola-state-continuity
           for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:8000/health >/dev/null; then break; fi; sleep 2; done
-          docker exec ola-state python - "$OLA_TEST_TENANT" "$(python -c 'import json; print(json.load(open("checkpoint.json"))["count"])')" "$(python -c 'import json; print(json.load(open("checkpoint.json"))["tip_hash"])')" <<'PY'
-          import sys
-          from app.hashchain import verify_chain
-          from app.models import EvidenceRecord
-          from app.database import SessionLocal
-          tenant,expected_count,expected_tip=sys.argv[1],int(sys.argv[2]),sys.argv[3]
-          with SessionLocal() as db:
-              rows=db.query(EvidenceRecord).filter(EvidenceRecord.tenant_id==tenant).order_by(EvidenceRecord.seq.asc()).all()
-              assert len(rows)==expected_count, (len(rows),expected_count)
-              assert rows[-1].record_hash==expected_tip
-              chain=[{"tenant_id":r.tenant_id,"seq":r.seq,"prev_hash":r.prev_hash,"record_hash":r.record_hash,"payload_json":r.payload_json} for r in rows]
-              ok,reason=verify_chain(chain); assert ok,reason
+          docker exec ola-state python scripts/state_continuity_runtime.py --tenant "$OLA_TEST_TENANT" --inspect > restored-checkpoint.json
+          python - <<'PY'
+          import json
+          before=json.load(open('checkpoint.json'))
+          after=json.load(open('restored-checkpoint.json'))
+          assert after['chain_status']=='VERIFIED', after
+          assert after['count']==before['count'], (before,after)
+          assert after['tip_hash']==before['tip_hash'], (before,after)
+          assert after['next_seq']==before['next_seq'], (before,after)
           PY
       - name: Second real application execution proves sequence continuity
         shell: bash
         run: |
           set -euo pipefail
           before=$(python -c 'import json; print(json.load(open("checkpoint.json"))["count"])')
-          docker exec ola-state python - "$OLA_TEST_TENANT" <<'PY' > second.json
-          import json, os, sys
-          os.environ['OLA_LLM_MODE']='deterministic'
-          from app.agent_runtime import run_agent_task
-          tenant=sys.argv[1]
-          result=run_agent_task(tenant,'Calculate 19 * 23 and return the verified result.')
-          assert result['status']=='VERIFIED', result
-          print(json.dumps({'tenant_id':tenant,'result_status':result['status'],'final_result':result['final_result'],'execution_count':len(result['execution'])},sort_keys=True))
-          PY
-          docker exec ola-state python - "$OLA_TEST_TENANT" "$before" <<'PY'
-          import sys
-          from app.hashchain import verify_chain
-          from app.models import EvidenceRecord
-          from app.database import SessionLocal
-          tenant,before=sys.argv[1],int(sys.argv[2])
-          with SessionLocal() as db:
-              rows=db.query(EvidenceRecord).filter(EvidenceRecord.tenant_id==tenant).order_by(EvidenceRecord.seq.asc()).all()
-              assert len(rows)>before
-              assert [r.seq for r in rows]==list(range(len(rows)))
-              chain=[{"tenant_id":r.tenant_id,"seq":r.seq,"prev_hash":r.prev_hash,"record_hash":r.record_hash,"payload_json":r.payload_json} for r in rows]
-              ok,reason=verify_chain(chain); assert ok,reason
+          docker exec ola-state python scripts/state_continuity_runtime.py --tenant "$OLA_TEST_TENANT" --task 'Calculate 19 * 23 and return the verified result.' > second.json
+          docker exec ola-state python scripts/state_continuity_runtime.py --tenant "$OLA_TEST_TENANT" --inspect > final-checkpoint.json
+          python - "$before" <<'PY'
+          import json,sys
+          before=int(sys.argv[1])
+          second=json.load(open('second.json'))
+          final=json.load(open('final-checkpoint.json'))
+          assert second['result_status']=='VERIFIED', second
+          assert second['final_result']=='437', second
+          assert final['chain_status']=='VERIFIED', final
+          assert final['count']>before, (before,final)
+          assert final['next_seq']==final['count']
           PY
       - name: Stable health window
         run: |
@@ -116,3 +89,5 @@ jobs:
             first.json
             second.json
             checkpoint.json
+            restored-checkpoint.json
+            final-checkpoint.json
