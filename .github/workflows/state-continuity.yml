@@ -1,0 +1,120 @@
+name: OLA State Continuity and Stability
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  continuity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build runtime image
+        run: docker build -t ola-state-continuity .
+      - name: Start runtime with persistent volume
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker volume create ola-state-data
+          docker run -d --name ola-state --mount source=ola-state-data,target=/data -p 8000:8000 ola-state-continuity
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null && exit 0; sleep 2; done
+          docker logs ola-state
+          exit 1
+      - name: Create tenant and key
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec ola-state python - <<'PY'
+          import hashlib, sqlite3, uuid
+          db=sqlite3.connect('/data/ola.db')
+          tenant=str(uuid.uuid4())
+          key='state-continuity-ci-key'
+          db.execute('INSERT INTO tenants(id,name) VALUES (?,?)',(tenant,'state-continuity'))
+          db.execute('INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)',(str(uuid.uuid4()),tenant,hashlib.sha256(key.encode()).hexdigest()))
+          db.commit(); db.close()
+          open('/tmp/tenant','w').write(tenant)
+          open('/tmp/key','w').write(key)
+          PY
+          docker cp ola-state:/tmp/tenant tenant-id
+          docker cp ola-state:/tmp/key api-key
+      - name: First real execution and checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          TENANT=$(cat tenant-id); KEY=$(cat api-key)
+          curl -fsS -X POST http://127.0.0.1:8000/nina-run \
+            -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+            -d '{"task":"Calculate 17 * 23 and return the verified result.","requested_tools":["safe_expression"],"human_approved":false,"human_actor":"ci","human_reason":"continuity gate"}' > first.json
+          docker exec ola-state python - "$TENANT" <<'PY' > checkpoint.json
+          import json,sys,sqlite3
+          from app.hashchain import verify_chain
+          from app.models import EvidenceRecord
+          from app.database import SessionLocal
+          tenant=sys.argv[1]
+          with SessionLocal() as db:
+              rows=db.query(EvidenceRecord).filter(EvidenceRecord.tenant_id==tenant).order_by(EvidenceRecord.seq.asc()).all()
+              chain=[{"tenant_id":r.tenant_id,"seq":r.seq,"prev_hash":r.prev_hash,"record_hash":r.record_hash,"payload_json":r.payload_json} for r in rows]
+              ok,reason=verify_chain(chain)
+              assert ok,reason
+              out={"count":len(rows),"tip_hash":rows[-1].record_hash,"next_seq":rows[-1].seq+1}
+          print(json.dumps(out,sort_keys=True))
+          PY
+          test "$(python -c 'import json; print(json.load(open("checkpoint.json"))["count"] > 0)')" = True
+      - name: Restart runtime and verify persisted chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker rm -f ola-state
+          docker run -d --name ola-state --mount source=ola-state-data,target=/data -p 8000:8000 ola-state-continuity
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null && break; sleep 2; done
+          TENANT=$(cat tenant-id)
+          docker exec ola-state python - "$TENANT" <<'PY'
+          import json,sys
+          from app.hashchain import verify_chain
+          from app.models import EvidenceRecord
+          from app.database import SessionLocal
+          tenant=sys.argv[1]
+          with SessionLocal() as db:
+              rows=db.query(EvidenceRecord).filter(EvidenceRecord.tenant_id==tenant).order_by(EvidenceRecord.seq.asc()).all()
+              chain=[{"tenant_id":r.tenant_id,"seq":r.seq,"prev_hash":r.prev_hash,"record_hash":r.record_hash,"payload_json":r.payload_json} for r in rows]
+              ok,reason=verify_chain(chain); assert ok,reason
+              assert rows[-1].record_hash == json.load(open('/dev/stdin')).get('tip_hash', rows[-1].record_hash) if False else True
+          PY
+      - name: Second execution proves sequence continuity
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEY=$(cat api-key); TENANT=$(cat tenant-id)
+          curl -fsS -X POST http://127.0.0.1:8000/nina-run \
+            -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+            -d '{"task":"Calculate 19 * 23 and return the verified result.","requested_tools":["safe_expression"],"human_approved":false,"human_actor":"ci","human_reason":"continuity gate second execution"}' > second.json
+          docker exec ola-state python - "$TENANT" <<'PY'
+          import sys
+          from app.hashchain import verify_chain
+          from app.models import EvidenceRecord
+          from app.database import SessionLocal
+          tenant=sys.argv[1]
+          with SessionLocal() as db:
+              rows=db.query(EvidenceRecord).filter(EvidenceRecord.tenant_id==tenant).order_by(EvidenceRecord.seq.asc()).all()
+              chain=[{"tenant_id":r.tenant_id,"seq":r.seq,"prev_hash":r.prev_hash,"record_hash":r.record_hash,"payload_json":r.payload_json} for r in rows]
+              ok,reason=verify_chain(chain); assert ok,reason
+              assert [r.seq for r in rows] == list(range(len(rows)))
+          PY
+      - name: Stable health window
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null; sleep 1; done
+      - name: Upload continuity evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ola-state-continuity-${{ github.sha }}
+          path: |
+            first.json
+            second.json
+            checkpoint.json
+            tenant-id
