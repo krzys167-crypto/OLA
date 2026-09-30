@@ -54,8 +54,8 @@ def test_nina_run_executes_chain_but_does_not_self_approve():
     assert body["provenance"]["invocation_type"] == "local_deterministic_model", body
     assert body["replay_verification"]["status"] == "VERIFIED", body
     # A caller-provided approval flag must not bypass the independent Human Gate.
-    assert body["human_review"]["approved"] is False, body
-    assert body["human_review"]["actor"] == "pending-human-approval", body
+    assert body["decision_report"]["human_review"]["approved"] is False, body
+    assert body["decision_report"]["human_review"]["actor"] == "pending-human-approval", body
     assert body["human_gate"]["status"] == "BLOCK", body
     assert body["status_fields"]["HUMAN_GATE"] == "REVIEW", body
     assert body["status_fields"]["EXECUTION_ALLOWED"] == "REVIEW", body
