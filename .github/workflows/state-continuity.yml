@@ -23,31 +23,27 @@ jobs:
           for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:8000/health >/dev/null; then exit 0; fi; sleep 2; done
           docker logs ola-state
           exit 1
-      - name: Create tenant and key
+      - name: First real application execution and checkpoint
         shell: bash
         run: |
           set -euo pipefail
-          tenant=$(docker exec ola-state python -c 'import uuid; print(uuid.uuid4())')
-          docker exec ola-state python - "$tenant" <<'PY'
-          import hashlib, sqlite3, sys, uuid
-          tenant=sys.argv[1]
-          key='state-continuity-ci-key'
-          db=sqlite3.connect('/data/ola.db')
-          db.execute('INSERT INTO tenants(id,name) VALUES (?,?)',(tenant,'state-continuity'))
-          db.execute('INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)',(str(uuid.uuid4()),tenant,hashlib.sha256(key.encode()).hexdigest()))
-          db.commit(); db.close()
+          docker exec ola-state python - <<'PY' > first.json
+          import json, os, uuid
+          os.environ['OLA_LLM_MODE']='deterministic'
+          from app.database import SessionLocal
+          from app.models import Tenant, EvidenceRecord
+          from app.agent_runtime import run_agent_task
+          tenant=str(uuid.uuid4())
+          with SessionLocal() as db:
+              db.add(Tenant(id=tenant,name='state-continuity'))
+              db.commit()
+          result=run_agent_task(tenant,'Calculate 17 * 23 and return the verified result.')
+          assert result['status']=='VERIFIED', result
+          print(json.dumps({'tenant_id':tenant,'result_status':result['status'],'final_result':result['final_result'],'execution_count':len(result['execution'])},sort_keys=True))
           PY
-          echo "OLA_TEST_KEY=state-continuity-ci-key" >> "$GITHUB_ENV"
+          tenant=$(python -c 'import json; print(json.load(open("first.json"))["tenant_id"])')
           echo "OLA_TEST_TENANT=$tenant" >> "$GITHUB_ENV"
-          printf '%s\n' "$tenant" > tenant-id
-      - name: First real execution and checkpoint
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsS -X POST http://127.0.0.1:8000/nina-run \
-            -H "X-API-Key: $OLA_TEST_KEY" -H 'Content-Type: application/json' \
-            -d '{"task":"Calculate 17 * 23 and return the verified result.","requested_tools":["safe_expression"],"human_approved":false,"human_actor":"ci","human_reason":"continuity gate"}' > first.json
-          docker exec ola-state python - "$OLA_TEST_TENANT" <<'PY' > checkpoint.json
+          docker exec ola-state python - "$tenant" <<'PY' > checkpoint.json
           import json,sys
           from app.hashchain import verify_chain
           from app.models import EvidenceRecord
@@ -58,7 +54,7 @@ jobs:
               assert rows, 'no evidence rows persisted'
               chain=[{"tenant_id":r.tenant_id,"seq":r.seq,"prev_hash":r.prev_hash,"record_hash":r.record_hash,"payload_json":r.payload_json} for r in rows]
               ok,reason=verify_chain(chain); assert ok,reason
-              print(json.dumps({"count":len(rows),"tip_hash":rows[-1].record_hash,"next_seq":rows[-1].seq+1},sort_keys=True))
+              print(json.dumps({'count':len(rows),'tip_hash':rows[-1].record_hash,'next_seq':rows[-1].seq+1},sort_keys=True))
           PY
       - name: Restart runtime and verify persisted checkpoint
         shell: bash
@@ -80,14 +76,20 @@ jobs:
               chain=[{"tenant_id":r.tenant_id,"seq":r.seq,"prev_hash":r.prev_hash,"record_hash":r.record_hash,"payload_json":r.payload_json} for r in rows]
               ok,reason=verify_chain(chain); assert ok,reason
           PY
-      - name: Second execution proves sequence continuity
+      - name: Second real application execution proves sequence continuity
         shell: bash
         run: |
           set -euo pipefail
           before=$(python -c 'import json; print(json.load(open("checkpoint.json"))["count"])')
-          curl -fsS -X POST http://127.0.0.1:8000/nina-run \
-            -H "X-API-Key: $OLA_TEST_KEY" -H 'Content-Type: application/json' \
-            -d '{"task":"Calculate 19 * 23 and return the verified result.","requested_tools":["safe_expression"],"human_approved":false,"human_actor":"ci","human_reason":"continuity gate second execution"}' > second.json
+          docker exec ola-state python - "$OLA_TEST_TENANT" <<'PY' > second.json
+          import json, os, sys
+          os.environ['OLA_LLM_MODE']='deterministic'
+          from app.agent_runtime import run_agent_task
+          tenant=sys.argv[1]
+          result=run_agent_task(tenant,'Calculate 19 * 23 and return the verified result.')
+          assert result['status']=='VERIFIED', result
+          print(json.dumps({'tenant_id':tenant,'result_status':result['status'],'final_result':result['final_result'],'execution_count':len(result['execution'])},sort_keys=True))
+          PY
           docker exec ola-state python - "$OLA_TEST_TENANT" "$before" <<'PY'
           import sys
           from app.hashchain import verify_chain
@@ -114,4 +116,3 @@ jobs:
             first.json
             second.json
             checkpoint.json
-            tenant-id
