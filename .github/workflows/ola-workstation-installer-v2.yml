@@ -1,0 +1,137 @@
+name: OLA Workstation Installer v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "workstation/OLA-Workstation.ps1"
+      - ".github/workflows/ola-workstation-installer-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Prepare installer source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build/installer | Out-Null
+          Copy-Item workstation/OLA-Workstation.ps1 build/installer/OLA-Workstation.ps1
+
+      - name: Build native Windows installer
+        shell: pwsh
+        working-directory: build/installer
+        run: |
+          @'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net8.0</TargetFramework>
+              <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+              <SelfContained>true</SelfContained>
+              <PublishSingleFile>true</PublishSingleFile>
+              <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+              <AssemblyName>OLA-Workstation-Installer-v2</AssemblyName>
+              <RootNamespace>OLA.Workstation.Installer</RootNamespace>
+            </PropertyGroup>
+            <ItemGroup>
+              <EmbeddedResource Include="OLA-Workstation.ps1" LogicalName="OLA-Workstation.ps1" />
+            </ItemGroup>
+          </Project>
+          '@ | Set-Content OLA-Workstation-Installer.csproj -Encoding UTF8
+
+          @'
+          using System;
+          using System.Diagnostics;
+          using System.IO;
+          using System.Linq;
+          using System.Reflection;
+
+          internal static class Program
+          {
+              static int Main()
+              {
+                  string tempRoot = Path.Combine(
+                      Path.GetTempPath(),
+                      "OLA-Workstation-Installer-v2",
+                      Guid.NewGuid().ToString("N"));
+                  Directory.CreateDirectory(tempRoot);
+
+                  string scriptPath = Path.Combine(tempRoot, "OLA-Workstation.ps1");
+                  using Stream? source = Assembly.GetExecutingAssembly()
+                      .GetManifestResourceStream("OLA-Workstation.ps1");
+
+                  if (source is null)
+                  {
+                      Console.Error.WriteLine("Embedded workstation script is missing.");
+                      return 10;
+                  }
+
+                  using FileStream target = File.Create(scriptPath);
+                  source.CopyTo(target);
+
+                  var psi = new ProcessStartInfo
+                  {
+                      FileName = "powershell.exe",
+                      Arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"" + scriptPath + "\"",
+                      UseShellExecute = true,
+                      Verb = "runas",
+                      WorkingDirectory = tempRoot
+                  };
+
+                  try
+                  {
+                      using Process? process = Process.Start(psi);
+                      if (process is null)
+                      {
+                          Console.Error.WriteLine("Could not start PowerShell.");
+                          return 11;
+                      }
+                      process.WaitForExit();
+                      return process.ExitCode;
+                  }
+                  catch (Exception ex)
+                  {
+                      Console.Error.WriteLine(ex.Message);
+                      return 12;
+                  }
+              }
+          }
+          '@ | Set-Content Program.cs -Encoding UTF8
+
+          dotnet publish OLA-Workstation-Installer.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true
+
+          Copy-Item bin/Release/net8.0/win-x64/publish/OLA-Workstation-Installer-v2.exe ../../OLA-Workstation-Installer-v2.exe
+          Get-FileHash ../../OLA-Workstation-Installer-v2.exe -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  OLA-Workstation-Installer-v2.exe" } |
+            Set-Content ../../OLA-Workstation-Installer-v2.sha256 -Encoding ASCII
+
+      - name: Verify installer artifact
+        shell: pwsh
+        run: |
+          $exe = "build/OLA-Workstation-Installer-v2.exe"
+          $hashFile = "build/OLA-Workstation-Installer-v2.sha256"
+          if (-not (Test-Path $exe)) { throw "Installer EXE was not produced." }
+          if ((Get-Item $exe).Length -lt 1000000) { throw "Installer EXE is unexpectedly small." }
+          $expected = ((Get-Content $hashFile) -split "\s+")[0]
+          $actual = (Get-FileHash $exe -Algorithm SHA256).Hash
+          if ($expected -ne $actual) { throw "SHA-256 verification failed." }
+          Write-Host "INSTALLER_BUILD=VERIFIED"
+          Write-Host "INSTALLER_SHA256=$actual"
+          Write-Host "INSTALLER_SIZE=$((Get-Item $exe).Length)"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: OLA-Workstation-Installer-v2
+          path: |
+            build/OLA-Workstation-Installer-v2.exe
+            build/OLA-Workstation-Installer-v2.sha256
+          if-no-files-found: error
+          retention-days: 30
