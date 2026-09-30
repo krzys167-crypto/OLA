@@ -1,8 +1,44 @@
 from .human_gate import HumanGate, ReviewDecision
 
 
+STATUS_VALUES = frozenset({
+    "UNKNOWN",
+    "NOT_RUN",
+    "VERIFIED",
+    "REVIEW",
+    "BLOCK",
+})
+
+STATUS_FIELDS = (
+    "RUNTIME",
+    "EVIDENCE",
+    "REPLAY_INTEGRITY",
+    "POLICY",
+    "HUMAN_GATE",
+)
+
+_STATUS_PRECEDENCE = {
+    "BLOCK": 4,
+    "UNKNOWN": 3,
+    "NOT_RUN": 2,
+    "REVIEW": 1,
+    "VERIFIED": 0,
+}
+
+
 class NinaIgorChain:
     """Terminal decision boundary: NINA proposes, IGOR verifies, human confirms."""
+
+    @staticmethod
+    def derive_status(statuses: dict[str, str]) -> str:
+        if set(statuses) != set(STATUS_FIELDS):
+            return "BLOCK"
+        values = tuple(statuses[field] for field in STATUS_FIELDS)
+        if any(value not in STATUS_VALUES for value in values):
+            return "BLOCK"
+        if all(value == "VERIFIED" for value in values):
+            return "VERIFIED"
+        return max(values, key=lambda value: _STATUS_PRECEDENCE[value])
 
     @staticmethod
     def finalize(nina_status: str, igor_status: str, review: ReviewDecision):

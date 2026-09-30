@@ -6,7 +6,7 @@ def test_unknown_never_becomes_verified():
         nina_status="VERIFIED",
         igor_status="UNKNOWN",
         evidence_count=6,
-        replay_status="PASS",
+        replay_status="VERIFIED",
         human_approved=True,
     )
     assert result.status == "BLOCK"
@@ -23,7 +23,7 @@ def test_policy_requires_replay():
     assert result.status == "BLOCK"
 
 
-def test_verified_requires_explicit_human_approval():
+def test_policy_candidate_is_verified_independently_of_human_gate():
     result = evaluate_policy(
         nina_status="VERIFIED",
         igor_status="VERIFIED",
@@ -31,7 +31,7 @@ def test_verified_requires_explicit_human_approval():
         replay_status="PASS",
         human_approved=False,
     )
-    assert result.status == "REVIEW"
+    assert result.status == "VERIFIED"
 
 
 def test_report_is_sealed_with_sha256():
@@ -41,7 +41,7 @@ def test_report_is_sealed_with_sha256():
         task="Calculate 17 * 23",
         nina={"status": "VERIFIED"},
         igor={"status": "VERIFIED"},
-        replay={"status": "PASS"},
+        replay={"status": "VERIFIED"},
         human_gate={"status": "BLOCK"},
         evidence_ids=["e1", "e2"],
         human_approved=False,
@@ -49,5 +49,5 @@ def test_report_is_sealed_with_sha256():
         human_reason="pending owner review",
     )
     assert report["schema"] == "ola.decision-report.v1"
-    assert report["policy"]["status"] == "REVIEW"
+    assert report["policy"]["status"] == "VERIFIED"
     assert len(report["report_sha256"]) == 64

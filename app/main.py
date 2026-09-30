@@ -26,7 +26,7 @@ Base.metadata.create_all(bind=engine)
 install_append_only_triggers()
 
 
-def tenant_from_key(raw_key):
+def identity_from_key(raw_key):
     if not raw_key:
         raise HTTPException(status_code=401, detail="missing API key")
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
@@ -34,7 +34,21 @@ def tenant_from_key(raw_key):
         key = db.scalar(select(ApiKey).where(ApiKey.key_hash == key_hash))
         if key is None:
             raise HTTPException(status_code=401, detail="invalid API key")
-        return key.tenant_id
+        return key.tenant_id, key.id
+
+
+def tenant_from_key(raw_key):
+    tenant_id, _ = identity_from_key(raw_key)
+    return tenant_id
+
+
+def bearer_identity(authorization):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    token = authorization[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    return identity_from_key(token)
 
 
 def append_record(tenant_id, record_type, payload):
@@ -242,7 +256,7 @@ def create_agent_run(body: dict, x_api_key: str | None = Header(default=None)):
 
 @app.post("/nina-run")
 def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
-    tenant_id = tenant_from_key(x_api_key)
+    tenant_id, requester_id = identity_from_key(x_api_key)
     task_text = body.get("task")
     if not task_text:
         raise HTTPException(status_code=400, detail="task is required")
@@ -286,6 +300,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
             "invocation_type": invocation_type,
             "llm_invocations": len(execution),
             "response_ids": response_ids,
+            "requester_id": requester_id,
         },
     )
 
@@ -339,9 +354,9 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
     )
 
     review = ReviewDecision(
-        bool(body.get("human_approved", False)),
-        str(body.get("human_actor", "")),
-        str(body.get("human_reason", "")),
+        False,
+        "pending-human-approval",
+        "human approval required before promotion",
     )
     terminal = NinaIgorChain.finalize(runtime.get("status", "UNKNOWN"), igor.status, review)
     nina_summary = {
@@ -384,9 +399,38 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         human_actor=review.actor,
         human_reason=review.reason,
     )
+
+    replay_integrity_status = (
+        "VERIFIED"
+        if replay_verification["status"] == "VERIFIED"
+        else replay_verification["status"]
+    )
+    status_fields = {
+        "RUNTIME": nina_summary["status"],
+        "EVIDENCE": provenance["status"],
+        "REPLAY_INTEGRITY": replay_integrity_status,
+        "POLICY": report["policy"]["status"],
+        "HUMAN_GATE": "REVIEW",
+    }
+    execution_allowed_status = NinaIgorChain.derive_status(status_fields)
+    status_fields["EXECUTION_ALLOWED"] = execution_allowed_status
+    derived_status = execution_allowed_status
+    candidate_record = append_record(
+        tenant_id,
+        "decision.candidate",
+        {
+            "run_id": run_id,
+            "requester_id": requester_id,
+            "status_fields": status_fields,
+            "candidate_status": derived_status,
+        },
+    )
+    tip_hash = candidate_record["record_hash"]
+
     return {
         "task_id": nina_task.task_id,
         "run_id": run_id,
+        "tip_hash": tip_hash,
         "nina": nina_summary,
         "igor": igor_summary,
         "provenance": provenance,
@@ -394,9 +438,84 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         "replay_verification": replay_verification,
         "human_gate": terminal,
         "policy": report["policy"],
+        "status_fields": status_fields,
         "decision_report": report,
-        "status": terminal["status"],
+        "status": derived_status,
     }
+
+@app.post("/nina-run/{run_id}/approve")
+def approve_nina_run(
+    run_id: str,
+    body: dict,
+    authorization: str | None = Header(default=None),
+):
+    approver_tenant_id, approver_id = bearer_identity(authorization)
+    tip_hash = body.get("tip_hash")
+    if not isinstance(tip_hash, str) or not tip_hash:
+        raise HTTPException(status_code=400, detail="tip_hash is required")
+
+    with SessionLocal() as db:
+        rows = db.scalars(
+            select(EvidenceRecord)
+            .where(EvidenceRecord.tenant_id == approver_tenant_id)
+            .order_by(EvidenceRecord.seq.asc())
+        ).all()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="run evidence not found")
+    if rows[-1].record_hash != tip_hash:
+        raise HTTPException(status_code=409, detail="tip_hash is stale or does not match current chain tip")
+
+    candidate = None
+    for row in rows:
+        if row.record_type != "decision.candidate":
+            continue
+        try:
+            payload = json.loads(row.payload_json)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("run_id") == run_id:
+            candidate = payload
+            break
+
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="decision candidate not found")
+    requester_id = candidate.get("requester_id")
+    if not requester_id:
+        raise HTTPException(status_code=409, detail="requester identity missing from decision candidate")
+    if approver_id == requester_id:
+        raise HTTPException(status_code=403, detail="approver must differ from requester")
+
+    candidate_fields = candidate.get("status_fields")
+    if not isinstance(candidate_fields, dict):
+        raise HTTPException(status_code=409, detail="decision candidate status fields are invalid")
+    approved_fields = dict(candidate_fields)
+    approved_fields["HUMAN_GATE"] = "VERIFIED"
+    if NinaIgorChain.derive_status(approved_fields) != "VERIFIED":
+        raise HTTPException(status_code=409, detail="candidate is not eligible for human approval")
+
+    record = append_record(
+        approver_tenant_id,
+        "human.approval",
+        {
+            "run_id": run_id,
+            "tip_hash": tip_hash,
+            "requester_id": requester_id,
+            "approver_id": approver_id,
+            "reason": str(body.get("reason", "")),
+            "status": "VERIFIED",
+        },
+    )
+    return {
+        "status": "VERIFIED",
+        "run_id": run_id,
+        "tip_hash": record["record_hash"],
+        "approved_tip_hash": tip_hash,
+        "record_id": record["id"],
+        "record_type": "human.approval",
+        "approver_id": approver_id,
+    }
+
 
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request, stripe_signature: str | None = Header(default=None)):
