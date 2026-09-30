@@ -402,7 +402,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
 
     replay_integrity_status = (
         "VERIFIED"
-        if replay_verification["status"] == "PASS"
+        if replay_verification["status"] == "VERIFIED"
         else replay_verification["status"]
     )
     status_fields = {
