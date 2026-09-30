@@ -182,6 +182,22 @@ jobs:
             ollama-runtime-proof.json
             ola-ollama-runtime.log
 
+      - name: Capture OLA logs on runtime failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          docker logs ola-ollama-e2e > ola-ollama-runtime-failure.log 2>&1
+          cat ola-ollama-runtime-failure.log
+
+      - name: Upload OLA failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ollama-real-llm-failure-${{ github.sha }}
+          path: |
+            ola-ollama-runtime-failure.log
+
       - name: Stop OLA
         if: always()
         run: docker rm --force ola-ollama-e2e >/dev/null 2>&1 || true
