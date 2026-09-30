@@ -74,7 +74,7 @@ def test_replay_requires_expected_tip_hash():
 
 def test_replay_regression_checks_record_type_and_status():
     rows = _chain(count=2)
-    rows[1]["record_type"] = "not-an-agent-record"
+    rows[1]["record_type"] = "agent.tampered"
     result = verify_replay(
         rows,
         expected_run_id="r1",
