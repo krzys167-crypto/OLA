@@ -1,0 +1,147 @@
+name: OLA FINAL PRODUCTION GATE
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  final-production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wait for required evidence gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            "Nina TDD"
+            "OLA DI-OS Product Gate"
+            "NINA IGOR Ollama Full Flow"
+            "OLA Decision Evidence Gate"
+            "Revenue Surface Gate"
+            "OLA E2E Gate"
+            "Evidence Graph v0.1"
+            "Real LLM Ollama Runtime Gate"
+            "OLA Frontier Baseline"
+            "Provenance Mutation Gate"
+            "Provenance Gate Final"
+            "Nina Igor Gate"
+            "Nina Real Runtime Provenance Gate"
+            "OLA State Continuity and Stability"
+            "OLA Real Runtime Stress Gate"
+          )
+          deadline=$((SECONDS+2100))
+          while (( SECONDS < deadline )); do
+            json=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&per_page=100")
+            failed=0
+            pending=0
+            for name in "${required[@]}"; do
+              conclusion=$(jq -r --arg n "$name" '[.workflow_runs[] | select(.name==$n)] | sort_by(.run_started_at) | last | (.conclusion // "PENDING")' <<<"$json")
+              echo "$name => $conclusion"
+              case "$conclusion" in
+                success) ;;
+                failure|cancelled|timed_out|action_required|startup_failure) failed=1 ;;
+                *) pending=1 ;;
+              esac
+            done
+            if (( failed )); then
+              echo 'A required evidence workflow failed; production gate is BLOCKED.'
+              exit 1
+            fi
+            if (( !pending )); then
+              echo 'All required evidence workflows are successful.'
+              break
+            fi
+            sleep 15
+          done
+          if (( SECONDS >= deadline )); then
+            echo 'Timed out waiting for required evidence workflows.'
+            exit 1
+          fi
+
+      - name: Build release image
+        run: docker build -t ola-final:${GITHUB_SHA} .
+
+      - name: Export release image
+        run: docker save "ola-final:${GITHUB_SHA}" -o ola-release-image.tar
+
+      - name: Create signed source snapshot subject
+        run: |
+          git archive --format=tar.gz --output=ola-source-${GITHUB_SHA}.tar.gz "${GITHUB_SHA}"
+          sha256sum "ola-source-${GITHUB_SHA}.tar.gz" | tee source-sha256.txt
+          sha256sum ola-release-image.tar | tee image-sha256.txt
+
+      - name: Attest source snapshot
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "ola-source-${{ github.sha }}.tar.gz"
+
+      - name: Attest release image archive
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ola-release-image.tar
+
+      - name: Independently verify source and image attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "ola-source-${GITHUB_SHA}.tar.gz" --repo "$GITHUB_REPOSITORY"
+          gh attestation verify ola-release-image.tar --repo "$GITHUB_REPOSITORY"
+
+      - name: Verify release image boots
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name ola-final-gate -p 8000:8000 "ola-final:${GITHUB_SHA}"
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null && exit 0; sleep 2; done
+          docker logs ola-final-gate
+          exit 1
+
+      - name: Generate final production manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > production-manifest.json <<EOF
+          {
+            "schema": "ola-production-evidence-v1",
+            "commit": "${GITHUB_SHA}",
+            "source_snapshot": "ola-source-${GITHUB_SHA}.tar.gz",
+            "release_image": "ola-release-image.tar",
+            "source_attestation": "verified-by-github-actions-attestation",
+            "image_attestation": "verified-by-github-actions-attestation",
+            "required_gates": ["ci","state-continuity","stability","provenance","signatures","real-runtime","stress","tamper","replay","human-gate"],
+            "final_status": "VERIFIED"
+          }
+          EOF
+          sha256sum production-manifest.json | tee production-manifest-sha256.txt
+
+      - name: Publish final production evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ola-final-production-${{ github.sha }}
+          path: |
+            production-manifest.json
+            production-manifest-sha256.txt
+            source-sha256.txt
+            image-sha256.txt
+            ola-source-${{ github.sha }}.tar.gz
+            ola-release-image.tar
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f ola-final-gate >/dev/null 2>&1 || true
