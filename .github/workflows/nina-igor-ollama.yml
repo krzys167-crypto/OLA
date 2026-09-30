@@ -19,6 +19,18 @@ env:
   OLA_LLM_TIMEOUT: "60"
 
 jobs:
+  pr2-focused-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install test dependencies
+        run: pip install -r requirements.txt
+      - name: Run PR-2 focused tests
+        run: pytest -q tests/test_nina_igor_chain.py tests/test_nina_run_endpoint_contract.py
+
   nina-igor-ollama-full-flow:
     runs-on: ubuntu-latest
     steps:
@@ -133,10 +145,13 @@ jobs:
           assert len(body["replay"])==7, body
           assert body["policy"]["status"]=="REVIEW", body
           assert body["human_gate"]["status"]=="REVIEW", body
+          assert body["status_fields"]["HUMAN_GATE"]=="REVIEW", body
+          assert body["status_fields"]["EXECUTION_ALLOWED"]=="REVIEW", body
           assert body["status"]=="REVIEW", body
 
           proof={
               "status":body["status"],
+              "status_fields":body["status_fields"],
               "flow":["NINA","REAL_OLLAMA_LLM","IGOR","PROVENANCE","REPLAY","HUMAN_GATE"],
               "provider":body["provenance"]["provider"],
               "model":body["provenance"]["model"],
