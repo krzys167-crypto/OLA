@@ -104,13 +104,7 @@ def verify_replay(
                 "event_count": len(records),
             }
 
-        if payload.get("run_id") == expected_run_id:
-            if not record["record_type"].startswith("agent."):
-                return {
-                    "status": "BLOCK",
-                    "reason": "run record type mismatch",
-                    "event_count": len(records),
-                }
+        if payload.get("run_id") == expected_run_id and record["record_type"].startswith("agent."):
             if payload.get("status") != "VERIFIED":
                 return {
                     "status": "BLOCK",
@@ -140,7 +134,11 @@ def verify_replay(
             payload = json.loads(record["payload_json"])
         except json.JSONDecodeError:
             continue
-        if isinstance(payload, dict) and payload.get("run_id") == expected_run_id:
+        if (
+            isinstance(payload, dict)
+            and payload.get("run_id") == expected_run_id
+            and record.get("record_type", "").startswith("agent.")
+        ):
             run_record_count += 1
 
     if run_record_count == 0:
