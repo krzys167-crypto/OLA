@@ -20,26 +20,26 @@ jobs:
           set -euo pipefail
           docker volume create ola-state-data
           docker run -d --name ola-state --mount source=ola-state-data,target=/data -p 8000:8000 ola-state-continuity
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null && exit 0; sleep 2; done
+          for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:8000/health >/dev/null; then exit 0; fi; sleep 2; done
           docker logs ola-state
           exit 1
       - name: Create tenant and key
         shell: bash
         run: |
           set -euo pipefail
-          docker exec ola-state python - <<'PY'
-          import hashlib, sqlite3, uuid
-          db=sqlite3.connect('/data/ola.db')
-          tenant=str(uuid.uuid4())
+          tenant=$(docker exec ola-state python -c 'import uuid; print(uuid.uuid4())')
+          docker exec ola-state python - "$tenant" <<'PY'
+          import hashlib, sqlite3, sys, uuid
+          tenant=sys.argv[1]
           key='state-continuity-ci-key'
+          db=sqlite3.connect('/data/ola.db')
           db.execute('INSERT INTO tenants(id,name) VALUES (?,?)',(tenant,'state-continuity'))
           db.execute('INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)',(str(uuid.uuid4()),tenant,hashlib.sha256(key.encode()).hexdigest()))
           db.commit(); db.close()
-          open('/tmp/tenant','w').write(tenant)
           PY
-          docker cp ola-state:/tmp/tenant tenant-id
           echo "OLA_TEST_KEY=state-continuity-ci-key" >> "$GITHUB_ENV"
-          echo "OLA_TEST_TENANT=$(cat tenant-id)" >> "$GITHUB_ENV"
+          echo "OLA_TEST_TENANT=$tenant" >> "$GITHUB_ENV"
+          printf '%s\n' "$tenant" > tenant-id
       - name: First real execution and checkpoint
         shell: bash
         run: |
@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           docker rm -f ola-state
           docker run -d --name ola-state --mount source=ola-state-data,target=/data -p 8000:8000 ola-state-continuity
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null && break; sleep 2; done
+          for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:8000/health >/dev/null; then break; fi; sleep 2; done
           docker exec ola-state python - "$OLA_TEST_TENANT" "$(python -c 'import json; print(json.load(open("checkpoint.json"))["count"])')" "$(python -c 'import json; print(json.load(open("checkpoint.json"))["tip_hash"])')" <<'PY'
           import sys
           from app.hashchain import verify_chain
@@ -102,7 +102,6 @@ jobs:
               ok,reason=verify_chain(chain); assert ok,reason
           PY
       - name: Stable health window
-        shell: bash
         run: |
           set -euo pipefail
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null; sleep 1; done
