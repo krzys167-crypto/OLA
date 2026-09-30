@@ -27,10 +27,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker exec ola-state python scripts/state_continuity_runtime.py > first.json
+          docker exec ola-state env PYTHONPATH=/app python scripts/state_continuity_runtime.py > first.json
           tenant=$(python -c 'import json; print(json.load(open("first.json"))["tenant_id"])')
           echo "OLA_TEST_TENANT=$tenant" >> "$GITHUB_ENV"
-          docker exec ola-state python scripts/state_continuity_runtime.py --tenant "$tenant" --inspect > checkpoint.json
+          docker exec ola-state env PYTHONPATH=/app python scripts/state_continuity_runtime.py --tenant "$tenant" --inspect > checkpoint.json
           python - <<'PY'
           import json
           first=json.load(open('first.json'))
@@ -48,7 +48,7 @@ jobs:
           docker rm -f ola-state
           docker run -d --name ola-state --mount source=ola-state-data,target=/data -p 8000:8000 ola-state-continuity
           for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:8000/health >/dev/null; then break; fi; sleep 2; done
-          docker exec ola-state python scripts/state_continuity_runtime.py --tenant "$OLA_TEST_TENANT" --inspect > restored-checkpoint.json
+          docker exec ola-state env PYTHONPATH=/app python scripts/state_continuity_runtime.py --tenant "$OLA_TEST_TENANT" --inspect > restored-checkpoint.json
           python - <<'PY'
           import json
           before=json.load(open('checkpoint.json'))
@@ -63,8 +63,8 @@ jobs:
         run: |
           set -euo pipefail
           before=$(python -c 'import json; print(json.load(open("checkpoint.json"))["count"])')
-          docker exec ola-state python scripts/state_continuity_runtime.py --tenant "$OLA_TEST_TENANT" --task 'Calculate 19 * 23 and return the verified result.' > second.json
-          docker exec ola-state python scripts/state_continuity_runtime.py --tenant "$OLA_TEST_TENANT" --inspect > final-checkpoint.json
+          docker exec ola-state env PYTHONPATH=/app python scripts/state_continuity_runtime.py --tenant "$OLA_TEST_TENANT" --task 'Calculate 19 * 23 and return the verified result.' > second.json
+          docker exec ola-state env PYTHONPATH=/app python scripts/state_continuity_runtime.py --tenant "$OLA_TEST_TENANT" --inspect > final-checkpoint.json
           python - "$before" <<'PY'
           import json,sys
           before=int(sys.argv[1])
