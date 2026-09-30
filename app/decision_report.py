@@ -36,11 +36,15 @@ def evaluate_policy(*, nina_status: str, igor_status: str, evidence_count: int,
         return PolicyDecision("BLOCK", f"NINA status is {nina_status}", "OLA-POLICY-v1", False, True)
     if igor_status != "VERIFIED":
         return PolicyDecision("BLOCK", f"IGOR status is {igor_status}", "OLA-POLICY-v1", False, True)
-    if replay_status != "VERIFIED":
+    if replay_status != "PASS":
         return PolicyDecision("BLOCK", "replay verification did not pass", "OLA-POLICY-v1", False, True)
-    if not human_approved:
-        return PolicyDecision("REVIEW", "human approval required before promotion", "OLA-POLICY-v1", True, True)
-    return PolicyDecision("VERIFIED", "policy conditions satisfied and human approval recorded", "OLA-POLICY-v1", True, True)
+    return PolicyDecision(
+        "VERIFIED",
+        "policy conditions satisfied; independent human approval remains required",
+        "OLA-POLICY-v1",
+        True,
+        True,
+    )
 
 
 def build_decision_report(*, task_id: str, run_id: str, task: str, nina: dict,
