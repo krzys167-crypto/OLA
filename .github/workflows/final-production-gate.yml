@@ -1,7 +1,9 @@
 name: OLA FINAL PRODUCTION GATE
 
 on:
-  pull_request:
+  push:
+    branches:
+      - feat/final-production-gate-20260930
   workflow_dispatch:
 
 permissions:
