@@ -105,6 +105,12 @@ def verify_replay(
             }
 
         if payload.get("run_id") == expected_run_id and record["record_type"].startswith("agent."):
+            if record["record_type"] != f"agent.{payload.get('agent', '')}":
+                return {
+                    "status": "BLOCK",
+                    "reason": "run record type mismatch",
+                    "event_count": len(records),
+                }
             if payload.get("status") != "VERIFIED":
                 return {
                     "status": "BLOCK",
