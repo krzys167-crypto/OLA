@@ -77,7 +77,7 @@ jobs:
       - name: Export release image
         run: docker save "ola-final:${GITHUB_SHA}" -o ola-release-image.tar
 
-      - name: Create signed source snapshot subject
+      - name: Create source snapshot subjects
         run: |
           git archive --format=tar.gz --output=ola-source-${GITHUB_SHA}.tar.gz "${GITHUB_SHA}"
           sha256sum "ola-source-${GITHUB_SHA}.tar.gz" | tee source-sha256.txt
@@ -115,6 +115,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          status="BLOCKED"
+          if [ "${{ job.status }}" = "success" ]; then status="VERIFIED"; fi
           cat > production-manifest.json <<EOF
           {
             "schema": "ola-production-evidence-v1",
@@ -124,7 +126,7 @@ jobs:
             "source_attestation": "verified-by-github-actions-attestation",
             "image_attestation": "verified-by-github-actions-attestation",
             "required_gates": ["ci","state-continuity","stability","provenance","signatures","real-runtime","stress","tamper","replay","human-gate"],
-            "final_status": "VERIFIED"
+            "final_status": "${status}"
           }
           EOF
           sha256sum production-manifest.json | tee production-manifest-sha256.txt
