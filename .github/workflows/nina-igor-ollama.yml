@@ -143,7 +143,7 @@ jobs:
           assert body["replay_verification"]["status"]=="VERIFIED", body
           assert body["replay_verification"]["event_count"]==7, body
           assert len(body["replay"])==7, body
-          assert body["policy"]["status"]=="REVIEW", body
+          assert body["policy"]["status"]=="VERIFIED", body
           assert body["human_gate"]["status"]=="REVIEW", body
           assert body["status_fields"]["HUMAN_GATE"]=="REVIEW", body
           assert body["status_fields"]["EXECUTION_ALLOWED"]=="REVIEW", body
