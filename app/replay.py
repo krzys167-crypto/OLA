@@ -1,6 +1,6 @@
 import json
 
-from .hashchain import GENESIS_HASH, verify_chain
+from .hashchain import verify_chain
 
 
 def build_replay(records):
@@ -35,126 +35,56 @@ def build_replay(records):
     return replay
 
 
-def verify_replay(
-    records,
-    expected_run_id,
-    expected_tenant_id,
-    expected_record_count=None,
-    expected_tip_hash=None,
-):
+def verify_replay(records, expected_run_id, expected_tenant_id,
+                  expected_record_count=None, expected_tip_hash=None):
     if not records:
-        return {
-            "status": "UNKNOWN",
-            "reason": "replay is empty",
-            "event_count": 0,
-        }
+        return {"status": "UNKNOWN", "reason": "replay is empty", "event_count": 0}
 
     if expected_record_count is not None and len(records) != expected_record_count:
-        return {
-            "status": "BLOCK",
-            "reason": "record count mismatch",
-            "event_count": len(records),
-            "expected_record_count": expected_record_count,
-        }
+        return {"status": "BLOCK", "reason": "record count mismatch", "event_count": len(records),
+                "expected_record_count": expected_record_count}
 
     for record in records:
         if not isinstance(record, dict):
-            return {
-                "status": "BLOCK",
-                "reason": "record must be a dict",
-                "event_count": len(records),
-            }
+            return {"status": "BLOCK", "reason": "record must be a dict", "event_count": len(records)}
         required = {"tenant_id", "seq", "prev_hash", "record_hash", "record_type", "payload_json"}
         if not required.issubset(record):
-            return {
-                "status": "BLOCK",
-                "reason": "evidence record is incomplete",
-                "event_count": len(records),
-            }
+            return {"status": "BLOCK", "reason": "evidence record is incomplete", "event_count": len(records)}
         if record.get("tenant_id") != expected_tenant_id:
-            return {
-                "status": "BLOCK",
-                "reason": "tenant provenance mismatch",
-                "event_count": len(records),
-            }
+            return {"status": "BLOCK", "reason": "tenant provenance mismatch", "event_count": len(records)}
         if not isinstance(record.get("record_type"), str) or not record["record_type"]:
-            return {
-                "status": "BLOCK",
-                "reason": "record type is missing",
-                "event_count": len(records),
-            }
+            return {"status": "BLOCK", "reason": "record type is missing", "event_count": len(records)}
         if not isinstance(record.get("payload_json"), str):
-            return {
-                "status": "BLOCK",
-                "reason": "missing payload_json",
-                "event_count": len(records),
-            }
+            return {"status": "BLOCK", "reason": "missing payload_json", "event_count": len(records)}
         try:
             payload = json.loads(record["payload_json"])
         except json.JSONDecodeError:
-            return {
-                "status": "BLOCK",
-                "reason": "invalid payload_json",
-                "event_count": len(records),
-            }
+            return {"status": "BLOCK", "reason": "invalid payload_json", "event_count": len(records)}
         if not isinstance(payload, dict):
-            return {
-                "status": "BLOCK",
-                "reason": "payload must be a dict",
-                "event_count": len(records),
-            }
-
-        if payload.get("run_id") == expected_run_id and record["record_type"].startswith("agent."):
-            if record["record_type"] != f"agent.{payload.get('agent', '')}":
-                return {
-                    "status": "BLOCK",
-                    "reason": "run record type mismatch",
-                    "event_count": len(records),
-                }
-            if payload.get("status") != "VERIFIED":
-                return {
-                    "status": "BLOCK",
-                    "reason": "run record status mismatch",
-                    "event_count": len(records),
-                }
+            return {"status": "BLOCK", "reason": "payload must be a dict", "event_count": len(records)}
 
     chain_ok, reason = verify_chain(records)
     if not chain_ok:
-        return {
-            "status": "BLOCK",
-            "reason": reason,
-            "event_count": len(records),
-        }
+        return {"status": "BLOCK", "reason": reason, "event_count": len(records)}
 
     if expected_tip_hash is not None and records[-1].get("record_hash") != expected_tip_hash:
-        return {
-            "status": "BLOCK",
-            "reason": "tip hash mismatch",
-            "event_count": len(records),
-            "tip_hash": records[-1].get("record_hash"),
-        }
+        return {"status": "BLOCK", "reason": "tip hash mismatch", "event_count": len(records),
+                "tip_hash": records[-1].get("record_hash")}
 
     run_record_count = 0
     for record in records:
-        try:
-            payload = json.loads(record["payload_json"])
-        except json.JSONDecodeError:
-            continue
-        if (
-            isinstance(payload, dict)
-            and payload.get("run_id") == expected_run_id
-            and record.get("record_type", "").startswith("agent.")
-        ):
+        payload = json.loads(record["payload_json"])
+        if payload.get("run_id") == expected_run_id and record.get("record_type", "").startswith("agent."):
+            expected_type = f"agent.{payload.get('agent', '')}"
+            if payload.get("agent") is None or record["record_type"] != expected_type:
+                return {"status": "BLOCK", "reason": "run record type mismatch", "event_count": len(records)}
+            if payload.get("status") != "VERIFIED":
+                return {"status": "BLOCK", "reason": "run record status mismatch", "event_count": len(records)}
             run_record_count += 1
 
     if run_record_count == 0:
-        return {
-            "status": "BLOCK",
-            "reason": "run provenance mismatch",
-            "event_count": len(records),
-        }
+        return {"status": "BLOCK", "reason": "run provenance mismatch", "event_count": len(records)}
 
-    tip_hash = records[-1]["record_hash"]
     return {
         "status": "VERIFIED",
         "reason": "raw evidence records, provenance and hash chain verified",
@@ -164,5 +94,5 @@ def verify_replay(
         "tenant_id": expected_tenant_id,
         "first_seq": 0,
         "last_seq": records[-1]["seq"],
-        "tip_hash": tip_hash,
+        "tip_hash": records[-1]["record_hash"],
     }
