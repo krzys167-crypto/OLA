@@ -17,6 +17,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Resolve target source SHA
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${GITHUB_HEAD_REF:-}" ]; then
+            echo "sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
@@ -31,7 +42,7 @@ jobs:
           curl -fsSL \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&per_page=100" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${{ steps.target.outputs.sha }}&per_page=100" \
             > required-runs.json
           python - <<'PY'
           import json
@@ -70,24 +81,24 @@ jobs:
           PY
 
       - name: Build release image
-        run: docker build -t ola-final:${GITHUB_SHA} .
+        run: docker build -t ola-final:${{ steps.target.outputs.sha }} .
 
       - name: Export release image
-        run: docker save "ola-final:${GITHUB_SHA}" -o ola-release-image.tar
+        run: docker save "ola-final:${{ steps.target.outputs.sha }}" -o ola-release-image.tar
 
       - name: Create source snapshot subjects
         run: |
-          git archive --format=tar.gz --output=ola-source-${GITHUB_SHA}.tar.gz "${GITHUB_SHA}"
-          sha256sum "ola-source-${GITHUB_SHA}.tar.gz" | tee source-sha256.txt
+          git archive --format=tar.gz --output=ola-source-${{ steps.target.outputs.sha }}.tar.gz "${{ steps.target.outputs.sha }}"
+          sha256sum "ola-source-${{ steps.target.outputs.sha }}.tar.gz" | tee source-sha256.txt
           sha256sum ola-release-image.tar | tee image-sha256.txt
 
       - name: Attest source snapshot
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: "ola-source-${{ github.sha }}.tar.gz"
+          subject-path: "ola-source-${{ steps.target.outputs.sha }}.tar.gz"
 
       - name: Attest release image archive
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: ola-release-image.tar
 
@@ -96,14 +107,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh attestation verify "ola-source-${GITHUB_SHA}.tar.gz" --repo "$GITHUB_REPOSITORY"
+          gh attestation verify "ola-source-${{ steps.target.outputs.sha }}.tar.gz" --repo "$GITHUB_REPOSITORY"
           gh attestation verify ola-release-image.tar --repo "$GITHUB_REPOSITORY"
 
       - name: Verify release image boots
         shell: bash
         run: |
           set -euo pipefail
-          docker run -d --name ola-final-gate -p 8000:8000 "ola-final:${GITHUB_SHA}"
+          docker run -d --name ola-final-gate -p 8000:8000 "ola-final:${{ steps.target.outputs.sha }}"
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null && exit 0; sleep 2; done
           docker logs ola-final-gate
           exit 1
@@ -118,8 +129,8 @@ jobs:
           cat > production-manifest.json <<EOF
           {
             "schema": "ola-production-evidence-v1",
-            "commit": "${GITHUB_SHA}",
-            "source_snapshot": "ola-source-${GITHUB_SHA}.tar.gz",
+            "commit": "${{ steps.target.outputs.sha }}",
+            "source_snapshot": "ola-source-${{ steps.target.outputs.sha }}.tar.gz",
             "release_image": "ola-release-image.tar",
             "source_attestation": "verified-by-github-actions-attestation",
             "image_attestation": "verified-by-github-actions-attestation",
@@ -133,7 +144,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ola-final-production-${{ github.sha }}
+          name: ola-final-production-${{ steps.target.outputs.sha }}
           path: |
             required-runs.json
             production-manifest.json
