@@ -14,7 +14,7 @@ def test_nina_run_route_exists():
     assert "/nina-run" in routes
 
 
-def test_nina_run_executes_full_chain():
+def test_nina_run_executes_chain_but_does_not_self_approve():
     commit = "TEST_NINA_E2E_COMMIT"
     os.environ["OLA_RUNTIME_COMMIT"] = commit
 
@@ -52,8 +52,13 @@ def test_nina_run_executes_full_chain():
     assert body["provenance"]["status"] == "VERIFIED", body
     assert body["provenance"]["commit"] == commit, body
     assert body["provenance"]["invocation_type"] == "local_deterministic_model", body
-    assert body["replay_verification"]["status"] == "PASS", body
-    assert body["human_gate"]["status"] == "VERIFIED", body
-    assert body["status"] == "VERIFIED", body
-    assert body["replay_verification"]["status"] == "PASS", body
-    assert len(body["replay"]) == 6
+    assert body["replay_verification"]["status"] == "VERIFIED", body
+    # A caller-provided approval flag must not bypass the independent Human Gate.
+    assert body["decision_report"]["human_review"]["approved"] is False, body
+    assert body["decision_report"]["human_review"]["actor"] == "pending-human-approval", body
+    assert body["human_gate"]["status"] == "BLOCK", body
+    assert body["status_fields"]["HUMAN_GATE"] == "REVIEW", body
+    assert body["status_fields"]["EXECUTION_ALLOWED"] == "REVIEW", body
+    assert body["status"] == "REVIEW", body
+    assert body["replay_verification"]["status"] == "VERIFIED", body
+    assert len(body["replay"]) == 7

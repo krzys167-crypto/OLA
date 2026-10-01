@@ -1,0 +1,42 @@
+name: OLA Real Runtime Stress Gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build runtime image
+        run: docker build -t ola-stress .
+      - name: Start runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name ola-stress -p 8000:8000 ola-stress
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null && exit 0; sleep 2; done
+          docker logs ola-stress
+          exit 1
+      - name: Run concurrent SLI load
+        run: |
+          python scripts/stress_runtime.py | tee stress-summary.log
+      - name: Capture runtime evidence
+        if: always()
+        run: docker logs ola-stress > runtime-stress.log 2>&1 || true
+      - name: Publish stress evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ola-runtime-stress-${{ github.sha }}
+          path: |
+            stress-evidence.json
+            stress-summary.log
+            runtime-stress.log
+      - name: Stop runtime
+        if: always()
+        run: docker rm -f ola-stress >/dev/null 2>&1 || true

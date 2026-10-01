@@ -1,0 +1,93 @@
+name: OLA State Continuity and Stability
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  continuity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build runtime image
+        run: docker build -t ola-state-continuity .
+      - name: Start runtime with persistent volume
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker volume create ola-state-data
+          docker run -d --name ola-state --mount source=ola-state-data,target=/data -p 8000:8000 ola-state-continuity
+          for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:8000/health >/dev/null; then exit 0; fi; sleep 2; done
+          docker logs ola-state
+          exit 1
+      - name: First real application execution and checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec ola-state env PYTHONPATH=/app python scripts/state_continuity_runtime.py > first.json
+          tenant=$(python -c 'import json; print(json.load(open("first.json"))["tenant_id"])')
+          echo "OLA_TEST_TENANT=$tenant" >> "$GITHUB_ENV"
+          docker exec ola-state env PYTHONPATH=/app python scripts/state_continuity_runtime.py --tenant "$tenant" --inspect > checkpoint.json
+          python - <<'PY'
+          import json
+          first=json.load(open('first.json'))
+          checkpoint=json.load(open('checkpoint.json'))
+          assert first['result_status']=='VERIFIED', first
+          assert first['final_result']=='391', first
+          assert first['execution_count']==6, first
+          assert checkpoint['chain_status']=='VERIFIED', checkpoint
+          assert checkpoint['count']>0, checkpoint
+          PY
+      - name: Restart runtime and verify persisted checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker rm -f ola-state
+          docker run -d --name ola-state --mount source=ola-state-data,target=/data -p 8000:8000 ola-state-continuity
+          for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:8000/health >/dev/null; then break; fi; sleep 2; done
+          docker exec ola-state env PYTHONPATH=/app python scripts/state_continuity_runtime.py --tenant "$OLA_TEST_TENANT" --inspect > restored-checkpoint.json
+          python - <<'PY'
+          import json
+          before=json.load(open('checkpoint.json'))
+          after=json.load(open('restored-checkpoint.json'))
+          assert after['chain_status']=='VERIFIED', after
+          assert after['count']==before['count'], (before,after)
+          assert after['tip_hash']==before['tip_hash'], (before,after)
+          assert after['next_seq']==before['next_seq'], (before,after)
+          PY
+      - name: Second real application execution proves sequence continuity
+        shell: bash
+        run: |
+          set -euo pipefail
+          before=$(python -c 'import json; print(json.load(open("checkpoint.json"))["count"])')
+          docker exec ola-state env PYTHONPATH=/app python scripts/state_continuity_runtime.py --tenant "$OLA_TEST_TENANT" --task 'Calculate 19 * 23 and return the verified result.' > second.json
+          docker exec ola-state env PYTHONPATH=/app python scripts/state_continuity_runtime.py --tenant "$OLA_TEST_TENANT" --inspect > final-checkpoint.json
+          python - "$before" <<'PY'
+          import json,sys
+          before=int(sys.argv[1])
+          second=json.load(open('second.json'))
+          final=json.load(open('final-checkpoint.json'))
+          assert second['result_status']=='VERIFIED', second
+          assert second['final_result']=='437', second
+          assert final['chain_status']=='VERIFIED', final
+          assert final['count']>before, (before,final)
+          assert final['next_seq']==final['count']
+          PY
+      - name: Stable health window
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null; sleep 1; done
+      - name: Upload continuity evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ola-state-continuity-${{ github.sha }}
+          path: |
+            first.json
+            second.json
+            checkpoint.json
+            restored-checkpoint.json
+            final-checkpoint.json
