@@ -15,6 +15,11 @@ permissions:
 jobs:
   final-production:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
     timeout-minutes: 45
     steps:
       - name: Resolve target source SHA

@@ -6,6 +6,10 @@ on:
       - nina-igor-execution-chain
   pull_request:
 
+permissions:
+  contents: read
+
+
 jobs:
   test:
     runs-on: ubuntu-latest

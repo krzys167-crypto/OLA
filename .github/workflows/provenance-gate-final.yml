@@ -6,6 +6,10 @@ on:
     branches:
       - provenance-controlled-mutation
 
+permissions:
+  contents: read
+
+
 jobs:
   provenance-gate-final:
     runs-on: ubuntu-latest

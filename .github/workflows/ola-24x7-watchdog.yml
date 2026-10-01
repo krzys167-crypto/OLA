@@ -11,12 +11,14 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  actions: write
   contents: read
 
 jobs:
   watchdog:
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
     timeout-minutes: 8
     steps:
       - name: Checkout
