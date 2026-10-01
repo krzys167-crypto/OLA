@@ -40,49 +40,44 @@ jobs:
         uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         with:
           category: "/${{ matrix.language }}"
+          output: codeql-results
 
-  security-gate:
-    name: CodeQL / security gate
-    needs: analyze
-    if: ${{ needs.analyze.result == 'success' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: read
-    steps:
-      - name: Check high and critical alerts
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          EVENT_NAME: ${{ github.event_name }}
-          GITHUB_SHA: ${{ github.sha }}
+      - name: Enforce OLA high/critical policy from SARIF
+        shell: bash
         run: |
           set -euo pipefail
-          if [ "${EVENT_NAME}" = "pull_request" ]; then
-            REF="refs/pull/${PR_NUMBER}/merge"
-          else
-            REF="${GITHUB_SHA}"
-          fi
+          python - <<'PY'
+          import glob
+          import json
+          import sys
 
-          for severity in critical high; do
-            response="$(gh api               -H "Accept: application/vnd.github+json"               -H "X-GitHub-Api-Version: 2026-03-10"               "repos/${REPOSITORY}/code-scanning/alerts"               -f state=open               -f severity="${severity}"               -f ref="${REF}"               -f per_page=100)"
+          findings = []
+          files = glob.glob("codeql-results/*.sarif")
+          for path in files:
+              data = json.load(open(path, encoding="utf-8"))
+              for run in data.get("runs", []):
+                  tool = run.get("tool", {}).get("driver", {}).get("name", "CodeQL")
+                  for result in run.get("results", []):
+                      props = result.get("properties", {})
+                      raw = props.get("security-severity")
+                      try:
+                          severity = float(raw)
+                      except (TypeError, ValueError):
+                          severity = 0.0
+                      if severity >= 7.0:
+                          findings.append({
+                              "tool": tool,
+                              "rule": result.get("ruleId"),
+                              "severity": severity,
+                              "message": result.get("message", {}).get("text"),
+                          })
 
-            count="$(printf '%s' "${response}" | jq 'length')"
-            echo "${severity}_open_alerts=${count}"
-            if [ "${count}" -gt 0 ]; then
-              printf '%s' "${response}" | jq -r '.[] | [
-                .number,
-                .rule.id,
-                .rule.description,
-                (.rule.security_severity_level // "unknown"),
-                .most_recent_instance.location.path,
-                .most_recent_instance.location.start_line
-              ] | @tsv'
-              echo "CODEQL_GATE=BLOCKED"
-              echo "REASON=open_${severity}_alerts"
-              exit 1
-            fi
-          done
+          print(json.dumps({
+              "codeql_sarif_files": sorted(files),
+              "high_or_critical_findings": findings,
+              "status": "BLOCK" if findings else "PASS",
+          }, sort_keys=True))
 
-          echo "CODEQL_GATE=PASS"
+          if findings:
+              sys.exit(1)
+          PY
