@@ -12,7 +12,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt ./
-RUN python -m pip install --no-cache-dir --upgrade pip \
+RUN rm -rf /usr/local/lib/python3.13/site-packages/* \
+    && rm -f /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.13 \
+    && python -m ensurepip --upgrade \
+    && python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir --force-reinstall -r requirements.txt \
     && python -m pip check \
     && python -c "import msgpack, setuptools, urllib3, wheel; print('DEPENDENCY_VERSIONS', msgpack.__version__, setuptools.__version__, urllib3.__version__, wheel.__version__)"

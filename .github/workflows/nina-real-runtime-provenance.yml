@@ -12,6 +12,8 @@ permissions:
 jobs:
   runtime-proof:
     runs-on: ubuntu-latest
+    outputs:
+      evidence_created: ${{ steps.detect-credential.outputs.available }}
     environment:
       name: ci-openai
       deployment: false
@@ -32,14 +34,17 @@ jobs:
       - name: Assert exact SHA
         run: test "$(git rev-parse HEAD)" = "${EXPECTED_COMMIT}"
       - name: Detect real LLM credential
+        id: detect-credential
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
           if [ -n "$OPENAI_API_KEY" ]; then
             echo "REAL_OPENAI_CREDENTIAL=AVAILABLE"
+            echo "available=true" >> "$GITHUB_OUTPUT"
           else
             echo "REAL_OPENAI_CREDENTIAL=SKIPPED — Ollama is the AUTO provider"
+            echo "available=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Setup Python
@@ -187,7 +192,7 @@ jobs:
             provenance.sha256
 
   igor-independent:
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' && needs.runtime-proof.outputs.evidence_created == 'true' }}
     needs: runtime-proof
     uses: ./.github/workflows/igor-independent-evidence.yml
     with:
