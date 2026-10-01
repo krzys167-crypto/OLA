@@ -4,6 +4,9 @@ on:
     branches: [main, integration/full-ola-dios-product-gate]
   pull_request:
   workflow_dispatch:
+permissions:
+  contents: read
+
 jobs:
   product-gate:
     runs-on: ubuntu-latest

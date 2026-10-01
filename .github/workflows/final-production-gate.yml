@@ -6,11 +6,7 @@ on:
       - main
   workflow_dispatch:
 
-permissions:
-  contents: read
-  actions: read
-  id-token: write
-  attestations: write
+permissions: {}
 
 jobs:
   final-production:
