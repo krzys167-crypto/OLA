@@ -20,8 +20,9 @@ jobs:
       NINA_ARTIFACT_NAME: nina-real-runtime-proof-${{ github.event.workflow_run.head_sha }}
     steps:
       - name: Checkout exact source
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ env.SOURCE_COMMIT }}
 
@@ -29,7 +30,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "${SOURCE_COMMIT}"
 
       - name: Download NINA evidence artifact
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: ${{ env.NINA_ARTIFACT_NAME }}
           path: nina-evidence
@@ -179,7 +180,7 @@ jobs:
           sha256sum igor-evidence-bundle.tar.gz | tee igor-evidence-bundle.sha256
 
       - name: Generate IGOR evidence attestation
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.0.0
         with:
           subject-path: igor-evidence-bundle.tar.gz
 
@@ -196,7 +197,7 @@ jobs:
           echo "HUMAN_GATE=PENDING"
 
       - name: Upload IGOR evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: igor-independent-evidence-${{ env.SOURCE_COMMIT }}
           path: |

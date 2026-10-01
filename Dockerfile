@@ -1,5 +1,10 @@
 FROM python:3.13-slim
 
+# Apply current Debian security updates before the application is copied into the image.
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     OLA_EG_DB_PATH=/data/ola.db
