@@ -12,6 +12,9 @@ permissions:
 jobs:
   runtime-proof:
     runs-on: ubuntu-latest
+    environment:
+      name: ci-openai
+      deployment: false
     permissions:
       contents: read
     env:

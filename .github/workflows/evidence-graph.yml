@@ -5,6 +5,9 @@ on:
     branches: ["main", "feat/evidence-graph-v0.1"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   evidence-graph:
     runs-on: ubuntu-latest

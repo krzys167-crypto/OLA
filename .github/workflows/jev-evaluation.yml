@@ -3,9 +3,15 @@ name: Jev Decision Gate Evaluation
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   jev-evaluation:
     runs-on: ubuntu-latest
+    environment:
+      name: ci-openai
+      deployment: false
     permissions:
       contents: read
     env:

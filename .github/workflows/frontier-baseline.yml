@@ -6,6 +6,9 @@ on:
   # Baseline is intentionally measured from immutable reference 472eaf2, not PR code.
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   baseline:
     runs-on: ubuntu-latest
