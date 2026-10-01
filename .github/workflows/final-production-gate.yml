@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   id-token: write
   attestations: write
 
@@ -21,58 +22,52 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Wait for required evidence gates
+      - name: Verify required evidence gates
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          required=(
-            "Nina TDD"
-            "OLA DI-OS Product Gate"
-            "NINA IGOR Ollama Full Flow"
-            "OLA Decision Evidence Gate"
-            "Revenue Surface Gate"
-            "OLA E2E Gate"
-            "Evidence Graph v0.1"
-            "Real LLM Ollama Runtime Gate"
-            "OLA Frontier Baseline"
-            "Provenance Mutation Gate"
-            "Provenance Gate Final"
-            "Nina Igor Gate"
-            "Nina Real Runtime Provenance Gate (OpenAI optional)"
-            "OLA State Continuity and Stability"
-            "OLA Real Runtime Stress Gate"
-          )
-          deadline=$((SECONDS+2100))
-          while (( SECONDS < deadline )); do
-            json=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&per_page=100")
-            failed=0
-            pending=0
-            for name in "${required[@]}"; do
-              conclusion=$(jq -r --arg n "$name" '[.workflow_runs[] | select(.name==$n)] | sort_by(.run_started_at) | last | (.conclusion // "PENDING")' <<<"$json")
-              echo "$name => $conclusion"
-              case "$conclusion" in
-                success) ;;
-                failure|cancelled|timed_out|action_required|startup_failure) failed=1 ;;
-                *) pending=1 ;;
-              esac
-            done
-            if (( failed )); then
-              echo 'A required evidence workflow failed; production gate is BLOCKED.'
-              exit 1
-            fi
-            if (( !pending )); then
-              echo 'All required evidence workflows are successful.'
-              break
-            fi
-            sleep 15
-          done
-          if (( SECONDS >= deadline )); then
-            echo 'Timed out waiting for required evidence workflows.'
-            exit 1
-          fi
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&per_page=100" \
+            > required-runs.json
+          python - <<'PY'
+          import json
+          required = [
+              "Nina TDD",
+              "OLA DI-OS Product Gate",
+              "NINA IGOR Ollama Full Flow",
+              "OLA Decision Evidence Gate",
+              "Revenue Surface Gate",
+              "OLA E2E Gate",
+              "Evidence Graph v0.1",
+              "Real LLM Ollama Runtime Gate",
+              "OLA Frontier Baseline",
+              "Provenance Mutation Gate",
+              "Provenance Gate Final",
+              "Nina Igor Gate",
+              "Nina Real Runtime Provenance Gate (OpenAI optional)",
+              "OLA State Continuity and Stability",
+              "OLA Real Runtime Stress Gate",
+          ]
+          runs = {}
+          with open("required-runs.json", encoding="utf-8") as stream:
+              data = json.load(stream)
+          for run in data.get("workflow_runs", []):
+              name = run.get("name")
+              if name:
+                  runs[name] = run.get("conclusion") or run.get("status") or "UNKNOWN"
+          missing = [name for name in required if name not in runs]
+          failed = {name: runs[name] for name in required if name in runs and runs[name] != "success"}
+          print(json.dumps({"required": required, "observed": {name: runs.get(name, "MISSING") for name in required}}, indent=2, sort_keys=True))
+          if missing:
+              raise SystemExit("MISSING_REQUIRED_GATES=" + ",".join(missing))
+          if failed:
+              raise SystemExit("FAILED_REQUIRED_GATES=" + json.dumps(failed, sort_keys=True))
+          print("ALL_REQUIRED_EVIDENCE_GATES=SUCCESS")
+          PY
 
       - name: Build release image
         run: docker build -t ola-final:${GITHUB_SHA} .
@@ -140,6 +135,7 @@ jobs:
         with:
           name: ola-final-production-${{ github.sha }}
           path: |
+            required-runs.json
             production-manifest.json
             production-manifest-sha256.txt
             source-sha256.txt
