@@ -1,0 +1,190 @@
+name: OLA Supply Chain Evidence Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "37 3 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scorecard:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: OpenSSF Scorecard
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: scorecard-results.sarif
+          results_format: sarif
+          publish_results: true
+      - name: Upload Scorecard SARIF
+        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
+        with:
+          sarif_file: scorecard-results.sarif
+      - name: Upload Scorecard artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ola-scorecard-${{ github.sha }}
+          path: scorecard-results.sarif
+
+  zizmor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Audit GitHub Actions
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+          persona: auditor
+          min-severity: medium
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
+
+  security-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      attestations: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build immutable local image
+        env:
+          IMAGE: ola-supply-chain:${{ github.sha }}
+        run: docker build --pull --tag "$IMAGE" --file Dockerfile .
+
+      - name: Trivy filesystem and config report
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: "0"
+          ignore-unfixed: true
+
+      - name: Upload Trivy filesystem SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
+        with:
+          sarif_file: trivy-fs-results.sarif
+
+      - name: Trivy container report and blocking gate
+        env:
+          IMAGE: ola-supply-chain:${{ github.sha }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ola-supply-chain:${{ github.sha }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+          skip-setup-trivy: true
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ola-supply-chain:${{ github.sha }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: ola-sbom-${{ github.sha }}.spdx.json
+
+      - name: Save immutable image subject
+        run: docker save --output ola-image.tar ola-supply-chain:${{ github.sha }}
+
+      - name: Generate SLSA provenance attestation
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ola-image.tar
+
+      - name: Generate SBOM attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ola-image.tar
+          sbom-path: sbom.spdx.json
+
+      - name: Independently verify artifact attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify ola-image.tar -R "$GITHUB_REPOSITORY" --format json > attestation-verification.json
+          python - <<'PY'
+          import json
+          import sys
+
+          data=json.load(open("attestation-verification.json",encoding="utf-8"))
+          results=[]
+          for item in data:
+              vr=item.get("verificationResult", {})
+              statement=vr.get("statement", {})
+              results.append({
+                  "statement_type": statement.get("_type"),
+                  "predicate_type": statement.get("predicateType"),
+                  "subject": statement.get("subject"),
+              })
+
+          print(json.dumps({"verification":results},sort_keys=True))
+          if not results:
+              sys.exit("No verified attestation statement returned")
+          if not any(x.get("statement_type")=="https://in-toto.io/Statement/v1" for x in results):
+              sys.exit("IN_TOTO_STATEMENT_MISSING")
+          if not any(x.get("predicate_type")=="https://slsa.dev/provenance/v1" for x in results):
+              sys.exit("SLSA_PROVENANCE_MISSING")
+          PY
+          echo "SIGSTORE=VERIFIED"
+          echo "IN_TOTO=VERIFIED"
+          echo "SLSA_PROVENANCE=VERIFIED"
+
+      - name: Upload supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ola-supply-chain-evidence-${{ github.sha }}
+          path: |
+            trivy-fs-results.sarif
+            sbom.spdx.json
+            ola-image.tar
+            attestation-verification.json
+          retention-days: 30
