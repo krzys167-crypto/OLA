@@ -1,9 +1,16 @@
 name: IGOR Independent Evidence Gate
 
 on:
-  workflow_run:
-    workflows: ["Nina Real Runtime Provenance Gate"]
-    types: [completed]
+  workflow_call:
+    inputs:
+      source_commit:
+        required: true
+        type: string
+      nina_artifact_name:
+        required: true
+        type: string
+
+permissions: {}
 
 jobs:
   igor:
@@ -13,11 +20,11 @@ jobs:
       actions: read
       id-token: write
       attestations: write
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ inputs.source_commit != '' && inputs.nina_artifact_name != '' }}
     env:
-      SOURCE_COMMIT: ${{ github.event.workflow_run.head_sha }}
-      NINA_RUN_ID: ${{ github.event.workflow_run.id }}
-      NINA_ARTIFACT_NAME: nina-real-runtime-proof-${{ github.event.workflow_run.head_sha }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      NINA_RUN_ID: ${{ github.run_id }}
+      NINA_ARTIFACT_NAME: ${{ inputs.nina_artifact_name }}
     steps:
       - name: Checkout exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -180,7 +187,7 @@ jobs:
           sha256sum igor-evidence-bundle.tar.gz | tee igor-evidence-bundle.sha256
 
       - name: Generate IGOR evidence attestation
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.0.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: igor-evidence-bundle.tar.gz
 
