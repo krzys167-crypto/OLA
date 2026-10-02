@@ -31,7 +31,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-          ref: ${{ env.EXPECTED_COMMIT }}
+          ref: ${{ github.sha }}
       - name: Assert exact SHA
         run: test "$(git rev-parse HEAD)" = "${EXPECTED_COMMIT}"
       - name: Detect real LLM credential
@@ -184,7 +184,7 @@ jobs:
         if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nina-real-runtime-proof-${{ env.EXPECTED_COMMIT }}
+          name: nina-real-runtime-proof-${{ github.sha }}
           path: |
             runtime-proof.json
             runtime-proof.sha256
