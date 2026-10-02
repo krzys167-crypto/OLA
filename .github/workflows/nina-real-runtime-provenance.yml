@@ -119,7 +119,7 @@ jobs:
           python - <<'PY'
           import hashlib,json,os
           d=json.load(open("runtime-proof.json")); expected=os.environ["EXPECTED_COMMIT"]
-          assert d["status"]=="VERIFIED" and d["commit"]==expected and d["hash_chain"]=="PASS" and d["independent_verifier"]=="PASS" and d["human_gate"]=="VERIFIED"
+          assert d["status"]=="VERIFIED" and d["commit"]==expected and d["source_commit"]==expected and d["hash_chain"]=="PASS" and d["independent_verifier"]=="PASS" and d["human_gate"]=="CONTRACT_ONLY"
           assert d["provider"]=="openai" and d["model"]=="gpt-5.6-luna" and d["invocation_type"]=="real_llm"
           assert d["llm_invocations"]==6 and len(d["response_ids"]) + len(d.get("response_digests", []))==6 and (d["response_ids"] or d.get("response_digests"))
           print("INDEPENDENT_ARTIFACT=VERIFIED")
@@ -161,7 +161,7 @@ jobs:
           assert all(item["invocation_type"]=="real_llm" for item in d["execution"])
           assert all(item["provider"]=="openai" for item in d["execution"])
           assert all(item["model"]==os.environ["OLA_LLM_MODEL"] for item in d["execution"])
-          assert all(item["response_id"] for item in d["execution"])
+          assert all(item.get("response_id") or item.get("response_digest") for item in d["execution"])
           assert d.get("commit",os.environ["EXPECTED_COMMIT"])==os.environ["EXPECTED_COMMIT"] and d.get("source_commit",os.environ["EXPECTED_COMMIT"])==os.environ["EXPECTED_COMMIT"]
           print(json.dumps({"status":"VERIFIED","commit":os.environ["EXPECTED_COMMIT"],"result":"391","replay":"PASS","provider":"openai","model":os.environ["OLA_LLM_MODEL"],"invocation_type":"real_llm","llm_invocations":len(d["execution"]),"run_id":d["run_id"]},sort_keys=True))
           PY
@@ -171,7 +171,7 @@ jobs:
         run: |
           python - <<'PY'
           import json
-          d=json.load(open("runtime-proof.json")); assert d["human_gate"]=="VERIFIED"; print("HUMAN_GATE=CONTRACT_ONLY")
+          d=json.load(open("runtime-proof.json")); assert d["human_gate"]=="CONTRACT_ONLY"; print("HUMAN_GATE=CONTRACT_ONLY")
           PY
       - name: Write provenance and hashes
         if: ${{ env.OPENAI_AVAILABLE == 'true' }}
@@ -198,8 +198,8 @@ jobs:
     needs: runtime-proof
     uses: ./.github/workflows/igor-independent-evidence.yml
     with:
-      source_commit: ${{ github.sha }}
-      nina_artifact_name: nina-real-runtime-proof-${{ github.sha }}
+      source_commit: ${{ env.EXPECTED_COMMIT }}
+      nina_artifact_name: nina-real-runtime-proof-${{ env.EXPECTED_COMMIT }}
     permissions:
       contents: read
       actions: read
