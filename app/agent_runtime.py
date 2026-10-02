@@ -167,9 +167,11 @@ def _invoke_llm(agent, task, context):
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
-            "options": {"temperature": 0},
-            "format": "json" if agent == "codeact" else None,
+            "keep_alive": "10m",
+            "options": {"temperature": 0, "num_predict": 64},
         }
+        if agent == "codeact":
+            payload["format"] = "json"
         response = httpx.post(
             f"{base_url}/api/chat",
             headers={"Content-Type": "application/json"},
