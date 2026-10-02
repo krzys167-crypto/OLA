@@ -91,7 +91,7 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
         agent = payload.get("agent")
         required = {
             "capability", "tool", "tool_output", "result", "status",
-            "agent_instance_id", "execution_boundary", "context_digest",
+            "agent_instance_id", "execution_boundary", "source_commit", "context_digest",
             "invocation_type", "model", "provider",
         }
         if not required.issubset(payload):
@@ -102,13 +102,17 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
             return fail(f"unexpected capability for {agent}")
         if payload.get("execution_boundary") != "independent":
             return fail(f"non-independent execution boundary for {agent}")
+        if payload.get("source_commit") != expected_commit:
+            return fail(f"source commit mismatch for {agent}: expected {expected_commit!r}, got {payload.get('source_commit')!r}")
         invocation = {
             "provider": payload["provider"],
             "model": payload["model"],
             "invocation_type": payload["invocation_type"],
         }
-        if expected_invocation_type == "real_llm" and not payload.get("response_id"):
-            return fail(f"missing real LLM response id for {agent}")
+        if expected_invocation_type == "real_llm" and not (
+            payload.get("response_id") or payload.get("response_digest")
+        ):
+            return fail(f"missing real LLM response identity for {agent}")
         if invocation != expected_invocation:
             return fail(f"unexpected invocation metadata for {agent}")
         instance_ids.add(payload["agent_instance_id"])
@@ -118,6 +122,9 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
 
     if len(instance_ids) != len(ROLES):
         return fail("agent instance identities are not unique")
+    source_commits = {payload.get("source_commit") for payload in payloads}
+    if source_commits != {expected_commit}:
+        return fail(f"source commit set mismatch: expected {expected_commit!r}, got {sorted(source_commits)!r}")
     if len(context_digests) != len(ROLES):
         return fail("agent contexts are not unique")
 
@@ -138,6 +145,7 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
         "status": "VERIFIED",
         "run_id": run_id,
         "commit": expected_commit,
+        "source_commit_verified": True,
         "task": expected_task,
         "final_result": final_result,
         "agents": ROLES,
