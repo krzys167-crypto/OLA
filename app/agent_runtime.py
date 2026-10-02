@@ -100,10 +100,17 @@ def _invoke_llm(agent, task, context):
     provider = os.getenv("OLA_LLM_PROVIDER", "openai").strip().lower()
     mode = os.getenv("OLA_LLM_MODE", "deterministic")
     prompt = canonical_json({"agent": agent, "task": task, "context": context})
-    system_message = (
-        "You are one agent in OLA di-OS. Return concise JSON-compatible reasoning output. "
-        "Do not claim tools or evidence you did not actually use."
-    )
+    if agent == "codeact":
+        system_message = (
+            "You are the CodeAct agent in OLA di-OS. Return only JSON with "
+            '{"action":"safe_expression","result":"<verified arithmetic result>"} '
+            "and no markdown. Do not claim tools or evidence you did not actually use."
+        )
+    else:
+        system_message = (
+            "You are one agent in OLA di-OS. Return concise JSON-compatible reasoning output. "
+            "Do not claim tools or evidence you did not actually use."
+        )
     import httpx
 
     if provider == "openai":
@@ -256,6 +263,8 @@ def _execute_agent(agent, tenant_id, task, previous_output, execution):
         "invocation_type": model["invocation_type"],
         "prompt_digest": model["prompt_digest"],
         "response_id": model.get("response_id"),
+        "response_digest": model.get("response_digest"),
+        "response_id_source": model.get("response_id_source"),
     })
     return result
 
@@ -312,6 +321,7 @@ def run_agent_task(tenant_id, task):
     final_result = execution[-1].get("final_result") if execution else None
     result = {
         "run_id": run_id,
+        "source_commit": os.getenv("OLA_SOURCE_COMMIT", os.getenv("OLA_RUNTIME_COMMIT", "UNKNOWN")),
         "task": task,
         "final_result": final_result,
         "status": verification["status"],
@@ -409,7 +419,7 @@ def verify_agent_run(tenant_id, run_id):
     context_digests = set()
     for row in run_rows:
         payload = json.loads(row.payload_json)
-        required = {"capability", "tool", "tool_output", "result", "status", "agent_instance_id", "execution_boundary", "context_digest", "invocation_type", "model", "provider", "response_id"}
+        required = {"capability", "tool", "tool_output", "result", "status", "agent_instance_id", "execution_boundary", "source_commit", "context_digest", "invocation_type", "model", "provider", "response_id", "response_digest", "started_at", "ended_at"}
         if not required.issubset(payload):
             return {"status": "BLOCK", "reason": "agent execution evidence incomplete", "evidence_count": len(run_rows)}
         if payload["status"] != "VERIFIED":
@@ -418,10 +428,15 @@ def verify_agent_run(tenant_id, run_id):
             return {"status": "BLOCK", "reason": "agent execution boundary is not independent", "evidence_count": len(run_rows)}
         if payload["invocation_type"] == "real_llm" and not (payload.get("response_id") or payload.get("response_digest")):
             return {"status": "BLOCK", "reason": "real LLM response identity missing", "evidence_count": len(run_rows)}
+        if payload["invocation_type"] == "real_llm" and not (payload.get("response_id") or payload.get("response_digest")):
+            return {"status": "BLOCK", "reason": "real LLM response identity missing", "evidence_count": len(run_rows)}
         instance_ids.add(payload["agent_instance_id"])
         context_digests.add(payload["context_digest"])
     if len(instance_ids) != len(AGENT_ROLES) or len(context_digests) != len(AGENT_ROLES):
         return {"status": "BLOCK", "reason": "agent instances or contexts are not unique", "evidence_count": len(run_rows)}
+    source_commits = {json.loads(row.payload_json).get("source_commit") for row in run_rows}
+    if len(source_commits) != 1 or None in source_commits:
+        return {"status": "BLOCK", "reason": "source commit binding is missing or inconsistent", "evidence_count": len(run_rows)}
     source_commits = {json.loads(row.payload_json).get("source_commit") for row in run_rows}
     if len(source_commits) != 1 or None in source_commits:
         return {"status": "BLOCK", "reason": "source commit binding is missing or inconsistent", "evidence_count": len(run_rows)}
