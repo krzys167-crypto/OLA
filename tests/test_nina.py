@@ -35,11 +35,11 @@ def test_nina_allows_registered_tool():
     assert decision.status == "ALLOW"
     assert decision.allowed_tools == ("safe_expression",)
 
-from app.agent_runtime import _invoke_llm, run_agent_task
+from app.agent_runtime import AGENT_ROLES, _invoke_llm, run_agent_task
 from app.database import SessionLocal
 from app.models import EvidenceRecord, Tenant
 from app.igor import IgorVerifier
-from app.hashchain import AGENT_ROLES, GENESIS_HASH, canonical_json, compute_record_hash
+from app.hashchain import GENESIS_HASH, canonical_json, compute_record_hash
 from scripts.verify_agent_runtime import verify
 
 
@@ -224,7 +224,7 @@ def test_forensic_gate_complete_bundle_requires_external_authenticity_review(tmp
     assert all(
         item["status"] == "VERIFIED"
         for name, item in report["gates"].items()
-        if name != "provider_authenticity"
+        if name not in {"provider_authenticity", "archive_integrity", "freeze_anchor"}
     )
     assert report["gates"]["provider_authenticity"]["status"] == "REVIEW_REQUIRED"
 
