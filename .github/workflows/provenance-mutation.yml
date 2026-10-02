@@ -13,14 +13,18 @@ permissions:
 jobs:
   provenance-mutation:
     runs-on: ubuntu-latest
+    env:
+      TARGET_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ env.TARGET_COMMIT }}
+          fetch-depth: 0
 
       - name: Build deployment image
-        run: docker build --tag ola:${GITHUB_SHA} .
+        run: docker build --tag ola:${TARGET_COMMIT} .
 
       - name: Start deployment image with source provenance
         run: |
@@ -37,7 +41,7 @@ jobs:
 
       - name: Clean evidence must verify
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.TARGET_COMMIT }}
           EXPECTED_TASK: Calculate 17 * 23 and return the verified result.
           EXPECTED_RESULT: "391"
         run: |
@@ -72,7 +76,7 @@ jobs:
 
       - name: Evidence tamper must be rejected
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.TARGET_COMMIT }}
           EXPECTED_TASK: Calculate 17 * 23 and return the verified result.
           EXPECTED_RESULT: "391"
         run: |
@@ -170,10 +174,10 @@ jobs:
           import json, os
           context = {
               "schema": "ola-evidence-context-v1",
-              "source_commit": os.environ["GITHUB_SHA"],
+              "source_commit": os.environ["TARGET_COMMIT"],
               "github_run_id": int(os.environ["GITHUB_RUN_ID"]),
               "workflow": os.environ["GITHUB_WORKFLOW"],
-              "correlation_key": os.environ["GITHUB_SHA"],
+              "correlation_key": os.environ["TARGET_COMMIT"],
           }
           json.dump(context, open("provenance-context.json", "w", encoding="utf-8"), sort_keys=True, indent=2)
           PY
@@ -182,7 +186,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ola-provenance-evidence-${{ github.sha }}
+          name: ola-provenance-evidence-${{ env.TARGET_COMMIT }}
           path: provenance-context.json
       - name: Stop deployment image
         if: always()
