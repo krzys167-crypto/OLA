@@ -9,6 +9,9 @@ on:
     - cron: "17 4 * * 3"
   workflow_dispatch:
 
+env:
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
 permissions:
   contents: read
 
@@ -27,6 +30,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ env.SOURCE_SHA }}
         with:
           persist-credentials: false
 
