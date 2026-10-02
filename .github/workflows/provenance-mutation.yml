@@ -161,6 +161,29 @@ jobs:
           print("CONTROLLED_COMMIT_MUTATION=VERIFIED")
           PY
 
+      - name: Write and publish provenance correlation context
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          context = {
+              "schema": "ola-evidence-context-v1",
+              "source_commit": os.environ["GITHUB_SHA"],
+              "github_run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "correlation_key": os.environ["GITHUB_SHA"],
+          }
+          json.dump(context, open("provenance-context.json", "w", encoding="utf-8"), sort_keys=True, indent=2)
+          PY
+
+      - name: Publish provenance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ola-provenance-evidence-${{ github.sha }}
+          path: provenance-context.json
       - name: Stop deployment image
         if: always()
         run: docker stop ola-provenance || true
