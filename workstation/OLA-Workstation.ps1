@@ -92,8 +92,20 @@ Set-Location $RepoDir
 git fetch --depth 1 origin $SourceCommit | Out-Host
 git checkout --detach $SourceCommit | Out-Host
 $actual = (git rev-parse HEAD).Trim()
-if ($actual -ne $SourceCommit) { Write-Gate "SOURCE_PIN" "BLOCKED" "SHA mismatch"; exit 30 }
+if ($actual -ne $SourceCommit) { Write-Gate "SOURCE_PIN" "BLOCKED" "SHA mismatch" 30; exit 30 }
 Write-Gate "SOURCE_PIN" "VERIFIED" $actual
+try {
+    $commitApi = Invoke-RestMethod -Uri "https://api.github.com/repos/krzysztofcieciwa07-ship-it/OLA/commits/$SourceCommit" -Headers @{ Accept = "application/vnd.github+json" } -TimeoutSec 15
+    $commitApi | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $EvidenceDir "github-source-verification.json")
+    if ($commitApi.commit.verification.verified -ne $true) {
+        Write-Gate "SOURCE_SIGNATURE" "BLOCKED" ("GitHub reports verified=false reason=" + [string]$commitApi.commit.verification.reason) 31
+        exit 31
+    }
+    Write-Gate "SOURCE_SIGNATURE" "VERIFIED" "GitHub cryptographic verification=true"
+} catch {
+    Write-Gate "SOURCE_SIGNATURE" "BLOCKED" ("GitHub source verification failed: " + $_.Exception.Message) 31
+    exit 31
+}
 "repository=$RepoUrl" | Set-Content (Join-Path $EvidenceDir "source.txt")
 "commit=$actual" | Add-Content (Join-Path $EvidenceDir "source.txt")
 docker build --tag $Image $RepoDir | Tee-Object -FilePath (Join-Path $EvidenceDir "docker-build.log")
@@ -223,7 +235,9 @@ $GateResults["STABILITY"] = [ordered]@{
     prerequisites = $GateResults["PREREQUISITES"]
     ollama_pull = $GateResults["OLLAMA_PULL"]
     ollama_model_digest = $GateResults["OLLAMA_MODEL_DIGEST"]
+    ollama_model_registry_binding = $GateResults["OLLAMA_MODEL_REGISTRY_BINDING"]
     source_pin = $GateResults["SOURCE_PIN"]
+    source_signature = $GateResults["SOURCE_SIGNATURE"]
     image_build = $GateResults["IMAGE_BUILD"]
     image_digest = $GateResults["IMAGE_DIGEST"]
     pytest = $GateResults["PYTEST"]
@@ -244,9 +258,11 @@ $manifest = @{
     source_commit=$SourceCommit
     docker_image_id=$imageInspect[0].Id
     ollama_model_digest=[string]$modelEntry[0].digest
+    source_signature_status="VERIFIED"
     final_status="READY_FOR_EXTERNAL_REVIEW"
     gates=@{
         source_pin="VERIFIED"
+        source_signature="VERIFIED"
         image_build="VERIFIED"
         image_digest="VERIFIED"
         pytest="VERIFIED"
@@ -255,19 +271,32 @@ $manifest = @{
         independent_verify="VERIFIED"
         append_only_tamper="VERIFIED"
         stability="VERIFIED"
+        ollama_model_registry_binding=if ($GateResults["OLLAMA_MODEL_REGISTRY_BINDING"].status -eq "VERIFIED") { "VERIFIED" } else { "REVIEW_REQUIRED" }
         provider_authenticity="REVIEW_REQUIRED"
         physical_execution="CAPTURED"
         workstation_registration="CAPTURED"
     }
 }
 $manifest | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $EvidenceDir "MANIFEST.json")
+$manifestHash = (Get-FileHash (Join-Path $EvidenceDir "MANIFEST.json") -Algorithm SHA256).Hash.ToLowerInvariant()
+@{
+    schema = "ola-zbook-freeze-anchor/v1"
+    source_commit = $SourceCommit
+    registration_run_id = $RegistrationRunId
+    agent_run_id = $agentRunId
+    manifest_sha256 = $manifestHash
+    external_anchor = "PENDING_EXTERNAL_ATTESTATION"
+} | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "freeze-anchor.json")
+(Get-FileHash (Join-Path $EvidenceDir "freeze-anchor.json") -Algorithm SHA256).Hash.ToLowerInvariant() + "  freeze-anchor.json" | Set-Content (Join-Path $EvidenceDir "freeze-anchor.sha256")
+$freezeCheck = $GateResults["STABILITY"]
+Write-Gate "FREEZE_ANCHOR" "REVIEW_REQUIRED" "local freeze anchor captured; external attestation pending"
 Get-ChildItem $EvidenceDir -File |
-    Where-Object { $_.Name -ne "SHA256SUMS.txt" } |
+    Where-Object { $_.Name -ne "SHA256SUMS.txt" -and $_.Name -ne "freeze-anchor.json" -and $_.Name -ne "freeze-anchor.sha256" } |
     Sort-Object Name |
     ForEach-Object {
         $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
         "$hash  $($_.Name)"
     } |
     Set-Content (Join-Path $EvidenceDir "SHA256SUMS.txt")
-Write-Gate "WORKSTATION" "READY" "all local gates passed; external provider authenticity remains REVIEW_REQUIRED"
+Write-Gate "WORKSTATION" "READY" "all local gates passed; provider authenticity and external freeze remain REVIEW_REQUIRED"
 docker rm -f $Container | Out-Null
