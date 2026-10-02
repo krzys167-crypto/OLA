@@ -507,12 +507,14 @@ def main() -> int:
     parser.add_argument("--expected-source-sha", required=True)
     parser.add_argument("--zip")
     parser.add_argument("--zip-sha256")
+    parser.add_argument("--expected-nonce")
     parser.add_argument("--output")
     args = parser.parse_args()
 
     report = evaluate_forensic_bundle(
         args.bundle_dir,
         args.expected_source_sha,
+        expected_nonce=args.expected_nonce,
         zip_path=args.zip,
         zip_sha_path=args.zip_sha256,
     )
