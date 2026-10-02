@@ -282,11 +282,12 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
     runtime = nina.execute(nina_task)
     run_id = runtime["runtime"]["run_id"]
     execution = runtime["runtime"].get("execution", [])
-    runtime_commit = os.getenv("OLA_RUNTIME_COMMIT")
+    runtime_commit = os.getenv("OLA_SOURCE_COMMIT") or os.getenv("OLA_RUNTIME_COMMIT")
     provider = execution[0].get("provider") if execution else None
     model = execution[0].get("model") if execution else None
     invocation_type = execution[0].get("invocation_type") if execution else None
     response_ids = [item.get("response_id") for item in execution if item.get("response_id")]
+    response_digests = [item.get("response_digest") for item in execution if item.get("response_digest")]
     append_record(
         tenant_id,
         "provenance.runtime",
@@ -300,6 +301,8 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
             "invocation_type": invocation_type,
             "llm_invocations": len(execution),
             "response_ids": response_ids,
+            "response_digests": response_digests,
+            "source_commit": runtime_commit or "UNKNOWN",
             "requester_id": requester_id,
         },
     )
@@ -376,7 +379,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
             and invocation_type
             and (
                 invocation_type != "real_llm"
-                or len(response_ids) == len(execution)
+                or len(response_ids) + len(response_digests) >= len(execution)
             )
         ) else "BLOCK",
         "commit": runtime_commit or "UNKNOWN",
@@ -385,6 +388,8 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         "invocation_type": invocation_type,
         "llm_invocations": len(execution),
         "response_ids": response_ids,
+        "response_digests": response_digests,
+        "source_commit": runtime_commit or "UNKNOWN",
     }
     report = build_decision_report(
         task_id=nina_task.task_id,
