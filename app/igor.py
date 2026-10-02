@@ -58,10 +58,14 @@ class IgorVerifier:
         if not matching_task:
             return IgorVerification("BLOCK", "task mismatch", checks)
 
-        matching_result = bool(payloads) and all(
-            str(payload.get("result")) == str(expected_result)
-            or str(payload.get("tool_output")) == str(expected_result)
-            for payload in payloads
+        result_payloads = [
+            payload for payload in payloads
+            if payload.get("agent") in {"codeact", "multi_agent"}
+        ]
+        matching_result = (
+            len(result_payloads) == 2
+            and str(result_payloads[0].get("tool_output")) == str(expected_result)
+            and str(result_payloads[-1].get("final_result")) == str(expected_result)
         )
         checks["result"] = matching_result
         if not matching_result:
