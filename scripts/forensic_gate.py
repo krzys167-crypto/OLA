@@ -212,6 +212,47 @@ def _verify_provider_authenticity(bundle: Path) -> dict:
 
 OFFICIAL_QWEN25_05B_INSTRUCT_ID_PREFIX = "a8b0c5157701"
 
+def _verify_source_signature(bundle: Path, expected_source_sha: str) -> dict:
+    path = bundle / "github-source-verification.json"
+    if not path.exists():
+        return _gate("UNKNOWN", "GitHub source verification evidence missing")
+    data = _load_json(path)
+    verified = data.get("commit", {}).get("verification", {}).get("verified")
+    sha = data.get("sha")
+    if sha != expected_source_sha:
+        return _gate("BLOCKED", "GitHub source verification SHA mismatch", observed_sha=sha, expected=expected_source_sha)
+    if verified is not True:
+        return _gate(
+            "BLOCKED",
+            "exact source commit is not cryptographically verified by GitHub",
+            reason=data.get("commit", {}).get("verification", {}).get("reason"),
+        )
+    return _gate("VERIFIED", "GitHub independently reports cryptographically verified source commit", source_sha=expected_source_sha)
+
+
+def _verify_physical_workstation(bundle: Path, expected_source_sha: str) -> dict:
+    path = bundle / "workstation-registration.json"
+    if not path.exists():
+        return _gate("UNKNOWN", "physical workstation registration evidence missing")
+    data = _load_json(path)
+    if data.get("physical_execution") != "CAPTURED":
+        return _gate("UNKNOWN", "physical execution has not been marked CAPTURED")
+    if data.get("source_commit") != expected_source_sha:
+        return _gate("BLOCKED", "physical workstation source SHA mismatch", observed_sha=data.get("source_commit"), expected=expected_source_sha)
+    required = ["run_id", "agent_run_id", "hostname", "manufacturer", "model", "bios_serial_sha256"]
+    missing = [key for key in required if not data.get(key)]
+    if missing:
+        return _gate("BLOCKED", "physical workstation registration incomplete", missing=missing)
+    return _gate(
+        "VERIFIED",
+        "physical workstation registration is complete and source-bound",
+        hostname=data.get("hostname"),
+        model=data.get("model"),
+        run_id=data.get("run_id"),
+        agent_run_id=data.get("agent_run_id"),
+    )
+
+
 def _verify_image_and_model_digests(bundle: Path) -> dict:
     image = bundle / "docker-image.json"
     model = bundle / "ollama-model.json"
@@ -344,6 +385,7 @@ def evaluate_forensic_bundle(
             continue
 
     gates["source_binding"] = _verify_source_binding(bundle, expected_source_sha)
+    gates["source_signature"] = _verify_source_signature(bundle, expected_source_sha)
     gates["run_correlation"] = _verify_run_correlation(bundle)
     gates["runtime_execution"] = _verify_runtime_execution(bundle, expected_source_sha)
     gates["provider_trace_integrity"] = _verify_provider_trace(bundle)
@@ -351,6 +393,7 @@ def evaluate_forensic_bundle(
     gates["image_model_digests"] = _verify_image_and_model_digests(bundle)
     gates["timing"] = _verify_timing(bundle)
     gates["execution_integrity"] = _verify_execution_integrity(bundle)
+    gates["physical_workstation"] = _verify_physical_workstation(bundle, expected_source_sha)
     gates["freeze_anchor"] = _verify_freeze_anchor(bundle, expected_source_sha)
 
     verifier_path = bundle / "independent-verifier.json"
