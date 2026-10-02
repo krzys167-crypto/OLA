@@ -3,6 +3,7 @@ import hashlib
 import json
 import operator
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -21,6 +22,14 @@ AGENT_ROLES = [
     "self_reflection",
     "multi_agent",
 ]
+
+def _replay_nonce():
+    nonce = os.getenv("OLA_REPLAY_NONCE", "").strip().lower()
+    required = os.getenv("OLA_LLM_MODE", "deterministic") == "required"
+    if required and not re.fullmatch(r"[0-9a-f]{64}", nonce):
+        raise RuntimeError("OLA_REPLAY_NONCE must be a fresh 256-bit hexadecimal challenge")
+    return nonce or "NOT_REQUIRED"
+
 
 _SAFE_BINOPS = {
     ast.Add: operator.add,
@@ -269,7 +278,7 @@ def _execute_agent(agent, tenant_id, task, previous_output, execution):
     return result
 
 
-def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution):
+def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution, replay_nonce):
     agent_instance_id = str(uuid.uuid4())
     context = {
         "run_id": run_id,
@@ -287,6 +296,7 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
         "agent_instance_id": agent_instance_id,
         "execution_boundary": "independent",
         "source_commit": os.getenv("OLA_SOURCE_COMMIT", "UNKNOWN"),
+        "replay_nonce": replay_nonce,
         "context_digest": _digest(canonical_json(context)),
         "task": task,
         "input_digest": _digest(json.dumps(previous_output, sort_keys=True)),
@@ -309,11 +319,12 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
 
 def run_agent_task(tenant_id, task):
     run_id = str(uuid.uuid4())
+    replay_nonce = _replay_nonce()
     evidence_ids = []
     execution = []
     previous_output = {"task": task}
     for agent in AGENT_ROLES:
-        evidence_id, output = _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution)
+        evidence_id, output = _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution, replay_nonce)
         evidence_ids.append(evidence_id)
         execution.append(output)
         previous_output = output
@@ -322,6 +333,7 @@ def run_agent_task(tenant_id, task):
     result = {
         "run_id": run_id,
         "source_commit": os.getenv("OLA_SOURCE_COMMIT", os.getenv("OLA_RUNTIME_COMMIT", "UNKNOWN")),
+        "replay_nonce": replay_nonce,
         "task": task,
         "final_result": final_result,
         "status": verification["status"],
@@ -419,7 +431,7 @@ def verify_agent_run(tenant_id, run_id):
     context_digests = set()
     for row in run_rows:
         payload = json.loads(row.payload_json)
-        required = {"capability", "tool", "tool_output", "result", "status", "agent_instance_id", "execution_boundary", "source_commit", "context_digest", "invocation_type", "model", "provider", "response_id", "response_digest", "started_at", "ended_at"}
+        required = {"capability", "tool", "tool_output", "result", "status", "agent_instance_id", "execution_boundary", "source_commit", "replay_nonce", "context_digest", "invocation_type", "model", "provider", "response_id", "response_digest", "started_at", "ended_at"}
         if not required.issubset(payload):
             return {"status": "BLOCK", "reason": "agent execution evidence incomplete", "evidence_count": len(run_rows)}
         if payload["status"] != "VERIFIED":
@@ -440,6 +452,9 @@ def verify_agent_run(tenant_id, run_id):
     source_commits = {json.loads(row.payload_json).get("source_commit") for row in run_rows}
     if len(source_commits) != 1 or None in source_commits:
         return {"status": "BLOCK", "reason": "source commit binding is missing or inconsistent", "evidence_count": len(run_rows)}
+    replay_nonces = {json.loads(row.payload_json).get("replay_nonce") for row in run_rows}
+    if len(replay_nonces) != 1:
+        return {"status": "BLOCK", "reason": "replay nonce mismatch across evidence", "evidence_count": len(run_rows)}
     chain = [{"tenant_id": row.tenant_id, "seq": row.seq, "prev_hash": row.prev_hash, "record_hash": row.record_hash, "payload_json": row.payload_json} for row in rows]
     chain_ok, reason = verify_chain(chain)
     if not chain_ok:
