@@ -12,9 +12,11 @@ on:
 permissions:
   contents: read
 
+env:
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   scorecard:
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -25,6 +27,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ env.SOURCE_SHA }}
       - name: OpenSSF Scorecard
         uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
         with:
@@ -38,7 +41,7 @@ jobs:
       - name: Upload Scorecard artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ola-scorecard-${{ github.sha }}
+          name: ola-scorecard-${{ env.SOURCE_SHA }}
           path: scorecard-results.sarif
 
   zizmor:
@@ -90,7 +93,7 @@ jobs:
 
       - name: Build immutable local image
         env:
-          IMAGE: ola-supply-chain:${{ github.sha }}
+          IMAGE: ola-supply-chain:${{ env.SOURCE_SHA }}
         run: docker build --pull --tag "$IMAGE" --file Dockerfile .
 
       - name: Trivy filesystem and config report
@@ -115,7 +118,7 @@ jobs:
           IMAGE: ola-supply-chain:${{ github.sha }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ola-supply-chain:${{ github.sha }}
+          image-ref: ola-supply-chain:${{ env.SOURCE_SHA }}
           format: table
           severity: CRITICAL,HIGH
           exit-code: "1"
@@ -125,13 +128,13 @@ jobs:
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
-          image: ola-supply-chain:${{ github.sha }}
+          image: ola-supply-chain:${{ env.SOURCE_SHA }}
           format: spdx-json
           output-file: sbom.spdx.json
-          artifact-name: ola-sbom-${{ github.sha }}.spdx.json
+          artifact-name: ola-sbom-${{ env.SOURCE_SHA }}.spdx.json
 
       - name: Save immutable image subject
-        run: docker save --output ola-image.tar ola-supply-chain:${{ github.sha }}
+        run: docker save --output ola-image.tar ola-supply-chain:${{ env.SOURCE_SHA }}
 
       - name: Generate SLSA provenance attestation
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
