@@ -5,10 +5,13 @@ on:
   push:
     branches:
       - provenance-controlled-mutation
+      - main
 
 permissions:
   contents: read
 
+env:
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   provenance-gate-final:
@@ -18,16 +21,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Build deployment image
-        run: docker build --tag ola:${GITHUB_SHA} .
+        run: docker build --tag ola:${SOURCE_SHA} .
 
       - name: Start deployment image with source provenance
         run: |
           set -euo pipefail
           docker run --detach --rm --name ola-provenance -p 8000:8000 \
-            -e OLA_RUNTIME_COMMIT="${GITHUB_SHA}" \
-            ola:${GITHUB_SHA}
+            -e OLA_SOURCE_COMMIT="${SOURCE_SHA}" \
+            -e OLA_RUNTIME_COMMIT="${SOURCE_SHA}" \
+            ola:${SOURCE_SHA}
           for i in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then exit 0; fi
             sleep 1
@@ -37,7 +42,7 @@ jobs:
 
       - name: CLEAN — evidence and provenance verify
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.SOURCE_SHA }}
           EXPECTED_TASK: Calculate 17 * 23 and return the verified result.
           EXPECTED_RESULT: "391"
         run: |
@@ -144,7 +149,7 @@ jobs:
           with urllib.request.urlopen(req, timeout=10) as response:
               result = json.load(response)
           assert result["status"] == "VERIFIED", result
-          actual = os.environ.get("OLA_RUNTIME_COMMIT")
+          actual = os.environ.get("OLA_SOURCE_COMMIT")
           false_commit = "0" * 64
           assert actual and actual != false_commit
           verifier = subprocess.run([
