@@ -123,7 +123,7 @@ jobs:
           baseline_run_id="$(cat frontier-baseline-run-id.txt)"
           gh run download "$baseline_run_id" -n "ola-frontier-baseline-$baseline_sha" -D "$baseline_dir"
           grep -Fx "BASELINE_SHA=$baseline_sha" "$baseline_dir/baseline-source.txt"
-          grep -Fx "BASELINE_SOURCE=VERIFIED" "$baseline_dir/baseline-source.txt"
+          grep -F '"terminal_status": "VERIFIED"' "$baseline_dir/frontier-baseline.log"
           echo "FRONTIER_BASELINE=VERIFIED"
       - name: Correlate state, stress, provenance and Igor evidence
         env:
