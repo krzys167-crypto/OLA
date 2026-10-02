@@ -19,7 +19,7 @@ with explicit intermediate states for evidence that is captured but not independ
 | Source binding | actual checkout SHA equals the expected canonical SHA in every relevant artifact | UNKNOWN / BLOCKED |
 | Run correlation | runtime, provider trace, verifier and manifest share the same run_id | UNKNOWN / BLOCKED |
 | Image/model digests | Docker image ID and Ollama model digest are captured as content digests | UNKNOWN / BLOCKED |
-| Runtime execution | exactly six ordered real-LMM agent records exist | BLOCKED |
+| Runtime execution | exactly six ordered real-LLM agent records exist | BLOCKED |
 | Provider trace integrity | provider-boundary records match runtime response digests, model and run identity | UNKNOWN / BLOCKED |
 | Timing | six agent windows are monotonic and inside the overall execution window | UNKNOWN / BLOCKED |
 | Execution integrity | no skipped required gates; expected exit codes only | UNKNOWN / BLOCKED |
