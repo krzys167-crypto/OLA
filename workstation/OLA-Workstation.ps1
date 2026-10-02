@@ -116,14 +116,22 @@ if ($imageInspect.Count -ne 1 -or [string]::IsNullOrWhiteSpace($imageInspect[0].
     Write-Gate "IMAGE_DIGEST" "BLOCKED" "Docker image content digest missing" 41
     exit 41
 }
+$imageArchive = Join-Path $EvidenceDir "docker-image.tar"
+docker save $Image -o $imageArchive
+$imageSaveExit = $LASTEXITCODE
+if ($imageSaveExit -ne 0) { Write-Gate "IMAGE_ARCHIVE" "BLOCKED" "docker save failed" $imageSaveExit; exit 42 }
+$imageArchiveHash = (Get-FileHash $imageArchive -Algorithm SHA256).Hash.ToLowerInvariant()
 @{
     image = $Image
     image_id = $imageInspect[0].Id
+    archive = "docker-image.tar"
+    archive_sha256 = $imageArchiveHash
     repo_digests = @($imageInspect[0].RepoDigests)
     created = $imageInspect[0].Created
 } | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "docker-image.json")
 Write-Gate "IMAGE_BUILD" "VERIFIED" $Image
 Write-Gate "IMAGE_DIGEST" "VERIFIED" $imageInspect[0].Id
+Write-Gate "IMAGE_ARCHIVE" "VERIFIED" $imageArchiveHash
 docker run --rm $Image python -m pytest -q | Tee-Object -FilePath (Join-Path $EvidenceDir "pytest.txt")
 $pytestExit = $LASTEXITCODE
 if ($pytestExit -ne 0) { Write-Gate "PYTEST" "BLOCKED" "pytest failed" $pytestExit; exit 50 }
@@ -240,6 +248,7 @@ $GateResults["STABILITY"] = [ordered]@{
     source_signature = $GateResults["SOURCE_SIGNATURE"]
     image_build = $GateResults["IMAGE_BUILD"]
     image_digest = $GateResults["IMAGE_DIGEST"]
+    image_archive = $GateResults["IMAGE_ARCHIVE"]
     pytest = $GateResults["PYTEST"]
     runtime_health = $GateResults["RUNTIME_HEALTH"]
     agent_runtime = $GateResults["AGENT_RUNTIME"]
@@ -265,6 +274,7 @@ $manifest = @{
         source_signature="VERIFIED"
         image_build="VERIFIED"
         image_digest="VERIFIED"
+        image_archive="VERIFIED"
         pytest="VERIFIED"
         runtime_health="VERIFIED"
         agent_runtime="VERIFIED"
