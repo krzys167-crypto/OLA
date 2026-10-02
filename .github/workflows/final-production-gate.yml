@@ -49,6 +49,8 @@ jobs:
             "Revenue Surface Gate"
             "OLA E2E Gate"
             "Evidence Graph v0.1"
+            "OLA CodeQL"
+            "OLA Supply Chain Evidence Gate"
             "Real LLM Ollama Runtime Gate"
             "Provenance Mutation Gate"
             "Provenance Gate Final"
@@ -93,7 +95,7 @@ PY
           python - <<'PY'
 import json,os
 data=json.load(open("required-runs.json",encoding="utf-8"))
-required=set(["Nina TDD","OLA DI-OS Product Gate","NINA IGOR Ollama Full Flow","OLA Decision Evidence Gate","Revenue Surface Gate","OLA E2E Gate","Evidence Graph v0.1","Real LLM Ollama Runtime Gate","Provenance Mutation Gate","Provenance Gate Final","Nina Igor Gate","Nina Real Runtime Provenance Gate (OpenAI optional)","OLA State Continuity and Stability","OLA Real Runtime Stress Gate"])
+required=set(["Nina TDD","OLA DI-OS Product Gate","NINA IGOR Ollama Full Flow","OLA Decision Evidence Gate","Revenue Surface Gate","OLA E2E Gate","Evidence Graph v0.1","OLA CodeQL","OLA Supply Chain Evidence Gate","Real LLM Ollama Runtime Gate","Provenance Mutation Gate","Provenance Gate Final","Nina Igor Gate","Nina Real Runtime Provenance Gate (OpenAI optional)","OLA State Continuity and Stability","OLA Real Runtime Stress Gate"])
 observed={r["name"]:r for r in data.get("workflow_runs",[]) if r.get("name") in required and r.get("head_sha")==os.environ["TARGET_SHA"]}
 assert required == set(observed), sorted(required-set(observed))
 assert all(r.get("conclusion")=="success" for r in observed.values()), observed
