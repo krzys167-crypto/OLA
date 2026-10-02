@@ -12,6 +12,8 @@ $EvidenceDir = Join-Path $Root "workstation-evidence"
 $Container = "ola-workstation-v1"
 $Image = "ola-workstation:$($SourceCommit.Substring(0,12))"
 $Port = 8000
+$OllamaModel = "qwen2.5:0.5b-instruct"
+$OllamaBaseUrl = "http://host.docker.internal:11434"
 $RegistrationRunId = [guid]::NewGuid().ToString()
 $StartedAt = (Get-Date).ToUniversalTime().ToString("o")
 function Write-Gate($name, $status, $detail) { Write-Host ("[{0}] {1} - {2}" -f $status, $name, $detail) }
@@ -19,7 +21,11 @@ New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Write-Gate "GIT" "BLOCKED" "Git is not installed"; exit 20 }
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { Write-Gate "DOCKER" "BLOCKED" "Docker is not installed"; exit 21 }
 try { docker info | Out-Null } catch { Write-Gate "DOCKER_ENGINE" "BLOCKED" "Docker engine is not running"; exit 22 }
-Write-Gate "PREREQUISITES" "VERIFIED" "Git and Docker are available"
+if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) { Write-Gate "OLLAMA" "BLOCKED" "Ollama is not installed"; exit 23 }
+try { ollama list | Out-Null } catch { Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden | Out-Null; Start-Sleep -Seconds 3 }
+ollama pull $OllamaModel | Tee-Object -FilePath (Join-Path $EvidenceDir "ollama-pull.log")
+try { Invoke-RestMethod "$OllamaBaseUrl/api/tags" -TimeoutSec 5 | Out-Null } catch { Write-Gate "OLLAMA_ENGINE" "BLOCKED" "Ollama API is not reachable"; exit 24 }
+Write-Gate "PREREQUISITES" "VERIFIED" "Git, Docker and Ollama are available"
 $computer = Get-CimInstance Win32_ComputerSystem
 $bios = Get-CimInstance Win32_BIOS
 $os = Get-CimInstance Win32_OperatingSystem
@@ -61,7 +67,7 @@ docker run --rm $Image python -m pytest -q | Tee-Object -FilePath (Join-Path $Ev
 if ($LASTEXITCODE -ne 0) { Write-Gate "PYTEST" "BLOCKED" "pytest failed"; exit 50 }
 Write-Gate "PYTEST" "VERIFIED" "pytest passed"
 docker rm -f $Container 2>$null | Out-Null
-docker run -d --name $Container -p ("${Port}:8000") -e OLA_LLM_MODE=deterministic -e OLA_SOURCE_COMMIT=$SourceCommit -e OLA_RUNTIME_COMMIT=$SourceCommit $Image | Set-Content (Join-Path $EvidenceDir "container-id.txt")
+docker run -d --name $Container -p ("${Port}:8000") -e OLA_LLM_PROVIDER=ollama -e OLA_LLM_MODE=required -e OLA_LLM_MODEL=$OllamaModel -e OLLAMA_MODEL=$OllamaModel -e OLLAMA_BASE_URL=$OllamaBaseUrl -e OLA_LLM_TIMEOUT=60 -e OLA_SOURCE_COMMIT=$SourceCommit -e OLA_RUNTIME_COMMIT=$SourceCommit $Image | Set-Content (Join-Path $EvidenceDir "container-id.txt")
 $healthy = $false
 for ($i=0; $i -lt 30; $i++) {
   try { $h = Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 3; if ($h.status -eq "ok") { $healthy = $true; break } } catch {}
@@ -76,8 +82,9 @@ $headers = @{ "X-API-Key" = $rawKey; "Content-Type" = "application/json" }
 $body = @{ task = "Calculate 17 * 23 and return the verified result." } | ConvertTo-Json
 $agentResult = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/agent-run" -Headers $headers -Body $body -TimeoutSec 30
 $agentResult | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $EvidenceDir "agent-run.json")
-if ($agentResult.status -ne "VERIFIED" -or $agentResult.final_result -ne "391" -or $agentResult.evidence_count -ne 6 -or $agentResult.source_commit -ne $SourceCommit) { Write-Gate "AGENT_RUNTIME" "BLOCKED" "runtime proof failed"; docker logs $Container | Set-Content (Join-Path $EvidenceDir "runtime.log"); docker rm -f $Container | Out-Null; exit 70 }
-Write-Gate "AGENT_RUNTIME" "VERIFIED" "six-agent runtime returned 391"
+if ($agentResult.status -ne "VERIFIED" -or $agentResult.final_result -ne "391" -or $agentResult.evidence_count -ne 6 -or $agentResult.source_commit -ne $SourceCommit -or $agentResult.execution.Count -ne 6) { Write-Gate "AGENT_RUNTIME" "BLOCKED" "runtime proof failed"; docker logs $Container | Set-Content (Join-Path $EvidenceDir "runtime.log"); docker rm -f $Container | Out-Null; exit 70 }
+foreach ($item in $agentResult.execution) { if ($item.provider -ne "ollama" -or $item.model -ne $OllamaModel -or $item.invocation_type -ne "real_llm" -or ([string]::IsNullOrWhiteSpace($item.response_id) -and [string]::IsNullOrWhiteSpace($item.response_digest))) { Write-Gate "AGENT_RUNTIME" "BLOCKED" "real Ollama evidence incomplete"; docker rm -f $Container | Out-Null; exit 71 } }
+Write-Gate "AGENT_RUNTIME" "VERIFIED" "six-agent real Ollama runtime returned 391"
 docker exec $Container python scripts/verify_agent_runtime.py --tenant-id $tenantId --run-id $agentResult.run_id --expected-commit $SourceCommit --expected-task "Calculate 17 * 23 and return the verified result." --expected-result 391 | Tee-Object -FilePath (Join-Path $EvidenceDir "independent-verifier.txt")
 if ($LASTEXITCODE -ne 0) { Write-Gate "INDEPENDENT_VERIFY" "BLOCKED" "standalone verifier rejected evidence"; docker rm -f $Container | Out-Null; exit 80 }
 Write-Gate "INDEPENDENT_VERIFY" "VERIFIED" "standalone verifier passed"
@@ -86,7 +93,7 @@ docker exec $Container python -c "import sqlite3; db=sqlite3.connect('/data/ola.
 if ($tamperExit -eq 0) { Write-Gate "APPEND_ONLY_TAMPER" "BLOCKED" "mutation accepted"; docker rm -f $Container | Out-Null; exit 90 }
 Write-Gate "APPEND_ONLY_TAMPER" "VERIFIED" "append-only trigger rejected mutation"
 $agentRunId = $agentResult.run_id
-$manifest = @{ schema="ola-workstation-evidence/v2"; registration_run_id=$RegistrationRunId; agent_run_id=$agentRunId; source_commit=$SourceCommit; final_status="READY_FOR_EXTERNAL_REVIEW"; gates=@{ prerequisites="VERIFIED"; source_pin="VERIFIED"; image_build="VERIFIED"; pytest="VERIFIED"; runtime_health="VERIFIED"; agent_runtime="VERIFIED"; independent_verify="VERIFIED"; append_only_tamper="VERIFIED"; physical_execution="NOT_SELF_PROVEN"; workstation_registration="CAPTURED" } }
+$manifest = @{ schema="ola-workstation-evidence/v2"; provider="ollama"; model=$OllamaModel; registration_run_id=$RegistrationRunId; agent_run_id=$agentRunId; source_commit=$SourceCommit; final_status="READY_FOR_EXTERNAL_REVIEW"; gates=@{ prerequisites="VERIFIED"; source_pin="VERIFIED"; image_build="VERIFIED"; pytest="VERIFIED"; runtime_health="VERIFIED"; agent_runtime="VERIFIED"; independent_verify="VERIFIED"; append_only_tamper="VERIFIED"; physical_execution="NOT_SELF_PROVEN"; workstation_registration="CAPTURED" } }
 $manifest | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "MANIFEST.json")
 Get-ChildItem $EvidenceDir -File | Where-Object { $_.Name -ne "SHA256SUMS.txt" } | ForEach-Object { Get-FileHash $_.FullName -Algorithm SHA256 } | ForEach-Object { "$($_.Hash)  $($_.Path)" } | Set-Content (Join-Path $EvidenceDir "SHA256SUMS.txt")
 Write-Gate "WORKSTATION" "READY" "all local gates passed"
