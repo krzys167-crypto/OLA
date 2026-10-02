@@ -28,7 +28,11 @@ class IgorVerifier:
         if not chain_ok:
             return IgorVerification("BLOCK", chain_reason, checks)
 
-        payloads = [json.loads(record["payload_json"]) for record in records]
+        payloads = [
+            json.loads(record["payload_json"])
+            for record in records
+            if record.get("record_type", "").startswith("agent.")
+        ]
         if expected_run_id is not None:
             payloads = [
                 payload for payload in payloads
@@ -65,10 +69,7 @@ class IgorVerifier:
 
         provenance_payloads = [
             payload for payload in payloads
-            if isinstance(payload.get("response_ids"), list)
-            or payload.get("provider") is not None
-            or payload.get("model") is not None
-            or payload.get("invocation_type") is not None
+            if payload.get("invocation_type") is not None
         ]
         if expected_provider is not None:
             checks["provider"] = bool(provenance_payloads) and all(
