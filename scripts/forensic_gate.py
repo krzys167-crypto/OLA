@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -346,6 +347,55 @@ def _verify_freeze_anchor(bundle: Path, expected_source_sha: str) -> dict:
     return _gate("VERIFIED", "freeze anchor content and hash are internally consistent")
 
 
+def _verify_anti_replay(bundle: Path, expected_nonce: str | None = None) -> dict:
+    challenge_path = bundle / "run-challenge.json"
+    if not challenge_path.exists():
+        return _gate("UNKNOWN", "run challenge evidence missing")
+
+    challenge = _load_json(challenge_path)
+    nonce = str(challenge.get("replay_nonce", "")).lower()
+    run_id = challenge.get("run_id")
+    source_sha = challenge.get("source_commit")
+    if not re.fullmatch(r"[0-9a-f]{64}", nonce):
+        return _gate("BLOCKED", "replay nonce is missing or malformed")
+    if expected_nonce is not None and nonce != expected_nonce.lower():
+        return _gate("BLOCKED", "replay nonce does not match the externally issued challenge")
+
+    agent = _load_json(bundle / "agent-run.json")
+    verifier = _load_json(bundle / "independent-verifier.json")
+    manifest = _load_json(bundle / "MANIFEST.json")
+    values = {
+        "agent_run": agent.get("replay_nonce"),
+        "verifier": verifier.get("replay_nonce"),
+        "manifest": manifest.get("replay_nonce"),
+    }
+    if values["agent_run"] != nonce:
+        return _gate("BLOCKED", "agent runtime nonce mismatch", values=values)
+    if values["verifier"] not in (None, nonce):
+        return _gate("BLOCKED", "verifier nonce mismatch", values=values)
+    if values["manifest"] not in (None, nonce):
+        return _gate("BLOCKED", "manifest nonce mismatch", values=values)
+
+    trace_path = bundle / "provider-trace.json"
+    if trace_path.exists():
+        trace = _load_json(trace_path)
+        trace_nonces = {call.get("replay_nonce") for call in trace.get("calls", [])}
+        if trace_nonces != {nonce}:
+            return _gate("BLOCKED", "provider trace nonce mismatch", trace_nonces=sorted(trace_nonces))
+
+    if run_id and agent.get("run_id") != run_id:
+        return _gate("BLOCKED", "challenge run_id mismatch")
+    if source_sha and agent.get("source_commit") != source_sha:
+        return _gate("BLOCKED", "challenge source SHA mismatch")
+
+    return _gate(
+        "VERIFIED" if expected_nonce is not None else "REVIEW_REQUIRED",
+        "fresh anti-replay challenge is internally bound" if expected_nonce is None else "fresh externally supplied anti-replay challenge matches the entire evidence set",
+        replay_nonce=nonce,
+        externally_challenged=expected_nonce is not None,
+    )
+
+
 def _verify_execution_integrity(bundle: Path) -> dict:
     path = bundle / "gate-results.json"
     if not path.exists():
@@ -375,6 +425,7 @@ def evaluate_forensic_bundle(
     bundle_dir: str | Path,
     expected_source_sha: str,
     *,
+    expected_nonce: str | None = None,
     zip_path: str | Path | None = None,
     zip_sha_path: str | Path | None = None,
 ) -> dict:
