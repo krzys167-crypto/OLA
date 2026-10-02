@@ -59,6 +59,23 @@ jobs:
       - name: Build OLA image
         run: docker build --tag ola-ollama-e2e --file Dockerfile .
 
+      - name: Issue fresh anti-replay challenge
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPLAY_NONCE="$(openssl rand -hex 32)"
+          echo "REPLAY_NONCE=$REPLAY_NONCE" >> "$GITHUB_ENV"
+          cat > run-challenge.json <<EOF
+          {
+            "schema": "ola-run-challenge/v1",
+            "challenge_id": "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
+            "run_id": "",
+            "source_commit": "${SOURCE_SHA}",
+            "replay_nonce": "${REPLAY_NONCE}",
+            "issued_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
       - name: Start OLA against live Ollama
         shell: bash
         run: |
@@ -68,6 +85,7 @@ jobs:
             --network host \
             -e OLA_EG_DB_PATH=/data/ola.db \
             -e OLA_SOURCE_COMMIT="$SOURCE_SHA" \
+            -e OLA_REPLAY_NONCE="$REPLAY_NONCE" \
             -e OLA_RUNTIME_COMMIT="$SOURCE_SHA" \
             -e OLA_LLM_PROVIDER="$OLA_LLM_PROVIDER" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
@@ -132,6 +150,7 @@ jobs:
           assert all(item["provider"]=="ollama" for item in result["execution"]), result
           assert all(item["model"]==os.environ["OLLAMA_MODEL"] for item in result["execution"]), result
           assert all(item["invocation_type"]=="real_llm" for item in result["execution"]), result
+          assert result["replay_nonce"]==os.environ["REPLAY_NONCE"], result
           assert all(item.get("response_id") or item.get("response_digest") for item in result["execution"]), result
 
           proof={
@@ -146,8 +165,14 @@ jobs:
               "commit":os.environ["EXPECTED_COMMIT"],
               "source_commit":result["source_commit"],
               "run_id":result["run_id"],
+              "replay_nonce":result["replay_nonce"],
           }
           print(json.dumps(proof,sort_keys=True))
+          with open("run-challenge.json","r",encoding="utf-8") as challenge_stream:
+              challenge=json.load(challenge_stream)
+          challenge["run_id"]=result["run_id"]
+          with open("run-challenge.json","w",encoding="utf-8") as challenge_stream:
+              json.dump(challenge,challenge_stream,sort_keys=True,indent=2)
           with open("/data/ollama-proof-context.json","w",encoding="utf-8") as stream:
               json.dump({"tenant_id":tenant_id,"run_id":result["run_id"],"task":task},stream,sort_keys=True)
 
@@ -168,7 +193,8 @@ jobs:
               --expected-result "391" \
               --expected-provider "ollama" \
               --expected-model "$OLLAMA_MODEL" \
-              --expected-invocation-type "real_llm"
+              --expected-invocation-type "real_llm" \
+              --expected-nonce "$REPLAY_NONCE"
 
       - name: Capture Ollama provider evidence
         shell: bash
@@ -186,6 +212,7 @@ jobs:
             ollama-tags-before-pull.json
             ollama-models.json
             ollama-runtime-proof.json
+            run-challenge.json
             ola-ollama-runtime.log
 
       - name: Capture OLA logs on runtime failure
