@@ -137,7 +137,7 @@ $pytestExit = $LASTEXITCODE
 if ($pytestExit -ne 0) { Write-Gate "PYTEST" "BLOCKED" "pytest failed" $pytestExit; exit 50 }
 Write-Gate "PYTEST" "VERIFIED" "pytest passed"
 docker rm -f $Container 2>$null | Out-Null
-docker run -d --name $Container -p ("${Port}:8000") -e OLA_LLM_PROVIDER=ollama -e OLA_LLM_MODE=required -e OLA_LLM_MODEL=$OllamaModel -e OLLAMA_MODEL=$OllamaModel -e OLLAMA_BASE_URL=$OllamaBaseUrl -e OLA_LLM_TIMEOUT=60 -e OLA_SOURCE_COMMIT=$SourceCommit -e OLA_RUNTIME_COMMIT=$SourceCommit $Image | Set-Content (Join-Path $EvidenceDir "container-id.txt")
+docker run -d --name $Container -p ("${Port}:8000") -e OLA_LLM_PROVIDER=ollama -e OLA_LLM_MODE=required -e OLA_LLM_MODEL=$OllamaModel -e OLLAMA_MODEL=$OllamaModel -e OLLAMA_BASE_URL=$OllamaBaseUrl -e OLA_LLM_TIMEOUT=120 -e OLA_SOURCE_COMMIT=$SourceCommit -e OLA_RUNTIME_COMMIT=$SourceCommit $Image | Set-Content (Join-Path $EvidenceDir "container-id.txt")
 $healthy = $false
 for ($i=0; $i -lt 30; $i++) {
   try { $h = Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 3; if ($h.status -eq "ok") { $healthy = $true; break } } catch {}
