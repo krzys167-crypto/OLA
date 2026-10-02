@@ -138,6 +138,7 @@ def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9
         json.dumps({
             "run_id": "run-1",
             "source_commit": source,
+            "replay_nonce": "ab" * 32,
             "execution": [
                 {
                     "agent": name,
@@ -205,6 +206,7 @@ def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9
         "runtime_component": "ola-runtime-v2",
         "run_id": "run-1",
         "source_commit": source,
+        "replay_nonce": "ab" * 32,
     }, sort_keys=True))
     (tmp_path / "github-source-verification.json").write_text(json.dumps({
         "sha": source,
@@ -223,8 +225,15 @@ def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9
     manifest = {
         "run_id": "run-1",
         "source_commit": source,
+        "replay_nonce": "ab" * 32,
         "physical_execution": "CAPTURED",
     }
+    (tmp_path / "run-challenge.json").write_text(json.dumps({
+        "schema": "ola-run-challenge/v1",
+        "run_id": "run-1",
+        "source_commit": source,
+        "replay_nonce": "ab" * 32,
+    }, sort_keys=True))
     (tmp_path / "MANIFEST.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
 
     (tmp_path / "SHA256SUMS.txt").write_text("")
@@ -240,7 +249,7 @@ def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9
 
 def test_forensic_gate_complete_bundle_requires_external_authenticity_review(tmp_path):
     bundle = _write_complete_forensic_bundle(tmp_path)
-    report = evaluate_forensic_bundle(bundle, "df9f8783248812c2c887cc9805524602f4dc3ef2")
+    report = evaluate_forensic_bundle(bundle, "df9f8783248812c2c887cc9805524602f4dc3ef2", expected_nonce="ab" * 32)
     assert report["status"] == "REVIEW_REQUIRED"
     assert all(
         item["status"] == "VERIFIED"
