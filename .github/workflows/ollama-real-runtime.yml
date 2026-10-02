@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - feat/evidence-graph-v0.1
+      - main
 
 permissions:
   contents: read
