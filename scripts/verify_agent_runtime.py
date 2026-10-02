@@ -107,6 +107,8 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
             return fail(f"non-independent execution boundary for {agent}")
         if payload.get("source_commit") != expected_commit:
             return fail(f"source commit mismatch for {agent}: expected {expected_commit!r}, got {payload.get('source_commit')!r}")
+        if payload["invocation_type"] == "real_llm" and not (payload.get("response_id") or payload.get("response_digest")):
+            return fail(f"missing real LLM response identity for {agent}")
         invocation = {
             "provider": payload["provider"],
             "model": payload["model"],
