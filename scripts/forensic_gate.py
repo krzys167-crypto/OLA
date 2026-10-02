@@ -457,6 +457,7 @@ def evaluate_forensic_bundle(
     gates["image_model_digests"] = _verify_image_and_model_digests(bundle)
     gates["timing"] = _verify_timing(bundle)
     gates["execution_integrity"] = _verify_execution_integrity(bundle)
+    gates["anti_replay"] = _verify_anti_replay(bundle, expected_nonce=expected_nonce)
     gates["physical_workstation"] = _verify_physical_workstation(bundle, expected_source_sha)
     gates["freeze_anchor"] = _verify_freeze_anchor(bundle, expected_source_sha)
 
