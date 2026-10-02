@@ -14,6 +14,7 @@ def _record(commit="abc", result="391", source_commit=None):
         "result": result,
     }
     record = {
+        "record_type": "agent.codeact",
         "tenant_id": "tenant-1",
         "seq": 0,
         "prev_hash": "0" * 64,
@@ -54,6 +55,7 @@ def test_igor_verifies_real_ollama_provenance():
     }
     record = {
         "id": "e1",
+        "record_type": "agent.codeact",
         "tenant_id": "tenant-1",
         "seq": 0,
         "prev_hash": "0" * 64,
@@ -90,6 +92,7 @@ def test_igor_scopes_checks_to_current_run_but_verifies_full_chain():
 
     first = {
         "id": "old",
+        "record_type": "agent.codeact",
         "tenant_id": "tenant-1",
         "seq": 0,
         "prev_hash": "0" * 64,
@@ -101,6 +104,7 @@ def test_igor_scopes_checks_to_current_run_but_verifies_full_chain():
     )
     second = {
         "id": "new",
+        "record_type": "agent.react",
         "tenant_id": "tenant-1",
         "seq": 1,
         "prev_hash": first["record_hash"],
