@@ -190,6 +190,13 @@ def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9
             )
         ],
     }, sort_keys=True))
+    (tmp_path / "SHA256SUMS.txt").write_text("")
+    for file in sorted(tmp_path.iterdir()):
+        if file.name == "SHA256SUMS.txt":
+            continue
+        digest = hashlib.sha256(file.read_bytes()).hexdigest()
+        (tmp_path / "SHA256SUMS.txt").open("a", encoding="utf-8").write(f"{digest}  {file.name}\\n")
+
     (tmp_path / "independent-verifier.json").write_text(json.dumps({
         "status": "VERIFIED",
         "verifier_component": "ola-forensic-gate-v1",
@@ -206,11 +213,16 @@ def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9
     return tmp_path
 
 
-def test_forensic_gate_complete_bundle_reaches_verified(tmp_path):
+def test_forensic_gate_complete_bundle_requires_external_authenticity_review(tmp_path):
     bundle = _write_complete_forensic_bundle(tmp_path)
     report = evaluate_forensic_bundle(bundle, "df9f8783248812c2c887cc9805524602f4dc3ef2")
-    assert report["status"] == "VERIFIED"
-    assert all(item["status"] == "VERIFIED" for item in report["gates"].values())
+    assert report["status"] == "REVIEW_REQUIRED"
+    assert all(
+        item["status"] == "VERIFIED"
+        for name, item in report["gates"].items()
+        if name != "provider_authenticity"
+    )
+    assert report["gates"]["provider_authenticity"]["status"] == "REVIEW_REQUIRED"
 
 
 def test_forensic_gate_blocks_source_mismatch(tmp_path):
