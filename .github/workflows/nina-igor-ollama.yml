@@ -12,6 +12,7 @@ permissions:
   contents: read
 
 env:
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
   OLA_LLM_PROVIDER: ollama
   OLA_LLM_MODE: required
   OLLAMA_MODEL: qwen2.5:0.5b-instruct
@@ -45,6 +46,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Set up Ollama
         shell: bash
@@ -72,7 +74,8 @@ jobs:
             --name ola-nina-ollama \
             --network host \
             -e OLA_EG_DB_PATH=/data/ola.db \
-            -e OLA_RUNTIME_COMMIT="$GITHUB_SHA" \
+            -e OLA_SOURCE_COMMIT="$SOURCE_SHA" \
+            -e OLA_RUNTIME_COMMIT="$SOURCE_SHA" \
             -e OLA_LLM_PROVIDER="$OLA_LLM_PROVIDER" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
             -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
@@ -96,6 +99,7 @@ jobs:
           docker exec -i ola-nina-ollama python - <<'PY' > nina-igor-ollama-proof.json
           import hashlib
           import json
+          import os
           import sqlite3
           import urllib.request
           import uuid
@@ -142,12 +146,13 @@ jobs:
           assert body["igor"]["checks"]["provider"] is True, body
           assert body["igor"]["checks"]["model"] is True, body
           assert body["provenance"]["status"]=="VERIFIED", body
-          assert body["provenance"]["commit"]=="${{ github.sha }}", body
+          assert body["provenance"]["commit"]==os.environ["SOURCE_SHA"], body
+          assert body["provenance"]["source_commit"]==os.environ["SOURCE_SHA"], body
           assert body["provenance"]["provider"]=="ollama", body
           assert body["provenance"]["model"]=="qwen2.5:0.5b-instruct", body
           assert body["provenance"]["invocation_type"]=="real_llm", body
           assert body["provenance"]["llm_invocations"]==6, body
-          assert len(body["provenance"]["response_ids"])==6, body
+          assert len(body["provenance"]["response_ids"]) + len(body["provenance"].get("response_digests", []))==6, body
           assert body["replay_verification"]["status"]=="VERIFIED", body
           assert body["replay_verification"]["event_count"]==7, body
           assert len(body["replay"])==7, body
@@ -173,7 +178,7 @@ jobs:
               "human_gate_status":body["human_gate"]["status"],
               "run_id":body["run_id"],
               "tenant_id":tenant_id,
-              "commit":"${{ github.sha }}",
+              "commit":os.environ["SOURCE_SHA"],
           }
           print(json.dumps(proof,sort_keys=True))
           with open("/data/nina-ollama-proof-context.json","w",encoding="utf-8") as stream:
@@ -190,7 +195,7 @@ jobs:
             python scripts/verify_agent_runtime.py \
               --tenant-id "$TENANT_ID" \
               --run-id "$RUN_ID" \
-              --expected-commit "$GITHUB_SHA" \
+              --expected-commit "$SOURCE_SHA" \
               --expected-task "Calculate 17 * 23 and return the exact verified result 391." \
               --expected-result "391" \
               --expected-provider "ollama" \
@@ -206,7 +211,7 @@ jobs:
       - name: Upload full-flow evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nina-igor-ollama-full-flow-${{ github.sha }}
+          name: nina-igor-ollama-full-flow-${{ env.SOURCE_SHA }}
           path: |
             ollama-models.json
             nina-igor-ollama-proof.json
