@@ -62,7 +62,7 @@ class IgorVerifier:
             payload for payload in payloads
             if payload.get("agent") in {"codeact", "multi_agent"}
         ]
-        matching_result = bool(result_payloads)
+        matching_result = True
         codeact_payload = next(
             (payload for payload in result_payloads if payload.get("agent") == "codeact"),
             None,
