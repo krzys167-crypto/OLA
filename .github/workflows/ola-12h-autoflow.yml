@@ -99,6 +99,8 @@ jobs:
           {
             "schema": "ola-auto-evidence-v2",
             "source_commit": "$GITHUB_SHA",
+            "github_run_id": $GITHUB_RUN_ID,
+            "correlation_key": "$GITHUB_SHA",
             "trigger": "$GITHUB_EVENT_NAME",
             "provider": "ollama",
             "model": "qwen2.5:0.5b-instruct",
