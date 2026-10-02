@@ -48,6 +48,7 @@ def test_igor_verifies_real_ollama_provenance():
         "source_commit": "abc",
         "task": "Calculate 17 * 23",
         "result": "391",
+        "source_commit": "abc",
         "provider": "ollama",
         "model": "qwen2.5:0.5b-instruct",
         "invocation_type": "real_llm",
@@ -55,6 +56,7 @@ def test_igor_verifies_real_ollama_provenance():
     }
     record = {
         "id": "e1",
+        "record_type": "agent.codeact",
         "record_type": "agent.codeact",
         "tenant_id": "tenant-1",
         "seq": 0,
@@ -93,6 +95,7 @@ def test_igor_scopes_checks_to_current_run_but_verifies_full_chain():
     first = {
         "id": "old",
         "record_type": "agent.codeact",
+        "record_type": "agent.codeact",
         "tenant_id": "tenant-1",
         "seq": 0,
         "prev_hash": "0" * 64,
@@ -104,6 +107,7 @@ def test_igor_scopes_checks_to_current_run_but_verifies_full_chain():
     )
     second = {
         "id": "new",
+        "record_type": "agent.react",
         "record_type": "agent.react",
         "tenant_id": "tenant-1",
         "seq": 1,
