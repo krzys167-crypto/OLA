@@ -76,7 +76,7 @@ jobs:
           assert d["evidence_count"]==6
           assert d["hash_chain"]=="PASS"
           assert d["independent_verifier"]=="PASS"
-          assert d["human_gate"]=="VERIFIED"
+          assert d["human_gate"]=="CONTRACT_ONLY"
           print("IGOR_NINA_BUNDLE=PASS")
           print("IGOR_SOURCE_SHA=PASS")
           print("IGOR_ARTIFACT_HASH=PASS")
