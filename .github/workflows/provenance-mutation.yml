@@ -35,11 +35,19 @@ jobs:
             -e OLA_RUNTIME_COMMIT="${TARGET_COMMIT}" \
             ola:${TARGET_COMMIT}
           for i in $(seq 1 30); do
+            status=$(docker inspect --format '{{.State.Status}}' ola-provenance 2>/dev/null || echo missing)
+            if [ "$status" = "exited" ] || [ "$status" = "dead" ] || [ "$status" = "missing" ]; then
+              echo "CONTAINER_STATUS_EARLY_FAILURE:"
+              docker inspect --format '{{json .State}}' ola-provenance || true
+              echo "CONTAINER_LOGS_EARLY_FAILURE:"
+              docker logs ola-provenance || true
+              exit 1
+            fi
             if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then exit 0; fi
             sleep 1
           done
           echo "CONTAINER_STATUS_BEFORE_FAILURE:"
-          docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' ola-provenance || true
+          docker inspect --format '{{json .State}}' ola-provenance || true
           echo "CONTAINER_LOGS:"
           docker logs ola-provenance || true
           exit 1
