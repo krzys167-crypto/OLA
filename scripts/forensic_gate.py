@@ -209,6 +209,8 @@ def _verify_provider_authenticity(bundle: Path) -> dict:
     )
 
 
+OFFICIAL_QWEN25_05B_INSTRUCT_ID_PREFIX = "a8b0c5157701"
+
 def _verify_image_and_model_digests(bundle: Path) -> dict:
     image = bundle / "docker-image.json"
     model = bundle / "ollama-model.json"
@@ -222,11 +224,15 @@ def _verify_image_and_model_digests(bundle: Path) -> dict:
         return _gate("BLOCKED", "Docker image content digest missing")
     if not isinstance(model_digest, str) or not model_digest.startswith("sha256:"):
         return _gate("BLOCKED", "Ollama model digest missing")
+    digest_text = model_digest.split(":", 1)[1] if ":" in model_digest else model_digest
+    registry_bound = digest_text.startswith(OFFICIAL_QWEN25_05B_INSTRUCT_ID_PREFIX)
     return _gate(
-        "VERIFIED",
+        "VERIFIED" if registry_bound else "REVIEW_REQUIRED",
         "Docker image and Ollama model content digests are captured",
         image_id=image_id,
         model_digest=model_digest,
+        official_registry_id_prefix=OFFICIAL_QWEN25_05B_INSTRUCT_ID_PREFIX,
+        model_registry_binding="VERIFIED" if registry_bound else "REVIEW_REQUIRED",
     )
 
 
