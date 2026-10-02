@@ -131,6 +131,18 @@ jobs:
           json.dump(manifest,open("evidence-correlation-manifest.json","w"),sort_keys=True,indent=2)
           PY
           sha256sum evidence-correlation-manifest.json | tee evidence-correlation-manifest.sha256
+      - name: Require cryptographically verified source commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          verification="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}" --jq ".commit.verification.verified")"
+          reason="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}" --jq ".commit.verification.reason")"
+          echo "SOURCE_COMMIT_SIGNATURE=${verification} reason=${reason}"
+          test "$verification" = "true"
+          echo "SOURCE_SIGNATURE_STATUS=VERIFIED" >> "$GITHUB_ENV"
       - name: Build release image
         run: docker build -t ola-final:${{ steps.target.outputs.sha }} .
 
@@ -170,6 +182,27 @@ jobs:
           docker logs ola-final-gate
           exit 1
 
+      - name: Independent exact-source replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec -i ola-final-gate python - <<'PY' > final-independent-replay.json
+          import hashlib, json, sqlite3, urllib.request, uuid, os
+          db_path="/data/ola.db"
+          tenant_id=str(uuid.uuid4())
+          raw_key="final-independent-replay-key"
+          db=sqlite3.connect(db_path)
+          db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tenant_id,"final-independent-replay"))
+          db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tenant_id,hashlib.sha256(raw_key.encode()).hexdigest()))
+          db.commit(); db.close()
+          task="Calculate 17 * 23 and return the verified result."
+          req=urllib.request.Request("http://127.0.0.1:8000/agent-run",data=json.dumps({"task":task}).encode(),headers={"Content-Type":"application/json","X-API-Key":raw_key},method="POST")
+          with urllib.request.urlopen(req,timeout=30) as response: result=json.load(response)
+          assert result["status"]=="VERIFIED", result
+          assert result["final_result"]=="391", result
+          print(json.dumps({"status":"VERIFIED","source_commit":os.environ.get("OLA_RUNTIME_COMMIT"),"run_id":result["run_id"],"replay":"PASS"},sort_keys=True))
+          PY
+          cat final-independent-replay.json
       - name: Generate final production manifest
         if: always()
         shell: bash
@@ -184,6 +217,7 @@ jobs:
             "source_snapshot": "ola-source-${{ steps.target.outputs.sha }}.tar.gz",
             "release_image": "ola-release-image.tar",
             "source_attestation": "verified-by-github-actions-attestation",
+            "source_commit_signature": "${SOURCE_SIGNATURE_STATUS:-UNVERIFIED}",
             "image_attestation": "verified-by-github-actions-attestation",
             "required_gates": ["ci","state-continuity","stability","provenance","signatures","real-runtime","stress","tamper","replay","human-gate"],
             "final_status": "${status}"
@@ -191,6 +225,17 @@ jobs:
           EOF
           sha256sum production-manifest.json | tee production-manifest-sha256.txt
 
+      - name: Attest final production manifest
+        if: ${{ job.status == 'success' }}
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: production-manifest.json
+
+      - name: Independently verify final production attestation
+        if: ${{ job.status == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh attestation verify production-manifest.json --repo "$GITHUB_REPOSITORY"
       - name: Publish final production evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -204,6 +249,7 @@ jobs:
             production-manifest-sha256.txt
             source-sha256.txt
             image-sha256.txt
+            final-independent-replay.json
             ola-source-${{ steps.target.outputs.sha }}.tar.gz
             ola-release-image.tar
 
