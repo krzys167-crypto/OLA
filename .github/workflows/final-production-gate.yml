@@ -68,6 +68,7 @@ jobs:
               "Nina Real Runtime Provenance Gate (OpenAI optional)",
               "OLA State Continuity and Stability",
               "OLA Real Runtime Stress Gate",
+              "OLA 12h Autonomous Evidence Flow",
           ]
           runs = {}
           with open("required-runs.json", encoding="utf-8") as stream:
@@ -86,6 +87,57 @@ jobs:
           print("ALL_REQUIRED_EVIDENCE_GATES=SUCCESS")
           PY
 
+      - name: Correlate state, stress, provenance and Igor evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence-correlation
+          python - <<'PY'
+          import json, os, subprocess
+          target=os.environ["TARGET_SHA"]
+          runs=json.load(open("required-runs.json"))["workflow_runs"]
+          wanted={
+              "OLA State Continuity and Stability": f"ola-state-continuity-{target}",
+              "OLA Real Runtime Stress Gate": f"ola-runtime-stress-{target}",
+              "Provenance Mutation Gate": f"ola-provenance-evidence-{target}",
+              "OLA 12h Autonomous Evidence Flow": f"ola-auto-evidence-{target}",
+          }
+          selected={}
+          for name, artifact in wanted.items():
+              candidates=[r for r in runs if r.get("name")==name and r.get("conclusion")=="success" and r.get("head_sha")==target]
+              if not candidates: raise SystemExit(f"MISSING_CORRELATED_RUN={name}")
+              run=max(candidates,key=lambda x:x.get("updated_at",""))
+              run_id=run["id"]
+              subprocess.run(["gh","run","download",str(run_id),"-n",artifact,"-D","evidence-correlation"],check=True)
+              api=f"repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}/artifacts"
+              raw=subprocess.check_output(["gh","api",api],text=True)
+              arts=json.loads(raw).get("artifacts",[])
+              match=next((a for a in arts if a.get("name")==artifact),None)
+              if not match: raise SystemExit(f"MISSING_ARTIFACT={artifact}")
+              selected[name]={"run_id":run_id,"head_sha":run["head_sha"],"artifact":artifact,"artifact_digest":match.get("digest")}
+          contexts=[]
+          for root,_,files in os.walk("evidence-correlation"):
+              for fn in files:
+                  if fn=="evidence-context.json": contexts.append(os.path.join(root,fn))
+          for p in contexts:
+              d=json.load(open(p))
+              assert d["source_commit"]==target,(p,d)
+              assert d["correlation_key"]==target,(p,d)
+          auto=[]
+          for root,_,files in os.walk("evidence-correlation"):
+              for fn in files:
+                  if fn=="ola-auto-evidence.json": auto.append(os.path.join(root,fn))
+          if len(auto)!=1: raise SystemExit(f"EXPECTED_ONE_AUTO_EVIDENCE={auto}")
+          d=json.load(open(auto[0]))
+          assert d["source_commit"]==target,d
+          assert d["correlation_key"]==target,d
+          manifest={"schema":"ola-evidence-correlation-v1","source_sha":target,"correlation_key":target,"runs":selected}
+          json.dump(manifest,open("evidence-correlation-manifest.json","w"),sort_keys=True,indent=2)
+          PY
+          sha256sum evidence-correlation-manifest.json | tee evidence-correlation-manifest.sha256
       - name: Build release image
         run: docker build -t ola-final:${{ steps.target.outputs.sha }} .
 
@@ -153,6 +205,8 @@ jobs:
           name: ola-final-production-${{ steps.target.outputs.sha }}
           path: |
             required-runs.json
+            evidence-correlation-manifest.json
+            evidence-correlation-manifest.sha256
             production-manifest.json
             production-manifest-sha256.txt
             source-sha256.txt
