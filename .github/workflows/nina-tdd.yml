@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - nina-igor-execution-chain
+      - main
   pull_request:
 
 permissions:
