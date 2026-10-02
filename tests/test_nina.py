@@ -155,7 +155,14 @@ def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9
             "evidence_count": 6,
         }, sort_keys=True)
     )
-    (tmp_path / "docker-image.json").write_text(json.dumps({"image_id": "sha256:" + "a" * 64}))
+    docker_archive = tmp_path / "docker-image.tar"
+    docker_archive.write_bytes(b"synthetic-docker-image")
+    docker_archive_hash = hashlib.sha256(docker_archive.read_bytes()).hexdigest()
+    (tmp_path / "docker-image.json").write_text(json.dumps({
+        "image_id": "sha256:" + "a" * 64,
+        "archive": "docker-image.tar",
+        "archive_sha256": docker_archive_hash,
+    }))
     (tmp_path / "ollama-model.json").write_text(
         json.dumps({"model": "qwen2.5:0.5b-instruct", "digest": "sha256:" + "b" * 64})
     )
@@ -198,6 +205,20 @@ def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9
         "runtime_component": "ola-runtime-v2",
         "run_id": "run-1",
         "source_commit": source,
+    }, sort_keys=True))
+    (tmp_path / "github-source-verification.json").write_text(json.dumps({
+        "sha": source,
+        "commit": {"verification": {"verified": True, "reason": "valid"}},
+    }, sort_keys=True))
+    (tmp_path / "workstation-registration.json").write_text(json.dumps({
+        "physical_execution": "CAPTURED",
+        "source_commit": source,
+        "run_id": "registration-1",
+        "agent_run_id": "run-1",
+        "hostname": "TEST-ZBOOK",
+        "manufacturer": "HP",
+        "model": "ZBook",
+        "bios_serial_sha256": "c" * 64,
     }, sort_keys=True))
     manifest = {
         "run_id": "run-1",
