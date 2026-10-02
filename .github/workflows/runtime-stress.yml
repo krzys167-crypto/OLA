@@ -30,6 +30,22 @@ jobs:
       - name: Capture runtime evidence
         if: always()
         run: docker logs ola-stress > runtime-stress.log 2>&1 || true
+      - name: Write evidence correlation context
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          context = {
+              "schema": "ola-evidence-context-v1",
+              "source_commit": os.environ["GITHUB_SHA"],
+              "github_run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "correlation_key": os.environ["GITHUB_SHA"],
+          }
+          json.dump(context, open("evidence-context.json", "w", encoding="utf-8"), sort_keys=True, indent=2)
+          PY
+
       - name: Publish stress evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -39,6 +55,7 @@ jobs:
             stress-evidence.json
             stress-summary.log
             runtime-stress.log
+            evidence-context.json
       - name: Stop runtime
         if: always()
         run: docker rm -f ola-stress >/dev/null 2>&1 || true
