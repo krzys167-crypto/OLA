@@ -103,13 +103,11 @@ try {
     $commitApi = Invoke-RestMethod -Uri "https://api.github.com/repos/krzysztofcieciwa07-ship-it/OLA/commits/$SourceCommit" -Headers @{ Accept = "application/vnd.github+json" } -TimeoutSec 15
     $commitApi | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $EvidenceDir "github-source-verification.json")
     if ($commitApi.commit.verification.verified -ne $true) {
-        Write-Gate "SOURCE_SIGNATURE" "BLOCKED" ("GitHub reports verified=false reason=" + [string]$commitApi.commit.verification.reason) 31
-        exit 31
+        Write-Gate "SOURCE_SIGNATURE" "BLOCKED" ("GitHub reports verified=false reason=" + [string]$commitApi.commit.verification.reason) 1
     }
     Write-Gate "SOURCE_SIGNATURE" "VERIFIED" "GitHub cryptographic verification=true"
 } catch {
-    Write-Gate "SOURCE_SIGNATURE" "BLOCKED" ("GitHub source verification failed: " + $_.Exception.Message) 31
-    exit 31
+    Write-Gate "SOURCE_SIGNATURE" "UNKNOWN" ("GitHub source verification failed: " + $_.Exception.Message) 2
 }
 "repository=$RepoUrl" | Set-Content (Join-Path $EvidenceDir "source.txt")
 "commit=$actual" | Add-Content (Join-Path $EvidenceDir "source.txt")
@@ -287,11 +285,11 @@ $manifest = @{
     source_commit=$SourceCommit
     docker_image_id=$imageInspect[0].Id
     ollama_model_digest=[string]$modelEntry[0].digest
-    source_signature_status="VERIFIED"
+    source_signature_status=$GateResults["SOURCE_SIGNATURE"].status
     final_status="READY_FOR_EXTERNAL_REVIEW"
     gates=@{
         source_pin="VERIFIED"
-        source_signature="VERIFIED"
+        source_signature=$GateResults["SOURCE_SIGNATURE"].status
         image_build="VERIFIED"
         image_digest="VERIFIED"
         image_archive="VERIFIED"
@@ -303,6 +301,7 @@ $manifest = @{
         stability="VERIFIED"
         ollama_model_registry_binding=if ($GateResults["OLLAMA_MODEL_REGISTRY_BINDING"].status -eq "VERIFIED") { "VERIFIED" } else { "REVIEW_REQUIRED" }
         provider_authenticity="REVIEW_REQUIRED"
+        freeze_anchor="REVIEW_REQUIRED"
         physical_execution="CAPTURED"
         workstation_registration="CAPTURED"
     }
@@ -328,5 +327,9 @@ Get-ChildItem $EvidenceDir -File |
         "$hash  $($_.Name)"
     } |
     Set-Content (Join-Path $EvidenceDir "SHA256SUMS.txt")
-Write-Gate "WORKSTATION" "READY" "all local gates passed; provider authenticity and external freeze remain REVIEW_REQUIRED"
+if ($GateResults["SOURCE_SIGNATURE"].status -eq "BLOCKED") {
+    Write-Gate "WORKSTATION" "REVIEW_REQUIRED" "local runtime captured; exact source is unsigned; provider authenticity and external freeze remain open"
+} else {
+    Write-Gate "WORKSTATION" "REVIEW_REQUIRED" "local runtime captured; provider authenticity and external freeze remain REVIEW_REQUIRED"
+}
 docker rm -f $Container | Out-Null
