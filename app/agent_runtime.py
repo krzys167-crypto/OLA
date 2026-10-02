@@ -99,10 +99,17 @@ def _invoke_llm(agent, task, context):
     provider = os.getenv("OLA_LLM_PROVIDER", "openai").strip().lower()
     mode = os.getenv("OLA_LLM_MODE", "deterministic")
     prompt = canonical_json({"agent": agent, "task": task, "context": context})
-    system_message = (
-        "You are one agent in OLA di-OS. Return concise JSON-compatible reasoning output. "
-        "Do not claim tools or evidence you did not actually use."
-    )
+    if agent == "codeact":
+        system_message = (
+            "You are the CodeAct agent in OLA di-OS. Return ONLY valid JSON with exactly "
+            '{"action":"safe_expression","result":"<verified arithmetic result>"} and no markdown. '
+            "Do not claim tools or evidence you did not actually use."
+        )
+    else:
+        system_message = (
+            "You are one agent in OLA di-OS. Return concise JSON-compatible reasoning output. "
+            "Do not claim tools or evidence you did not actually use."
+        )
     import httpx
 
     if provider == "openai":
