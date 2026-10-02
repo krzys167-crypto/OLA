@@ -37,50 +37,87 @@ jobs:
       - name: Verify required evidence gates
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
         shell: bash
         run: |
           set -euo pipefail
+          required=(
+            "Nina TDD"
+            "OLA DI-OS Product Gate"
+            "NINA IGOR Ollama Full Flow"
+            "OLA Decision Evidence Gate"
+            "Revenue Surface Gate"
+            "OLA E2E Gate"
+            "Evidence Graph v0.1"
+            "Real LLM Ollama Runtime Gate"
+            "Provenance Mutation Gate"
+            "Provenance Gate Final"
+            "Nina Igor Gate"
+            "Nina Real Runtime Provenance Gate (OpenAI optional)"
+            "OLA State Continuity and Stability"
+            "OLA Real Runtime Stress Gate"
+          )
+          for attempt in $(seq 1 30); do
+            curl -fsSL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TARGET_SHA}&per_page=100" \
+              > required-runs.json
+            python - "${required[@]}" <<'PY'
+import json,sys,os
+required=sys.argv[1:]
+data=json.load(open("required-runs.json",encoding="utf-8"))
+runs={}
+for r in data.get("workflow_runs",[]):
+    n=r.get("name")
+    if n and r.get("head_sha")==os.environ["TARGET_SHA"]:
+        prev=runs.get(n)
+        if prev is None or r.get("created_at","")>prev.get("created_at",""): runs[n]=r
+missing=[n for n in required if n not in runs]
+pending=[n for n in required if n in runs and r.get("status") not in ("completed","cancelled","failure","success") for r in [runs[n]]]
+failed={n:runs[n].get("conclusion") or runs[n].get("status") for n in required if n in runs and runs[n].get("status")=="completed" and runs[n].get("conclusion")!="success"}
+print(json.dumps({"observed":{n:(runs[n].get("conclusion") or runs[n].get("status")) if n in runs else "MISSING" for n in required},"missing":missing,"pending":pending,"failed":failed},sort_keys=True))
+if missing or pending: raise SystemExit(10)
+if failed: raise SystemExit(11)
+PY
+            rc=$?
+            if [ "$rc" = "0" ]; then break; fi
+            if [ "$rc" = "11" ]; then echo "FAILED_REQUIRED_GATES"; exit 1; fi
+            if [ "$attempt" = "30" ]; then echo "TIMEOUT_WAITING_FOR_REQUIRED_GATES"; exit 1; fi
+            sleep 60
+          done
+          python - <<'PY'
+import json,os
+data=json.load(open("required-runs.json",encoding="utf-8"))
+required=set(["Nina TDD","OLA DI-OS Product Gate","NINA IGOR Ollama Full Flow","OLA Decision Evidence Gate","Revenue Surface Gate","OLA E2E Gate","Evidence Graph v0.1","Real LLM Ollama Runtime Gate","Provenance Mutation Gate","Provenance Gate Final","Nina Igor Gate","Nina Real Runtime Provenance Gate (OpenAI optional)","OLA State Continuity and Stability","OLA Real Runtime Stress Gate"])
+observed={r["name"]:r for r in data.get("workflow_runs",[]) if r.get("name") in required and r.get("head_sha")==os.environ["TARGET_SHA"]}
+assert required == set(observed), sorted(required-set(observed))
+assert all(r.get("conclusion")=="success" for r in observed.values()), observed
+print("ALL_REQUIRED_EVIDENCE_GATES=SUCCESS")
+PY
+          baseline_dir="frontier-baseline-evidence"
+          mkdir -p "$baseline_dir"
+          baseline_sha="472eaf20056f73b2d8bf5ed77a63a128b38cc171"
           curl -fsSL \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${{ steps.target.outputs.sha }}&per_page=100" \
-            > required-runs.json
-          python - <<'PY'
-          import json
-          required = [
-              "Nina TDD",
-              "OLA DI-OS Product Gate",
-              "NINA IGOR Ollama Full Flow",
-              "OLA Decision Evidence Gate",
-              "Revenue Surface Gate",
-              "OLA E2E Gate",
-              "Evidence Graph v0.1",
-              "Real LLM Ollama Runtime Gate",
-              "OLA Frontier Baseline",
-              "Provenance Mutation Gate",
-              "Provenance Gate Final",
-              "Nina Igor Gate",
-              "Nina Real Runtime Provenance Gate (OpenAI optional)",
-              "OLA State Continuity and Stability",
-              "OLA Real Runtime Stress Gate",
-          ]
-          runs = {}
-          with open("required-runs.json", encoding="utf-8") as stream:
-              data = json.load(stream)
-          for run in data.get("workflow_runs", []):
-              name = run.get("name")
-              if name:
-                  runs[name] = run.get("conclusion") or run.get("status") or "UNKNOWN"
-          missing = [name for name in required if name not in runs]
-          failed = {name: runs[name] for name in required if name in runs and runs[name] != "success"}
-          print(json.dumps({"required": required, "observed": {name: runs.get(name, "MISSING") for name in required}}, indent=2, sort_keys=True))
-          if missing:
-              raise SystemExit("MISSING_REQUIRED_GATES=" + ",".join(missing))
-          if failed:
-              raise SystemExit("FAILED_REQUIRED_GATES=" + json.dumps(failed, sort_keys=True))
-          print("ALL_REQUIRED_EVIDENCE_GATES=SUCCESS")
-          PY
-
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/frontier-baseline.yml/runs?status=success&per_page=20" \
+            > frontier-baseline-runs.json
+          python - "$baseline_sha" <<'PY'
+import json,sys
+sha=sys.argv[1]
+data=json.load(open("frontier-baseline-runs.json",encoding="utf-8"))
+runs=[r for r in data.get("workflow_runs",[]) if r.get("conclusion")=="success"]
+if not runs: raise SystemExit("MISSING_SUCCESSFUL_FRONTIER_BASELINE_RUN")
+run=max(runs,key=lambda x:x.get("updated_at",""))
+open("frontier-baseline-run-id.txt","w").write(str(run["id"]))
+print(run["id"])
+PY
+          baseline_run_id="$(cat frontier-baseline-run-id.txt)"
+          gh run download "$baseline_run_id" -n "ola-frontier-baseline-$baseline_sha" -D "$baseline_dir"
+          grep -Fx "BASELINE_SHA=$baseline_sha" "$baseline_dir/baseline-source.txt"
+          grep -Fx "BASELINE_SOURCE=VERIFIED" "$baseline_dir/baseline-source.txt"
+          echo "FRONTIER_BASELINE=VERIFIED"
       - name: Correlate state, stress, provenance and Igor evidence
         env:
           GH_TOKEN: ${{ github.token }}
@@ -90,46 +127,38 @@ jobs:
           set -euo pipefail
           mkdir -p evidence-correlation
           python - <<'PY'
-          import json, os, subprocess
-          target=os.environ["TARGET_SHA"]
-          runs=json.load(open("required-runs.json"))["workflow_runs"]
-          wanted={
-              "OLA State Continuity and Stability": f"ola-state-continuity-{target}",
-              "OLA Real Runtime Stress Gate": f"ola-runtime-stress-{target}",
-              "Provenance Mutation Gate": f"ola-provenance-evidence-{target}",
-              "Nina Igor Gate": f"nina-igor-evidence-{target}",
-          }
-          selected={}
-          for name, artifact in wanted.items():
-              candidates=[r for r in runs if r.get("name")==name and r.get("conclusion")=="success" and r.get("head_sha")==target]
-              if not candidates: raise SystemExit(f"MISSING_CORRELATED_RUN={name}")
-              run=max(candidates,key=lambda x:x.get("updated_at",""))
-              run_id=run["id"]
-              subprocess.run(["gh","run","download",str(run_id),"-n",artifact,"-D","evidence-correlation"],check=True)
-              api="repos/{}/actions/runs/{}/artifacts".format(os.environ["GITHUB_REPOSITORY"], run_id)
-              raw=subprocess.check_output(["gh","api",api],text=True)
-              arts=json.loads(raw).get("artifacts",[])
-              match=next((a for a in arts if a.get("name")==artifact),None)
-              if not match: raise SystemExit(f"MISSING_ARTIFACT={artifact}")
-              selected[name]={"run_id":run_id,"head_sha":run["head_sha"],"artifact":artifact,"artifact_digest":match.get("digest")}
-          contexts=[]
-          for root,_,files in os.walk("evidence-correlation"):
-              for fn in files:
-                  if fn=="evidence-context.json": contexts.append(os.path.join(root,fn))
-          for p in contexts:
-              d=json.load(open(p))
-              assert d["source_commit"]==target,(p,d)
-              assert d["correlation_key"]==target,(p,d)
-          nina=[]
-          for root,_,files in os.walk("evidence-correlation"):
-              for fn in files:
-                  if fn=="nina-igor-evidence.json": nina.append(os.path.join(root,fn))
-          if len(nina)!=1: raise SystemExit(f"EXPECTED_ONE_NINA_IGOR_EVIDENCE={nina}")
-          d=json.load(open(nina[0]))
-          assert d["commit"]==target,d
-          manifest={"schema":"ola-evidence-correlation-v1","source_sha":target,"correlation_key":target,"runs":selected}
-          json.dump(manifest,open("evidence-correlation-manifest.json","w"),sort_keys=True,indent=2)
-          PY
+import json, os, subprocess
+target=os.environ["TARGET_SHA"]
+runs=json.load(open("required-runs.json",encoding="utf-8"))["workflow_runs"]
+wanted={"OLA State Continuity and Stability":f"ola-state-continuity-{target}","OLA Real Runtime Stress Gate":f"ola-runtime-stress-{target}","Provenance Mutation Gate":f"ola-provenance-evidence-{target}","Nina Igor Gate":f"nina-igor-evidence-{target}"}
+selected={}
+for name,artifact in wanted.items():
+    candidates=[r for r in runs if r.get("name")==name and r.get("conclusion")=="success" and r.get("head_sha")==target]
+    if not candidates: raise SystemExit(f"MISSING_CORRELATED_RUN={name}")
+    run=max(candidates,key=lambda x:x.get("updated_at","")); run_id=run["id"]
+    dest=os.path.join("evidence-correlation",name.lower().replace(" ","-")); os.makedirs(dest,exist_ok=True)
+    subprocess.run(["gh","run","download",str(run_id),"-n",artifact,"-D",dest],check=True)
+    api=f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}/artifacts"
+    arts=json.loads(subprocess.check_output(["gh","api",api],text=True)).get("artifacts",[])
+    match=next((a for a in arts if a.get("name")==artifact),None)
+    if not match: raise SystemExit(f"MISSING_ARTIFACT={artifact}")
+    selected[name]={"run_id":run_id,"head_sha":run["head_sha"],"artifact":artifact,"artifact_digest":match.get("digest")}
+contexts=[]
+for root,_,files in os.walk("evidence-correlation"):
+    for fn in files:
+        if fn=="evidence-context.json": contexts.append(os.path.join(root,fn))
+if len(contexts)!=3: raise SystemExit(f"EXPECTED_THREE_CONTEXTS={contexts}")
+for p in contexts:
+    d=json.load(open(p,encoding="utf-8")); assert d["source_commit"]==target,(p,d); assert d["correlation_key"]==target,(p,d)
+nina=[]
+for root,_,files in os.walk("evidence-correlation"):
+    for fn in files:
+        if fn=="nina-igor-evidence.json": nina.append(os.path.join(root,fn))
+if len(nina)!=1: raise SystemExit(f"EXPECTED_ONE_NINA_IGOR_EVIDENCE={nina}")
+d=json.load(open(nina[0],encoding="utf-8")); assert d["commit"]==target,d
+manifest={"schema":"ola-evidence-correlation-v1","source_sha":target,"correlation_key":target,"runs":selected}
+json.dump(manifest,open("evidence-correlation-manifest.json","w"),sort_keys=True,indent=2)
+PY
           sha256sum evidence-correlation-manifest.json | tee evidence-correlation-manifest.sha256
       - name: Require cryptographically verified source commit
         env:
