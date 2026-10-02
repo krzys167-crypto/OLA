@@ -244,16 +244,10 @@ jobs:
         with:
           subject-path: "ola-source-${{ steps.target.outputs.sha }}.tar.gz"
 
-      - name: Mark source attestation verified
-        run: echo "SOURCE_ATTESTATION_STATUS=VERIFIED" >> "$GITHUB_ENV"
-
       - name: Attest release image archive
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: ola-release-image.tar
-
-      - name: Mark image attestation verified
-        run: echo "IMAGE_ATTESTATION_STATUS=VERIFIED" >> "$GITHUB_ENV"
 
       - name: Independently verify source and image attestations
         env:
@@ -262,6 +256,8 @@ jobs:
           set -euo pipefail
           gh attestation verify "ola-source-${{ steps.target.outputs.sha }}.tar.gz" --repo "$GITHUB_REPOSITORY"
           gh attestation verify ola-release-image.tar --repo "$GITHUB_REPOSITORY"
+          echo "SOURCE_ATTESTATION_STATUS=VERIFIED" >> "$GITHUB_ENV"
+          echo "IMAGE_ATTESTATION_STATUS=VERIFIED" >> "$GITHUB_ENV"
 
       - name: Verify release image boots
         shell: bash
@@ -342,6 +338,8 @@ jobs:
             evidence-correlation-manifest.sha256
             production-manifest.json
             production-manifest-sha256.txt
+            freeze-anchor.json
+            freeze-anchor.sha256
             source-sha256.txt
             image-sha256.txt
             final-independent-replay.json
