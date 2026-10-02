@@ -260,6 +260,19 @@ def _verify_image_and_model_digests(bundle: Path) -> dict:
         return _gate("UNKNOWN", "container image/model digest evidence missing")
     image_data = _load_json(image)
     model_data = _load_json(model)
+    archive = bundle / "docker-image.tar"
+    if archive.exists():
+        archive_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+        declared_archive_sha = str(image_data.get("archive_sha256", ""))
+        if declared_archive_sha != archive_sha:
+            return _gate(
+                "BLOCKED",
+                "Docker image archive hash mismatch",
+                declared=declared_archive_sha,
+                actual=archive_sha,
+            )
+    else:
+        return _gate("UNKNOWN", "Docker image archive evidence missing")
     image_id = image_data.get("image_id")
     model_digest = model_data.get("digest")
     if not isinstance(image_id, str) or not image_id.startswith("sha256:"):
