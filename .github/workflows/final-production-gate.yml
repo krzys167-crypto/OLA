@@ -157,7 +157,7 @@ jobs:
             production-manifest-sha256.txt
             source-sha256.txt
             image-sha256.txt
-            ola-source-${{ github.sha }}.tar.gz
+            ola-source-${{ steps.target.outputs.sha }}.tar.gz
             ola-release-image.tar
 
       - name: Cleanup
