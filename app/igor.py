@@ -43,9 +43,11 @@ class IgorVerifier:
         if not payloads:
             return IgorVerification("UNKNOWN", "missing current-run evidence", checks)
         provenance_values = {payload.get("commit") for payload in payloads if payload.get("commit") is not None}
+        source_values = {payload.get("source_commit") for payload in payloads if payload.get("source_commit") is not None}
         checks["commit"] = bool(expected_commit) and expected_commit in provenance_values
-        if not checks["commit"]:
-            return IgorVerification("BLOCK", "commit provenance mismatch", checks)
+        checks["source_commit"] = bool(expected_commit) and expected_commit in source_values
+        if not checks["commit"] or not checks["source_commit"]:
+            return IgorVerification("BLOCK", "commit/source_commit provenance mismatch", checks)
 
         matching_task = any(payload.get("task") == expected_task for payload in payloads)
         checks["task"] = matching_task
@@ -82,9 +84,14 @@ class IgorVerifier:
                     for payload in provenance_payloads
                     for response_id in payload.get("response_ids", [])
                 ]
-                if not response_ids:
-                    return IgorVerification("BLOCK", "real LLM response ids missing", checks)
-                checks["response_ids"] = True
+                response_digests = [
+                    response_digest
+                    for payload in provenance_payloads
+                    for response_digest in payload.get("response_digests", [])
+                ]
+                if not response_ids and not response_digests:
+                    return IgorVerification("BLOCK", "real LLM response identity missing", checks)
+                checks["response_identity"] = True
         if expected_model is not None:
             checks["model"] = bool(provenance_payloads) and any(
                 payload.get("model") == expected_model
