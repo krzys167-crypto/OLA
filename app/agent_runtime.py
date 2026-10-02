@@ -145,6 +145,8 @@ def _invoke_llm(agent, task, context):
             "prompt_digest": _digest(prompt),
             "output": output,
             "response_id": body.get("id"),
+            "response_digest": _digest(canonical_json(body)),
+            "response_id_source": "provider" if body.get("id") else "missing",
         }
 
     if provider == "ollama":
@@ -170,14 +172,16 @@ def _invoke_llm(agent, task, context):
         output = body.get("message", {}).get("content")
         if not output:
             raise RuntimeError("Ollama response contained no message content")
-        response_id = body.get("id") or f"ollama:{_digest(canonical_json(body))}"
+        provider_response_id = body.get("id")
         return {
             "provider": "ollama",
             "model": model,
             "invocation_type": "real_llm",
             "prompt_digest": _digest(prompt),
             "output": output,
-            "response_id": response_id,
+            "response_id": provider_response_id,
+            "response_digest": _digest(canonical_json(body)),
+            "response_id_source": "provider" if provider_response_id else "local_response_digest",
         }
 
     if mode == "required":
@@ -203,7 +207,22 @@ def _execute_agent(agent, tenant_id, task, previous_output, execution):
     }
     model = _invoke_llm(agent, task, context) or _invoke_local_deterministic_model(agent, task, context)
     if agent == "codeact":
-        tool_output = _safe_expression(task)
+        if model["invocation_type"] == "real_llm":
+            try:
+                proposal = json.loads(model["output"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise RuntimeError("real LLM codeact output must be JSON") from exc
+            if not isinstance(proposal, dict) or proposal.get("action") != "safe_expression":
+                raise RuntimeError("real LLM codeact output must declare safe_expression")
+            proposed_result = str(proposal.get("result", ""))
+            verified_result = _safe_expression(task)
+            if proposed_result != verified_result:
+                raise RuntimeError(
+                    f"LLM proposed result {proposed_result!r}, verified execution result is {verified_result!r}"
+                )
+            tool_output = proposed_result
+        else:
+            tool_output = _safe_expression(task)
         result = {"capability": "executed_safe_expression", "tool": "safe_expression", "tool_output": tool_output, "result": f"safe execution returned {tool_output}"}
     elif agent == "react":
         data = _run_react(task, previous_output)
@@ -236,6 +255,8 @@ def _execute_agent(agent, tenant_id, task, previous_output, execution):
         "invocation_type": model["invocation_type"],
         "prompt_digest": model["prompt_digest"],
         "response_id": model.get("response_id"),
+        "response_digest": model.get("response_digest"),
+        "response_id_source": model.get("response_id_source"),
     })
     return result
 
@@ -254,6 +275,7 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
         "agent": agent,
         "agent_instance_id": agent_instance_id,
         "execution_boundary": "independent",
+        "source_commit": os.getenv("OLA_SOURCE_COMMIT", "UNKNOWN"),
         "context_digest": _digest(canonical_json(context)),
         "task": task,
         "input_digest": _digest(json.dumps(previous_output, sort_keys=True)),
@@ -290,6 +312,7 @@ def run_agent_task(tenant_id, task):
         "final_result": final_result,
         "status": verification["status"],
         "agents": AGENT_ROLES,
+        "source_commit": os.getenv("OLA_SOURCE_COMMIT", "UNKNOWN"),
         "evidence_count": len(evidence_ids),
         "evidence_ids": evidence_ids,
         "execution": execution,
@@ -383,7 +406,7 @@ def verify_agent_run(tenant_id, run_id):
     context_digests = set()
     for row in run_rows:
         payload = json.loads(row.payload_json)
-        required = {"capability", "tool", "tool_output", "result", "status", "agent_instance_id", "execution_boundary", "context_digest", "invocation_type", "model", "provider", "response_id"}
+        required = {"capability", "tool", "tool_output", "result", "status", "agent_instance_id", "execution_boundary", "source_commit", "context_digest", "invocation_type", "model", "provider", "response_id"}
         if not required.issubset(payload):
             return {"status": "BLOCK", "reason": "agent execution evidence incomplete", "evidence_count": len(run_rows)}
         if payload["status"] != "VERIFIED":
@@ -394,6 +417,9 @@ def verify_agent_run(tenant_id, run_id):
         context_digests.add(payload["context_digest"])
     if len(instance_ids) != len(AGENT_ROLES) or len(context_digests) != len(AGENT_ROLES):
         return {"status": "BLOCK", "reason": "agent instances or contexts are not unique", "evidence_count": len(run_rows)}
+    source_commits = {json.loads(row.payload_json).get("source_commit") for row in run_rows}
+    if len(source_commits) != 1 or None in source_commits:
+        return {"status": "BLOCK", "reason": "source commit binding is missing or inconsistent", "evidence_count": len(run_rows)}
     chain = [{"tenant_id": row.tenant_id, "seq": row.seq, "prev_hash": row.prev_hash, "record_hash": row.record_hash, "payload_json": row.payload_json} for row in rows]
     chain_ok, reason = verify_chain(chain)
     if not chain_ok:
