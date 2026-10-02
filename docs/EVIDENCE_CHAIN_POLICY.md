@@ -2,6 +2,8 @@
 
 ## Canonical source identity
 
+**POLICY DECIDED: EXACT SOURCE SHA**
+
 `SOURCE_SHA` is the only canonical correlation key for runtime, provenance, replay and production evidence.
 
 - Pull request: `SOURCE_SHA = github.event.pull_request.head.sha`.
@@ -56,3 +58,29 @@ The following are runtime evidence obligations, not code claims:
 - an independently retained copy of that usage/cost export.
 
 Until those are captured, they remain UNKNOWN / NOT VERIFIED.
+## Anti-replay challenge
+
+**POLICY DECIDED: FRESH 256-BIT NONCE PER EXECUTION**
+
+Every real-LLM evidence run must receive a freshly generated 32-byte hexadecimal `REPLAY_NONCE` from the execution runner.
+
+The runner, not the runtime, is responsible for challenge issuance. The runtime must fail closed when real LLM mode is required but the nonce is missing or malformed.
+
+The nonce is bound to:
+
+- the execution `run_id`;
+- the exact `SOURCE_SHA`;
+- every agent evidence record;
+- the provider trace;
+- the independent verifier invocation.
+
+The independent verifier must compare the evidence nonce to the externally supplied expected nonce. A local bundle containing only a self-declared nonce is therefore `REVIEW_REQUIRED`, not `VERIFIED`.
+
+A repeated nonce is not accepted as proof of freshness merely because it is syntactically valid. Freshness is established by the current runner-issued challenge and its correlation to the current run.
+
+## Semantic state
+
+- `VERIFIED`: the exact source and current challenge were independently matched.
+- `REVIEW_REQUIRED`: evidence is internally coherent but an external trust/freshness anchor is absent.
+- `UNKNOWN`: required evidence is not available.
+- `BLOCKED`: evidence contradicts the expected source/challenge or a required gate failed.
