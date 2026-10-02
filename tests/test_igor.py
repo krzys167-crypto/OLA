@@ -44,6 +44,7 @@ def test_igor_verifies_real_ollama_provenance():
     payload = {
         "run_id": "r1",
         "commit": "abc",
+        "source_commit": "abc",
         "task": "Calculate 17 * 23",
         "result": "391",
         "provider": "ollama",
@@ -74,10 +75,11 @@ def test_igor_verifies_real_ollama_provenance():
     assert result.checks["provider"] is True
 
 def test_igor_scopes_checks_to_current_run_but_verifies_full_chain():
-    first_payload = {"run_id": "old", "commit": "abc", "task": "old", "result": "old"}
+    first_payload = {"run_id": "old", "commit": "abc", "source_commit": "abc", "task": "old", "result": "old"}
     second_payload = {
         "run_id": "r2",
         "commit": "abc",
+        "source_commit": "abc",
         "task": "Calculate 17 * 23",
         "result": "391",
         "provider": "ollama",
