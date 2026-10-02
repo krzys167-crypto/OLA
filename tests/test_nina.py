@@ -142,6 +142,7 @@ def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9
             "execution": [
                 {
                     "agent": name,
+                    "replay_nonce": "ab" * 32,
                     "started_at": f"2026-10-02T20:{10+i:02d}:00+00:00",
                     "ended_at": f"2026-10-02T20:{10+i:02d}:01+00:00",
                     "provider": "ollama",
@@ -190,6 +191,7 @@ def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9
                 "agent": name,
                 "run_id": "run-1",
                 "source_commit": source,
+                "replay_nonce": "ab" * 32,
                 "response_digest": f"digest-{i}",
                 "model": "qwen2.5:0.5b-instruct",
                 "started_at": f"2026-10-02T20:{10+i:02d}:00+00:00",
