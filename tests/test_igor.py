@@ -10,6 +10,7 @@ def _record(commit="abc", result="391", source_commit=None):
         "run_id": "r1",
         "commit": commit,
         "source_commit": source_commit,
+        "agent": "codeact",
         "task": "Calculate 17 * 23",
         "result": result,
     }
@@ -46,9 +47,9 @@ def test_igor_verifies_real_ollama_provenance():
         "run_id": "r1",
         "commit": "abc",
         "source_commit": "abc",
+        "agent": "codeact",
         "task": "Calculate 17 * 23",
         "result": "391",
-        "source_commit": "abc",
         "provider": "ollama",
         "model": "qwen2.5:0.5b-instruct",
         "invocation_type": "real_llm",
@@ -74,6 +75,7 @@ def test_igor_verifies_real_ollama_provenance():
         "391",
         expected_provider="ollama",
         expected_model="qwen2.5:0.5b-instruct",
+        expected_invocation_type="real_llm",
     )
     assert result.status == "VERIFIED"
     assert result.checks["provider"] is True
@@ -84,6 +86,7 @@ def test_igor_scopes_checks_to_current_run_but_verifies_full_chain():
         "run_id": "r2",
         "commit": "abc",
         "source_commit": "abc",
+        "agent": "react",
         "task": "Calculate 17 * 23",
         "result": "391",
         "provider": "ollama",
