@@ -1,5 +1,6 @@
 import ast
 import hashlib
+from datetime import datetime, timezone
 import json
 import operator
 import os
@@ -278,6 +279,9 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
         "previous_output": previous_output,
         "upstream_agents": [item["agent"] for item in execution],
     }
+    started_at = datetime.now(timezone.utc).isoformat()
+    execution_output = _execute_agent(agent, tenant_id, task, previous_output, execution)
+    ended_at = datetime.now(timezone.utc).isoformat()
     output = {
         "agent": agent,
         "agent_instance_id": agent_instance_id,
@@ -286,7 +290,9 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
         "context_digest": _digest(canonical_json(context)),
         "task": task,
         "input_digest": _digest(json.dumps(previous_output, sort_keys=True)),
-        **_execute_agent(agent, tenant_id, task, previous_output, execution),
+        "started_at": started_at,
+        "ended_at": ended_at,
+        **execution_output,
         "status": "VERIFIED",
         "llm_required": os.getenv("OLA_LLM_MODE", "deterministic") == "required",
     }
