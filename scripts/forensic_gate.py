@@ -66,9 +66,10 @@ def _verify_manifest_hashes(bundle: Path) -> dict:
             return _gate("BLOCKED", "invalid SHA256 digest in SHA256SUMS.txt", file=name)
         expected[name] = digest
 
+    excluded = {"SHA256SUMS.txt", "freeze-anchor.json", "freeze-anchor.sha256"}
     actual_files = sorted(
         path.name for path in bundle.iterdir()
-        if path.is_file() and path.name != "SHA256SUMS.txt"
+        if path.is_file() and path.name not in excluded
     )
     missing = sorted(set(actual_files) - set(expected))
     if missing:
