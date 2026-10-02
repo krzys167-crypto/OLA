@@ -1,7 +1,11 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern("^[0-9a-f]{40}$")]
-    [string]$SourceCommit
+    [string]$SourceCommit,
+
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern("^[0-9a-f]{64}$")]
+    [string]$ReplayNonce
 )
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -16,8 +20,17 @@ $OllamaModel = "qwen2.5:0.5b-instruct"
 $OfficialOllamaModelIdPrefix = "a8b0c5157701"
 $OllamaBaseUrl = "http://host.docker.internal:11434"
 $RegistrationRunId = [guid]::NewGuid().ToString()
+$RunChallengePath = Join-Path $EvidenceDir "run-challenge.json"
 $StartedAtDate = (Get-Date).ToUniversalTime()
 $StartedAt = $StartedAtDate.ToString("o")
+@{
+    schema = "ola-run-challenge/v1"
+    challenge_id = "$RegistrationRunId"
+    run_id = ""
+    source_commit = $SourceCommit
+    replay_nonce = $ReplayNonce
+    issued_at = $StartedAt
+} | ConvertTo-Json -Depth 10 | Set-Content $RunChallengePath
 $GateResults = [ordered]@{}
 function Write-Gate($name, $status, $detail, $exitCode = 0) {
     Write-Host ("[{0}] {1} - {2}" -f $status, $name, $detail)
@@ -140,7 +153,7 @@ $pytestExit = $LASTEXITCODE
 if ($pytestExit -ne 0) { Write-Gate "PYTEST" "BLOCKED" "pytest failed" $pytestExit; exit 50 }
 Write-Gate "PYTEST" "VERIFIED" "pytest passed"
 docker rm -f $Container 2>$null | Out-Null
-docker run -d --name $Container -p ("${Port}:8000") -e OLA_LLM_PROVIDER=ollama -e OLA_LLM_MODE=required -e OLA_LLM_MODEL=$OllamaModel -e OLLAMA_MODEL=$OllamaModel -e OLLAMA_BASE_URL=$OllamaBaseUrl -e OLA_LLM_TIMEOUT=120 -e OLA_SOURCE_COMMIT=$SourceCommit -e OLA_RUNTIME_COMMIT=$SourceCommit $Image | Set-Content (Join-Path $EvidenceDir "container-id.txt")
+docker run -d --name $Container -p ("${Port}:8000") -e OLA_LLM_PROVIDER=ollama -e OLA_LLM_MODE=required -e OLA_LLM_MODEL=$OllamaModel -e OLLAMA_MODEL=$OllamaModel -e OLLAMA_BASE_URL=$OllamaBaseUrl -e OLA_LLM_TIMEOUT=120 -e OLA_SOURCE_COMMIT=$SourceCommit -e OLA_RUNTIME_COMMIT=$SourceCommit -e OLA_REPLAY_NONCE=$ReplayNonce $Image | Set-Content (Join-Path $EvidenceDir "container-id.txt")
 $healthy = $false
 for ($i=0; $i -lt 30; $i++) {
   try { $h = Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 3; if ($h.status -eq "ok") { $healthy = $true; break } } catch {}
@@ -155,6 +168,9 @@ $headers = @{ "X-API-Key" = $rawKey; "Content-Type" = "application/json" }
 $body = @{ task = "Calculate 17 * 23 and return the verified result." } | ConvertTo-Json
 $agentResult = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/agent-run" -Headers $headers -Body $body -TimeoutSec 30
 $agentResult | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $EvidenceDir "agent-run.json")
+$challenge = Get-Content $RunChallengePath -Raw | ConvertFrom-Json
+$challenge.run_id = $agentResult.run_id
+$challenge | ConvertTo-Json -Depth 10 | Set-Content $RunChallengePath
 if ($agentResult.status -ne "VERIFIED" -or $agentResult.final_result -ne "391" -or $agentResult.evidence_count -ne 6 -or $agentResult.source_commit -ne $SourceCommit -or @($agentResult.execution).Count -ne 6) { Write-Gate "AGENT_RUNTIME" "BLOCKED" "runtime proof failed" 70; docker logs $Container | Set-Content (Join-Path $EvidenceDir "runtime.log"); docker rm -f $Container | Out-Null; exit 70 }
 foreach ($item in @($agentResult.execution)) {
     if ($item.provider -ne "ollama" -or $item.model -ne $OllamaModel -or $item.invocation_type -ne "real_llm" -or ([string]::IsNullOrWhiteSpace($item.response_id) -and [string]::IsNullOrWhiteSpace($item.response_digest)) -or [string]::IsNullOrWhiteSpace($item.started_at) -or [string]::IsNullOrWhiteSpace($item.ended_at)) {
@@ -164,7 +180,7 @@ foreach ($item in @($agentResult.execution)) {
     }
 }
 Write-Gate "AGENT_RUNTIME" "VERIFIED" "six-agent real Ollama runtime returned 391"
-$verifyOutput = docker exec $Container python scripts/verify_agent_runtime.py --tenant-id $tenantId --run-id $agentResult.run_id --expected-commit $SourceCommit --expected-task "Calculate 17 * 23 and return the verified result." --expected-result 391 --expected-provider ollama --expected-model $OllamaModel --expected-invocation-type real_llm | Tee-Object -FilePath (Join-Path $EvidenceDir "independent-verifier.txt")
+$verifyOutput = docker exec $Container python scripts/verify_agent_runtime.py --tenant-id $tenantId --run-id $agentResult.run_id --expected-commit $SourceCommit --expected-nonce $ReplayNonce --expected-task "Calculate 17 * 23 and return the verified result." --expected-result 391 --expected-provider ollama --expected-model $OllamaModel --expected-invocation-type real_llm | Tee-Object -FilePath (Join-Path $EvidenceDir "independent-verifier.txt")
 $verifyExit = $LASTEXITCODE
 if ($verifyExit -ne 0) { Write-Gate "INDEPENDENT_VERIFY" "BLOCKED" "standalone verifier rejected evidence" $verifyExit; docker rm -f $Container | Out-Null; exit 80 }
 $verifyJsonLine = @($verifyOutput | Where-Object { $_ -match '^{' } | Select-Object -Last 1)
@@ -194,6 +210,8 @@ for ($i = 0; $i -lt 30; $i++) {
 $agentRunId = $agentResult.run_id
 @{
     runtime_component = "ola-workstation-runtime"
+    source_commit = $SourceCommit
+    replay_nonce = $ReplayNonce
     verifier_component = "ola-workstation-independent-verifier"
     external_anchor = $false
     calls = @($agentResult.execution | ForEach-Object {
@@ -201,6 +219,7 @@ $agentRunId = $agentResult.run_id
             agent = $_.agent
             run_id = $agentRunId
             source_commit = $_.source_commit
+            replay_nonce = $ReplayNonce
             response_id = $_.response_id
             response_digest = $_.response_digest
             model = $_.model
@@ -237,6 +256,7 @@ try {
     schema = "ola-zbook-runtime-registration/v2"
     run_id = $RegistrationRunId
     agent_run_id = $agentRunId
+    replay_nonce = $ReplayNonce
     started_at = $StartedAtDate.ToString("o")
     ended_at = $EndedAtDate.ToString("o")
     hostname = $env:COMPUTERNAME
