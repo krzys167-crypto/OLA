@@ -66,22 +66,22 @@ jobs:
               "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TARGET_SHA}&per_page=100" \
               > required-runs.json
             if python - "${required[@]}" <<'PY'
-import json,sys,os
-required=sys.argv[1:]
-data=json.load(open("required-runs.json",encoding="utf-8"))
-runs={}
-for r in data.get("workflow_runs",[]):
+          import json,sys,os
+          required=sys.argv[1:]
+          data=json.load(open("required-runs.json",encoding="utf-8"))
+          runs={}
+          for r in data.get("workflow_runs",[]):
     n=r.get("name")
     if n and r.get("head_sha")==os.environ["TARGET_SHA"]:
         prev=runs.get(n)
         if prev is None or r.get("created_at","")>prev.get("created_at",""): runs[n]=r
-missing=[n for n in required if n not in runs]
-pending=[n for n in required if n in runs and runs[n].get("status") not in ("completed","cancelled","failure","success")]
-failed={n:runs[n].get("conclusion") or runs[n].get("status") for n in required if n in runs and runs[n].get("status")=="completed" and runs[n].get("conclusion")!="success"}
-print(json.dumps({"observed":{n:(runs[n].get("conclusion") or runs[n].get("status")) if n in runs else "MISSING" for n in required},"missing":missing,"pending":pending,"failed":failed},sort_keys=True))
-if missing or pending: raise SystemExit(10)
-if failed: raise SystemExit(11)
-PY
+          missing=[n for n in required if n not in runs]
+          pending=[n for n in required if n in runs and runs[n].get("status") not in ("completed","cancelled","failure","success")]
+          failed={n:runs[n].get("conclusion") or runs[n].get("status") for n in required if n in runs and runs[n].get("status")=="completed" and runs[n].get("conclusion")!="success"}
+          print(json.dumps({"observed":{n:(runs[n].get("conclusion") or runs[n].get("status")) if n in runs else "MISSING" for n in required},"missing":missing,"pending":pending,"failed":failed},sort_keys=True))
+          if missing or pending: raise SystemExit(10)
+          if failed: raise SystemExit(11)
+          PY
             then
               rc=0
             else
@@ -93,14 +93,14 @@ PY
             sleep 60
           done
           python - <<'PY'
-import json,os
-data=json.load(open("required-runs.json",encoding="utf-8"))
-required=set(["Nina TDD","OLA DI-OS Product Gate","NINA IGOR Ollama Full Flow","OLA Decision Evidence Gate","Revenue Surface Gate","OLA E2E Gate","Evidence Graph v0.1","OLA CodeQL","OLA Supply Chain Evidence Gate","Real LLM Ollama Runtime Gate","Provenance Mutation Gate","Provenance Gate Final","Nina Igor Gate","Nina Real Runtime Provenance Gate (OpenAI optional)","OLA State Continuity and Stability","OLA Real Runtime Stress Gate"])
-observed={r["name"]:r for r in data.get("workflow_runs",[]) if r.get("name") in required and r.get("head_sha")==os.environ["TARGET_SHA"]}
-assert required == set(observed), sorted(required-set(observed))
-assert all(r.get("conclusion")=="success" for r in observed.values()), observed
-print("ALL_REQUIRED_EVIDENCE_GATES=SUCCESS")
-PY
+          import json,os
+          data=json.load(open("required-runs.json",encoding="utf-8"))
+          required=set(["Nina TDD","OLA DI-OS Product Gate","NINA IGOR Ollama Full Flow","OLA Decision Evidence Gate","Revenue Surface Gate","OLA E2E Gate","Evidence Graph v0.1","OLA CodeQL","OLA Supply Chain Evidence Gate","Real LLM Ollama Runtime Gate","Provenance Mutation Gate","Provenance Gate Final","Nina Igor Gate","Nina Real Runtime Provenance Gate (OpenAI optional)","OLA State Continuity and Stability","OLA Real Runtime Stress Gate"])
+          observed={r["name"]:r for r in data.get("workflow_runs",[]) if r.get("name") in required and r.get("head_sha")==os.environ["TARGET_SHA"]}
+          assert required == set(observed), sorted(required-set(observed))
+          assert all(r.get("conclusion")=="success" for r in observed.values()), observed
+          print("ALL_REQUIRED_EVIDENCE_GATES=SUCCESS")
+          PY
           baseline_dir="frontier-baseline-evidence"
           mkdir -p "$baseline_dir"
           baseline_sha="472eaf20056f73b2d8bf5ed77a63a128b38cc171"
@@ -110,15 +110,15 @@ PY
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/frontier-baseline.yml/runs?status=success&per_page=20" \
             > frontier-baseline-runs.json
           python - "$baseline_sha" <<'PY'
-import json,sys
-sha=sys.argv[1]
-data=json.load(open("frontier-baseline-runs.json",encoding="utf-8"))
-runs=[r for r in data.get("workflow_runs",[]) if r.get("conclusion")=="success"]
-if not runs: raise SystemExit("MISSING_SUCCESSFUL_FRONTIER_BASELINE_RUN")
-run=max(runs,key=lambda x:x.get("updated_at",""))
-open("frontier-baseline-run-id.txt","w").write(str(run["id"]))
-print(run["id"])
-PY
+          import json,sys
+          sha=sys.argv[1]
+          data=json.load(open("frontier-baseline-runs.json",encoding="utf-8"))
+          runs=[r for r in data.get("workflow_runs",[]) if r.get("conclusion")=="success"]
+          if not runs: raise SystemExit("MISSING_SUCCESSFUL_FRONTIER_BASELINE_RUN")
+          run=max(runs,key=lambda x:x.get("updated_at",""))
+          open("frontier-baseline-run-id.txt","w").write(str(run["id"]))
+          print(run["id"])
+          PY
           baseline_run_id="$(cat frontier-baseline-run-id.txt)"
           gh run download "$baseline_run_id" -n "ola-frontier-baseline-$baseline_sha" -D "$baseline_dir"
           grep -Fx "BASELINE_SHA=$baseline_sha" "$baseline_dir/baseline-source.txt"
@@ -133,12 +133,12 @@ PY
           set -euo pipefail
           mkdir -p evidence-correlation
           python - <<'PY'
-import json, os, subprocess
-target=os.environ["TARGET_SHA"]
-runs=json.load(open("required-runs.json",encoding="utf-8"))["workflow_runs"]
-wanted={"OLA State Continuity and Stability":f"ola-state-continuity-{target}","OLA Real Runtime Stress Gate":f"ola-runtime-stress-{target}","Provenance Mutation Gate":f"ola-provenance-evidence-{target}","Nina Igor Gate":f"nina-igor-evidence-{target}"}
-selected={}
-for name,artifact in wanted.items():
+          import json, os, subprocess
+          target=os.environ["TARGET_SHA"]
+          runs=json.load(open("required-runs.json",encoding="utf-8"))["workflow_runs"]
+          wanted={"OLA State Continuity and Stability":f"ola-state-continuity-{target}","OLA Real Runtime Stress Gate":f"ola-runtime-stress-{target}","Provenance Mutation Gate":f"ola-provenance-evidence-{target}","Nina Igor Gate":f"nina-igor-evidence-{target}"}
+          selected={}
+          for name,artifact in wanted.items():
     candidates=[r for r in runs if r.get("name")==name and r.get("conclusion")=="success" and r.get("head_sha")==target]
     if not candidates: raise SystemExit(f"MISSING_CORRELATED_RUN={name}")
     run=max(candidates,key=lambda x:x.get("updated_at","")); run_id=run["id"]
@@ -149,22 +149,22 @@ for name,artifact in wanted.items():
     match=next((a for a in arts if a.get("name")==artifact),None)
     if not match: raise SystemExit(f"MISSING_ARTIFACT={artifact}")
     selected[name]={"run_id":run_id,"head_sha":run["head_sha"],"artifact":artifact,"artifact_digest":match.get("digest")}
-contexts=[]
-for root,_,files in os.walk("evidence-correlation"):
+          contexts=[]
+          for root,_,files in os.walk("evidence-correlation"):
     for fn in files:
         if fn=="evidence-context.json": contexts.append(os.path.join(root,fn))
-if len(contexts)!=3: raise SystemExit(f"EXPECTED_THREE_CONTEXTS={contexts}")
-for p in contexts:
+          if len(contexts)!=3: raise SystemExit(f"EXPECTED_THREE_CONTEXTS={contexts}")
+          for p in contexts:
     d=json.load(open(p,encoding="utf-8")); assert d["source_commit"]==target,(p,d); assert d["correlation_key"]==target,(p,d)
-nina=[]
-for root,_,files in os.walk("evidence-correlation"):
+          nina=[]
+          for root,_,files in os.walk("evidence-correlation"):
     for fn in files:
         if fn=="nina-igor-evidence.json": nina.append(os.path.join(root,fn))
-if len(nina)!=1: raise SystemExit(f"EXPECTED_ONE_NINA_IGOR_EVIDENCE={nina}")
-d=json.load(open(nina[0],encoding="utf-8")); assert d["commit"]==target,d
-manifest={"schema":"ola-evidence-correlation-v1","source_sha":target,"correlation_key":target,"runs":selected}
-json.dump(manifest,open("evidence-correlation-manifest.json","w"),sort_keys=True,indent=2)
-PY
+          if len(nina)!=1: raise SystemExit(f"EXPECTED_ONE_NINA_IGOR_EVIDENCE={nina}")
+          d=json.load(open(nina[0],encoding="utf-8")); assert d["commit"]==target,d
+          manifest={"schema":"ola-evidence-correlation-v1","source_sha":target,"correlation_key":target,"runs":selected}
+          json.dump(manifest,open("evidence-correlation-manifest.json","w"),sort_keys=True,indent=2)
+          PY
           sha256sum evidence-correlation-manifest.json | tee evidence-correlation-manifest.sha256
       - name: Require cryptographically verified source commit
         env:
