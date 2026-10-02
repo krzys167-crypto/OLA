@@ -150,7 +150,7 @@ def _verify_runtime_execution(bundle: Path, expected_source_sha: str) -> dict:
         return _gate("BLOCKED", "six-agent execution order mismatch", agents=names)
 
     for item in execution:
-        if item.get("source_commit") not in (None, expected_source_sha):
+        if item.get("source_commit") != expected_source_sha:
             return _gate("BLOCKED", "agent execution source mismatch", agent=item.get("agent"))
         if item.get("provider") != "ollama":
             return _gate("BLOCKED", "unexpected provider", agent=item.get("agent"))
@@ -175,11 +175,19 @@ def _verify_provider_trace(bundle: Path) -> dict:
     by_agent = {call.get("agent"): call for call in calls}
     if set(by_agent) != set(EXPECTED_AGENTS):
         return _gate("BLOCKED", "provider trace agent set mismatch")
+    agent_run = _load_json(bundle / "agent-run.json")
+    execution_by_agent = {item.get("agent"): item for item in agent_run.get("execution", [])}
     for call in calls:
-        if not call.get("run_id") or not call.get("response_digest"):
-            return _gate("BLOCKED", "provider trace lacks run or response digest", agent=call.get("agent"))
-        if call.get("model") != "qwen2.5:0.5b-instruct":
-            return _gate("BLOCKED", "provider trace model mismatch", agent=call.get("agent"))
+        agent = call.get("agent")
+        runtime = execution_by_agent.get(agent)
+        if not call.get("run_id") or not call.get("response_digest") or not runtime:
+            return _gate("BLOCKED", "provider trace lacks correlated runtime evidence", agent=agent)
+        if call.get("run_id") != agent_run.get("run_id") or call.get("source_commit") != agent_run.get("source_commit"):
+            return _gate("BLOCKED", "provider trace source/run correlation mismatch", agent=agent)
+        if call.get("model") != "qwen2.5:0.5b-instruct" or runtime.get("model") != call.get("model"):
+            return _gate("BLOCKED", "provider trace model mismatch", agent=agent)
+        if call.get("response_digest") != runtime.get("response_digest"):
+            return _gate("BLOCKED", "provider trace response digest mismatch", agent=agent)
     return _gate("VERIFIED", "provider boundary trace is internally consistent", count=6)
 
 
@@ -357,3 +365,31 @@ def evaluate_forensic_bundle(
         "status": overall,
         "gates": gates,
     }
+
+
+def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Verify an exported OLA workstation evidence bundle.")
+    parser.add_argument("--bundle-dir", required=True)
+    parser.add_argument("--expected-source-sha", required=True)
+    parser.add_argument("--zip")
+    parser.add_argument("--zip-sha256")
+    parser.add_argument("--output")
+    args = parser.parse_args()
+
+    report = evaluate_forensic_bundle(
+        args.bundle_dir,
+        args.expected_source_sha,
+        zip_path=args.zip,
+        zip_sha_path=args.zip_sha256,
+    )
+    rendered = json.dumps(report, sort_keys=True, indent=2)
+    print(rendered)
+    if args.output:
+        Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+    return {"VERIFIED": 0, "REVIEW_REQUIRED": 2, "UNKNOWN": 3, "BLOCKED": 1}[report["status"]]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
