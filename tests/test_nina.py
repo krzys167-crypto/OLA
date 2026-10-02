@@ -56,6 +56,7 @@ def test_real_llm_output_is_causal(monkeypatch):
     tenant_id = _seed_runtime_tenant()
     monkeypatch.setenv("OLA_LLM_MODE", "required")
     monkeypatch.setenv("OLA_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OLA_REPLAY_NONCE", "ab" * 32)
 
     def fake_llm(*args, **kwargs):
         return {
@@ -108,6 +109,7 @@ def test_ollama_without_provider_id_keeps_response_digest(monkeypatch):
     monkeypatch.setenv("OLA_LLM_PROVIDER", "ollama")
     monkeypatch.setenv("OLA_LLM_MODE", "required")
     monkeypatch.setenv("OLA_LLM_MODEL", "qwen2.5:0.5b-instruct")
+    monkeypatch.setenv("OLA_REPLAY_NONCE", "ab" * 32)
 
     class FakeResponse:
         def raise_for_status(self):
