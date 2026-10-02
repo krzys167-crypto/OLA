@@ -91,7 +91,7 @@ Write-Gate "SOURCE_PIN" "VERIFIED" $actual
 docker build --tag $Image $RepoDir | Tee-Object -FilePath (Join-Path $EvidenceDir "docker-build.log")
 $buildExit = $LASTEXITCODE
 if ($buildExit -ne 0) { Write-Gate "IMAGE_BUILD" "BLOCKED" "Docker build failed" $buildExit; exit 40 }
-$imageInspect = @(docker image inspect $Image | ConvertFrom-Json)
+$imageInspect = @(docker image inspect $Image | Out-String | ConvertFrom-Json)
 if ($imageInspect.Count -ne 1 -or [string]::IsNullOrWhiteSpace($imageInspect[0].Id) -or -not $imageInspect[0].Id.StartsWith("sha256:")) {
     Write-Gate "IMAGE_DIGEST" "BLOCKED" "Docker image content digest missing" 41
     exit 41
@@ -212,6 +212,9 @@ $GateResults["STABILITY"] = [ordered]@{
     timestamp = $EndedAtDate.ToString("o")
 }
 @{
+    prerequisites = $GateResults["PREREQUISITES"]
+    ollama_pull = $GateResults["OLLAMA_PULL"]
+    ollama_model_digest = $GateResults["OLLAMA_MODEL_DIGEST"]
     source_pin = $GateResults["SOURCE_PIN"]
     image_build = $GateResults["IMAGE_BUILD"]
     image_digest = $GateResults["IMAGE_DIGEST"]
