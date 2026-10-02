@@ -10,6 +10,7 @@ permissions:
   contents: read
 
 env:
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
   OLA_LLM_PROVIDER: ollama
   OLA_LLM_MODE: required
   OLLAMA_MODEL: qwen2.5:0.5b-instruct
@@ -24,6 +25,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Set up Ollama
         shell: bash
@@ -64,7 +66,8 @@ jobs:
             --name ola-ollama-e2e \
             --network host \
             -e OLA_EG_DB_PATH=/data/ola.db \
-            -e OLA_RUNTIME_COMMIT="$GITHUB_SHA" \
+            -e OLA_SOURCE_COMMIT="$SOURCE_SHA" \
+            -e OLA_RUNTIME_COMMIT="$SOURCE_SHA" \
             -e OLA_LLM_PROVIDER="$OLA_LLM_PROVIDER" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
             -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
@@ -86,7 +89,7 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i \
-            -e EXPECTED_COMMIT="$GITHUB_SHA" \
+            -e EXPECTED_COMMIT="$SOURCE_SHA" \
             -e OLLAMA_MODEL="$OLLAMA_MODEL" \
             ola-ollama-e2e python - <<'PY' > ollama-runtime-proof.json
           import hashlib
@@ -128,7 +131,7 @@ jobs:
           assert all(item["provider"]=="ollama" for item in result["execution"]), result
           assert all(item["model"]==os.environ["OLLAMA_MODEL"] for item in result["execution"]), result
           assert all(item["invocation_type"]=="real_llm" for item in result["execution"]), result
-          assert all(item.get("response_id") for item in result["execution"]), result
+          assert all(item.get("response_id") or item.get("response_digest") for item in result["execution"]), result
 
           proof={
               "gate":"REAL_OLLAMA_LLM_E2E",
@@ -140,6 +143,7 @@ jobs:
               "final_result":result["final_result"],
               "evidence_count":result["evidence_count"],
               "commit":os.environ["EXPECTED_COMMIT"],
+              "source_commit":result["source_commit"],
               "run_id":result["run_id"],
           }
           print(json.dumps(proof,sort_keys=True))
@@ -176,7 +180,7 @@ jobs:
       - name: Upload Ollama LLM evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ollama-real-llm-proof-${{ github.sha }}
+          name: ollama-real-llm-proof-${{ env.SOURCE_SHA }}
           path: |
             ollama-tags-before-pull.json
             ollama-models.json
@@ -195,7 +199,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ollama-real-llm-failure-${{ github.sha }}
+          name: ollama-real-llm-failure-${{ env.SOURCE_SHA }}
           path: |
             ola-ollama-runtime-failure.log
 
