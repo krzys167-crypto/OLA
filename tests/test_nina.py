@@ -355,3 +355,57 @@ def test_igor_rejects_mixed_source_commits():
     )
     assert result.status == "BLOCK"
     assert result.reason == "commit/source_commit provenance mismatch"
+
+
+def test_real_llm_requires_fresh_replay_nonce(monkeypatch):
+    tenant_id = _seed_runtime_tenant()
+    monkeypatch.setenv("OLA_LLM_MODE", "required")
+    monkeypatch.setenv("OLA_LLM_PROVIDER", "ollama")
+    monkeypatch.delenv("OLA_REPLAY_NONCE", raising=False)
+    with pytest.raises(RuntimeError, match="OLA_REPLAY_NONCE"):
+        run_agent_task(tenant_id, "Calculate 17 * 23 and return the verified result.")
+
+
+def test_independent_verifier_rejects_missing_or_mismatched_replay_nonce(monkeypatch):
+    tenant_id = _seed_runtime_tenant()
+    source_sha = "source-sha-nonce"
+    nonce = "ab" * 32
+    monkeypatch.setenv("OLA_SOURCE_COMMIT", source_sha)
+    monkeypatch.setenv("OLA_REPLAY_NONCE", nonce)
+    result = run_agent_task(tenant_id, "verify nonce binding")
+
+    assert result["replay_nonce"] == nonce
+    assert verify(
+        tenant_id,
+        result["run_id"],
+        expected_commit=source_sha,
+        expected_task="verify nonce binding",
+        expected_result=result["final_result"],
+        expected_nonce=nonce + "00",
+    )["status"] == "BLOCK"
+
+
+def test_forensic_gate_blocks_replay_nonce_mismatch(tmp_path):
+    bundle = _write_complete_forensic_bundle(tmp_path)
+    source = "df9f8783248812c2c887cc9805524602f4dc3ef2"
+    (tmp_path / "run-challenge.json").write_text(json.dumps({
+        "schema": "ola-run-challenge/v1",
+        "run_id": "run-1",
+        "source_commit": source,
+        "replay_nonce": "ab" * 32,
+    }, sort_keys=True))
+    data = json.loads((tmp_path / "agent-run.json").read_text())
+    data["replay_nonce"] = "cd" * 32
+    (tmp_path / "agent-run.json").write_text(json.dumps(data, sort_keys=True))
+    for file in sorted(tmp_path.iterdir()):
+        if file.name == "SHA256SUMS.txt":
+            continue
+    sums=[]
+    import hashlib
+    for file in sorted(tmp_path.iterdir()):
+        if file.name != "SHA256SUMS.txt":
+            sums.append(f"{hashlib.sha256(file.read_bytes()).hexdigest()}  {file.name}")
+    (tmp_path / "SHA256SUMS.txt").write_text("\n".join(sums) + "\n")
+    report = evaluate_forensic_bundle(tmp_path, source)
+    assert report["gates"]["anti_replay"]["status"] == "BLOCKED"
+    assert report["status"] == "BLOCKED"
