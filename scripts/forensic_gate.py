@@ -268,6 +268,23 @@ def _verify_timing(bundle: Path) -> dict:
     return _gate("VERIFIED", "runtime and six-agent timing evidence is coherent", duration_seconds=duration)
 
 
+def _verify_freeze_anchor(bundle: Path, expected_source_sha: str) -> dict:
+    anchor = bundle / "freeze-anchor.json"
+    anchor_hash = bundle / "freeze-anchor.sha256"
+    if not anchor.exists() and not anchor_hash.exists():
+        return _gate("REVIEW_REQUIRED", "freeze anchor is absent; external freeze remains open")
+    if not anchor.exists() or not anchor_hash.exists():
+        return _gate("BLOCKED", "freeze anchor is incomplete")
+
+    data = _load_json(anchor)
+    if data.get("source_sha") != expected_source_sha:
+        return _gate("BLOCKED", "freeze anchor source SHA mismatch", source_sha=data.get("source_sha"))
+    ok, detail = _verify_sha256_file(anchor, anchor_hash)
+    if not ok:
+        return _gate("BLOCKED", "freeze anchor hash mismatch", detail=detail)
+    return _gate("VERIFIED", "freeze anchor content and hash are internally consistent")
+
+
 def _verify_execution_integrity(bundle: Path) -> dict:
     path = bundle / "gate-results.json"
     if not path.exists():
@@ -327,6 +344,7 @@ def evaluate_forensic_bundle(
     gates["image_model_digests"] = _verify_image_and_model_digests(bundle)
     gates["timing"] = _verify_timing(bundle)
     gates["execution_integrity"] = _verify_execution_integrity(bundle)
+    gates["freeze_anchor"] = _verify_freeze_anchor(bundle, expected_source_sha)
 
     verifier_path = bundle / "independent-verifier.json"
     runtime_component = None
