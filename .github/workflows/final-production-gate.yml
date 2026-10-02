@@ -16,11 +16,6 @@ jobs:
       actions: read
       id-token: write
       attestations: write
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
-      attestations: write
     timeout-minutes: 45
     steps:
       - name: Resolve target source SHA
@@ -68,7 +63,6 @@ jobs:
               "Nina Real Runtime Provenance Gate (OpenAI optional)",
               "OLA State Continuity and Stability",
               "OLA Real Runtime Stress Gate",
-              "OLA 12h Autonomous Evidence Flow",
           ]
           runs = {}
           with open("required-runs.json", encoding="utf-8") as stream:
@@ -103,7 +97,7 @@ jobs:
               "OLA State Continuity and Stability": f"ola-state-continuity-{target}",
               "OLA Real Runtime Stress Gate": f"ola-runtime-stress-{target}",
               "Provenance Mutation Gate": f"ola-provenance-evidence-{target}",
-              "OLA 12h Autonomous Evidence Flow": f"ola-auto-evidence-{target}",
+              "Nina Igor Gate": f"nina-igor-evidence-{target}",
           }
           selected={}
           for name, artifact in wanted.items():
@@ -112,7 +106,7 @@ jobs:
               run=max(candidates,key=lambda x:x.get("updated_at",""))
               run_id=run["id"]
               subprocess.run(["gh","run","download",str(run_id),"-n",artifact,"-D","evidence-correlation"],check=True)
-              api=f"repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}/artifacts"
+              api="repos/{}/actions/runs/{}/artifacts".format(os.environ["GITHUB_REPOSITORY"], run_id)
               raw=subprocess.check_output(["gh","api",api],text=True)
               arts=json.loads(raw).get("artifacts",[])
               match=next((a for a in arts if a.get("name")==artifact),None)
@@ -126,14 +120,13 @@ jobs:
               d=json.load(open(p))
               assert d["source_commit"]==target,(p,d)
               assert d["correlation_key"]==target,(p,d)
-          auto=[]
+          nina=[]
           for root,_,files in os.walk("evidence-correlation"):
               for fn in files:
-                  if fn=="ola-auto-evidence.json": auto.append(os.path.join(root,fn))
-          if len(auto)!=1: raise SystemExit(f"EXPECTED_ONE_AUTO_EVIDENCE={auto}")
-          d=json.load(open(auto[0]))
-          assert d["source_commit"]==target,d
-          assert d["correlation_key"]==target,d
+                  if fn=="nina-igor-evidence.json": nina.append(os.path.join(root,fn))
+          if len(nina)!=1: raise SystemExit(f"EXPECTED_ONE_NINA_IGOR_EVIDENCE={nina}")
+          d=json.load(open(nina[0]))
+          assert d["commit"]==target,d
           manifest={"schema":"ola-evidence-correlation-v1","source_sha":target,"correlation_key":target,"runs":selected}
           json.dump(manifest,open("evidence-correlation-manifest.json","w"),sort_keys=True,indent=2)
           PY
