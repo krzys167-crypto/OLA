@@ -123,3 +123,131 @@ def test_ollama_without_provider_id_keeps_response_digest(monkeypatch):
     evidence = _invoke_llm("codeact", "Calculate 17 * 23", {})
     assert evidence["response_id"] is None
     assert evidence["response_digest"]
+
+
+from scripts.forensic_gate import evaluate_forensic_bundle
+
+
+def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9805524602f4dc3ef2"):
+    import hashlib
+
+    (tmp_path / "source.txt").write_text(f"commit={source}\n")
+    (tmp_path / "agent-run.json").write_text(
+        json.dumps({
+            "run_id": "run-1",
+            "source_commit": source,
+            "execution": [
+                {
+                    "agent": name,
+                    "started_at": f"2026-10-02T20:{10+i:02d}:00+00:00",
+                    "ended_at": f"2026-10-02T20:{10+i:02d}:01+00:00",
+                    "provider": "ollama",
+                    "model": "qwen2.5:0.5b-instruct",
+                    "invocation_type": "real_llm",
+                    "response_digest": f"digest-{i}",
+                }
+                for i, name in enumerate(
+                    ["codeact", "react", "agentic_rag", "mcp_tool_use", "self_reflection", "multi_agent"]
+                )
+            ],
+            "evidence_count": 6,
+        }, sort_keys=True)
+    )
+    (tmp_path / "docker-image.json").write_text(json.dumps({"image_id": "sha256:" + "a" * 64}))
+    (tmp_path / "ollama-model.json").write_text(
+        json.dumps({"model": "qwen2.5:0.5b-instruct", "digest": "sha256:" + "b" * 64})
+    )
+    (tmp_path / "runtime-window.json").write_text(json.dumps({
+        "started_at": "2026-10-02T20:10:00+00:00",
+        "ended_at": "2026-10-02T20:17:00+00:00",
+        "duration_seconds": 420,
+    }))
+    (tmp_path / "gate-results.json").write_text(json.dumps({
+        "source_pin": {"status": "VERIFIED", "exit_code": 0},
+        "image_build": {"status": "VERIFIED", "exit_code": 0},
+        "pytest": {"status": "VERIFIED", "exit_code": 0},
+        "runtime": {"status": "VERIFIED", "exit_code": 0},
+        "independent_verify": {"status": "VERIFIED", "exit_code": 0},
+        "tamper": {"status": "VERIFIED", "exit_code": 1},
+        "stability": {"status": "VERIFIED", "exit_code": 0},
+        "skipped": [],
+    }, sort_keys=True))
+    (tmp_path / "provider-trace.json").write_text(json.dumps({
+        "runtime_component": "ola-runtime-v2",
+        "verifier_component": "ola-forensic-gate-v1",
+        "calls": [
+            {
+                "agent": name,
+                "run_id": "run-1",
+                "source_commit": source,
+                "response_digest": f"digest-{i}",
+                "model": "qwen2.5:0.5b-instruct",
+                "started_at": f"2026-10-02T20:{10+i:02d}:00+00:00",
+                "ended_at": f"2026-10-02T20:{10+i:02d}:01+00:00",
+            }
+            for i, name in enumerate(
+                ["codeact", "react", "agentic_rag", "mcp_tool_use", "self_reflection", "multi_agent"]
+            )
+        ],
+    }, sort_keys=True))
+    (tmp_path / "independent-verifier.json").write_text(json.dumps({
+        "status": "VERIFIED",
+        "verifier_component": "ola-forensic-gate-v1",
+        "runtime_component": "ola-runtime-v2",
+        "run_id": "run-1",
+        "source_commit": source,
+    }, sort_keys=True))
+    manifest = {
+        "run_id": "run-1",
+        "source_commit": source,
+        "physical_execution": "CAPTURED",
+    }
+    (tmp_path / "MANIFEST.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+    return tmp_path
+
+
+def test_forensic_gate_complete_bundle_reaches_verified(tmp_path):
+    bundle = _write_complete_forensic_bundle(tmp_path)
+    report = evaluate_forensic_bundle(bundle, "df9f8783248812c2c887cc9805524602f4dc3ef2")
+    assert report["status"] == "VERIFIED"
+    assert all(item["status"] == "VERIFIED" for item in report["gates"].values())
+
+
+def test_forensic_gate_blocks_source_mismatch(tmp_path):
+    bundle = _write_complete_forensic_bundle(
+        tmp_path,
+        source="0000000000000000000000000000000000000000",
+    )
+    report = evaluate_forensic_bundle(bundle, "df9f8783248812c2c887cc9805524602f4dc3ef2")
+    assert report["status"] == "BLOCKED"
+    assert report["gates"]["source_binding"]["status"] == "BLOCKED"
+
+
+def test_forensic_gate_requires_review_when_provider_authenticity_is_not_external(tmp_path):
+    bundle = _write_complete_forensic_bundle(tmp_path)
+    (tmp_path / "provider-trace.json").write_text(json.dumps({
+        "runtime_component": "ola-runtime-v2",
+        "verifier_component": "ola-forensic-gate-v1",
+        "calls": json.loads((tmp_path / "provider-trace.json").read_text())["calls"],
+        "external_anchor": False,
+    }, sort_keys=True))
+    report = evaluate_forensic_bundle(bundle, "df9f8783248812c2c887cc9805524602f4dc3ef2")
+    assert report["gates"]["provider_authenticity"]["status"] == "REVIEW_REQUIRED"
+    assert report["status"] == "REVIEW_REQUIRED"
+
+
+def test_forensic_gate_blocks_missing_skip_and_nonzero_exit_evidence(tmp_path):
+    bundle = _write_complete_forensic_bundle(tmp_path)
+    (tmp_path / "gate-results.json").write_text(json.dumps({
+        "source_pin": {"status": "VERIFIED", "exit_code": 0},
+        "image_build": {"status": "VERIFIED", "exit_code": 0},
+        "pytest": {"status": "VERIFIED", "exit_code": 0},
+        "runtime": {"status": "VERIFIED", "exit_code": 0},
+        "independent_verify": {"status": "VERIFIED", "exit_code": 0},
+        "tamper": {"status": "VERIFIED", "exit_code": 1},
+        "stability": {"status": "VERIFIED", "exit_code": 0},
+        "skipped": ["stability"],
+    }, sort_keys=True))
+    report = evaluate_forensic_bundle(bundle, "df9f8783248812c2c887cc9805524602f4dc3ef2")
+    assert report["gates"]["execution_integrity"]["status"] == "BLOCKED"
+    assert report["status"] == "BLOCKED"
