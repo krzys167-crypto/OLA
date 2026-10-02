@@ -62,6 +62,11 @@ if (-not $modelDigestText.StartsWith($OfficialOllamaModelIdPrefix)) {
 } | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "ollama-model.json")
 Write-Gate "OLLAMA_MODEL_DIGEST" "VERIFIED" ([string]$modelEntry[0].digest)
 Write-Gate "PREREQUISITES" "VERIFIED" "Git, Docker and Ollama are available"
+git -C $RepoDir archive --format=tar.gz --output (Join-Path $EvidenceDir "source-archive.tar.gz") $SourceCommit
+$archiveExit = $LASTEXITCODE
+if ($archiveExit -ne 0) { Write-Gate "SOURCE_ARCHIVE" "BLOCKED" "git archive failed" $archiveExit; exit 26 }
+(Get-FileHash (Join-Path $EvidenceDir "source-archive.tar.gz") -Algorithm SHA256).Hash | Set-Content (Join-Path $EvidenceDir "source-archive.sha256")
+Write-Gate "SOURCE_ARCHIVE" "VERIFIED" "exact source archive created"
 $computer = Get-CimInstance Win32_ComputerSystem
 $bios = Get-CimInstance Win32_BIOS
 $os = Get-CimInstance Win32_OperatingSystem
@@ -214,6 +219,21 @@ $durationSeconds = ($EndedAtDate - $StartedAtDate).TotalSeconds
     ended_at = $EndedAtDate.ToString("o")
     duration_seconds = [math]::Round($durationSeconds, 3)
 } | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "runtime-window.json")
+
+$githubApi = "https://api.github.com/repos/krzysztofcieciwa07-ship-it/OLA/commits/$SourceCommit"
+try {
+    $sourceVerification = Invoke-RestMethod -Uri $githubApi -Headers @{ "Accept" = "application/vnd.github+json" } -TimeoutSec 15
+    $sourceVerification | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $EvidenceDir "github-source-verification.json")
+    $verified = [bool]$sourceVerification.commit.verification.verified
+    if ($verified) {
+        Write-Gate "SOURCE_SIGNATURE" "VERIFIED" "GitHub reports exact source commit as cryptographically verified"
+    } else {
+        Write-Gate "SOURCE_SIGNATURE" "BLOCKED" ("GitHub reports source commit is not cryptographically verified: " + $sourceVerification.commit.verification.reason) 1
+    }
+} catch {
+    $_ | Out-String | Set-Content (Join-Path $EvidenceDir "github-source-verification-error.txt")
+    Write-Gate "SOURCE_SIGNATURE" "UNKNOWN" "GitHub source verification API unavailable" 2
+}
 
 @{
     schema = "ola-zbook-runtime-registration/v2"
