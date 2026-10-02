@@ -92,17 +92,14 @@ class IgorVerifier:
             if not checks["provider"]:
                 return IgorVerification("BLOCK", "provider provenance mismatch", checks)
             if expected_provider != "local":
-                response_ids = [
-                    response_id
+                response_identity_count = sum(
+                    1
                     for payload in provenance_payloads
-                    for response_id in payload.get("response_ids", [])
-                ]
-                response_digests = [
-                    response_digest
-                    for payload in provenance_payloads
-                    for response_digest in payload.get("response_digests", [])
-                ]
-                response_identity_count = len(response_ids) + len(response_digests)
+                    if payload.get("response_id")
+                    or payload.get("response_digest")
+                    or payload.get("response_ids")
+                    or payload.get("response_digests")
+                )
                 required_identity_count = len(payloads)
                 if response_identity_count < required_identity_count:
                     return IgorVerification("BLOCK", "real LLM response identity incomplete", checks)
