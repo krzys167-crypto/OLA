@@ -7,6 +7,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   product-gate:
     runs-on: ubuntu-latest
@@ -20,6 +23,10 @@ jobs:
     steps:
       - name: Checkout exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ env.SOURCE_SHA }}
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -121,7 +128,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ola-product-gate-${{ github.sha }}
+          name: ola-product-gate-${{ env.SOURCE_SHA }}
           path: |
             docker-inspect.json
             docker-runtime.log
