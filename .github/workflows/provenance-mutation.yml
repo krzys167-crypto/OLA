@@ -30,6 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run --detach --rm --name ola-provenance -p 8000:8000 \
+            -e OLA_SOURCE_COMMIT="${TARGET_COMMIT}" \
             -e OLA_RUNTIME_COMMIT="${TARGET_COMMIT}" \
             ola:${TARGET_COMMIT}
           for i in $(seq 1 30); do
