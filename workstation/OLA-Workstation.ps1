@@ -1,10 +1,10 @@
-$ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
 param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern("^[0-9a-f]{40}$")]
     [string]$SourceCommit
 )
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 $RepoUrl = "https://github.com/krzysztofcieciwa07-ship-it/OLA.git"
 $Root = Split-Path -Parent $PSScriptRoot
 $RepoDir = Join-Path $Root "ola-source"
@@ -26,11 +26,9 @@ $os = Get-CimInstance Win32_OperatingSystem
 $tpmPresent = $false
 try { $tpmPresent = [bool](Get-Tpm).TpmPresent } catch {}
 $deviceFingerprintInput = "$($computer.Manufacturer)|$($computer.Model)|$($bios.SerialNumber)"
-$deviceFingerprint = [Convert]::ToHexString(
-    [System.Security.Cryptography.SHA256]::HashData(
-        [System.Text.Encoding]::UTF8.GetBytes($deviceFingerprintInput)
-    )
-).ToLowerInvariant()
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$deviceFingerprint = (($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($deviceFingerprintInput)) | ForEach-Object { $_.ToString("x2") }) -join "")
+$sha.Dispose()
 @{
     schema = "ola-zbook-runtime-registration/v1"
     run_id = $RegistrationRunId
