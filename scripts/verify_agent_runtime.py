@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+from datetime import datetime
 import json
 import os
 import sqlite3
@@ -85,6 +86,8 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
     context_digests = set()
     invocations = {}
     payloads = []
+    starts = []
+    ends = []
     for row in run_rows:
         payload = json.loads(row[3])
         payloads.append(payload)
@@ -92,7 +95,7 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
         required = {
             "capability", "tool", "tool_output", "result", "status",
             "agent_instance_id", "execution_boundary", "source_commit", "context_digest",
-            "invocation_type", "model", "provider",
+            "invocation_type", "model", "provider", "started_at", "ended_at",
         }
         if not required.issubset(payload):
             return fail(f"execution evidence incomplete for {agent}")
@@ -117,9 +120,20 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
             return fail(f"unexpected invocation metadata for {agent}")
         instance_ids.add(payload["agent_instance_id"])
         context_digests.add(payload["context_digest"])
+        try:
+            started_at = datetime.fromisoformat(str(payload["started_at"]).replace("Z", "+00:00"))
+            ended_at = datetime.fromisoformat(str(payload["ended_at"]).replace("Z", "+00:00"))
+        except ValueError:
+            return fail(f"invalid execution timestamps for {agent}")
+        if not started_at < ended_at:
+            return fail(f"non-positive execution duration for {agent}")
+        starts.append(started_at)
+        ends.append(ended_at)
         invocations[agent] = invocation
         capabilities[agent] = payload["capability"]
 
+    if starts != sorted(starts) or ends != sorted(ends):
+        return fail("agent execution timestamps are not monotonic")
     if len(instance_ids) != len(ROLES):
         return fail("agent instance identities are not unique")
     source_commits = {payload.get("source_commit") for payload in payloads}
