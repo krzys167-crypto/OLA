@@ -1,3 +1,6 @@
+import json
+import uuid
+
 import pytest
 
 from app.nina import NinaOrchestrator, NinaTask
@@ -31,7 +34,6 @@ def test_nina_allows_registered_tool():
     decision = orchestrator.plan(task)
     assert decision.status == "ALLOW"
     assert decision.allowed_tools == ("safe_expression",)
-
 
 from app.agent_runtime import _invoke_llm, run_agent_task
 from app.database import SessionLocal
