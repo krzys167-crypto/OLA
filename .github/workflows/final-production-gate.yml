@@ -63,7 +63,7 @@ jobs:
               -H 'Accept: application/vnd.github+json' \
               "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TARGET_SHA}&per_page=100" \
               > required-runs.json
-            python - "${required[@]}" <<'PY'
+            if python - "${required[@]}" <<'PY'
 import json,sys,os
 required=sys.argv[1:]
 data=json.load(open("required-runs.json",encoding="utf-8"))
@@ -74,13 +74,17 @@ for r in data.get("workflow_runs",[]):
         prev=runs.get(n)
         if prev is None or r.get("created_at","")>prev.get("created_at",""): runs[n]=r
 missing=[n for n in required if n not in runs]
-pending=[n for n in required if n in runs and r.get("status") not in ("completed","cancelled","failure","success") for r in [runs[n]]]
+pending=[n for n in required if n in runs and runs[n].get("status") not in ("completed","cancelled","failure","success")]
 failed={n:runs[n].get("conclusion") or runs[n].get("status") for n in required if n in runs and runs[n].get("status")=="completed" and runs[n].get("conclusion")!="success"}
 print(json.dumps({"observed":{n:(runs[n].get("conclusion") or runs[n].get("status")) if n in runs else "MISSING" for n in required},"missing":missing,"pending":pending,"failed":failed},sort_keys=True))
 if missing or pending: raise SystemExit(10)
 if failed: raise SystemExit(11)
 PY
-            rc=$?
+            then
+              rc=0
+            else
+              rc=$?
+            fi
             if [ "$rc" = "0" ]; then break; fi
             if [ "$rc" = "11" ]; then echo "FAILED_REQUIRED_GATES"; exit 1; fi
             if [ "$attempt" = "30" ]; then echo "TIMEOUT_WAITING_FOR_REQUIRED_GATES"; exit 1; fi
