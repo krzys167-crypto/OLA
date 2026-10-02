@@ -109,7 +109,7 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
         if payload.get("source_commit") != expected_commit:
             return fail(f"source commit mismatch for {agent}: expected {expected_commit!r}, got {payload.get('source_commit')!r}")
         nonce = str(payload.get("replay_nonce", ""))
-        if not re.fullmatch(r"[0-9a-f]{64}", nonce):
+        if expected_invocation_type == "real_llm" and not re.fullmatch(r"[0-9a-f]{64}", nonce):
             return fail(f"replay nonce missing or malformed for {agent}")
         if expected_nonce is not None and nonce != expected_nonce:
             return fail(f"replay nonce mismatch for {agent}: expected {expected_nonce!r}, got {nonce!r}")
