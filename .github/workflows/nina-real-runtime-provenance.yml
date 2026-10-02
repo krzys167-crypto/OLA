@@ -31,7 +31,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-          ref: ${{ github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       - name: Assert exact SHA
         run: test "$(git rev-parse HEAD)" = "${EXPECTED_COMMIT}"
       - name: Detect real LLM credential
@@ -198,8 +198,8 @@ jobs:
     needs: runtime-proof
     uses: ./.github/workflows/igor-independent-evidence.yml
     with:
-      source_commit: ${{ env.EXPECTED_COMMIT }}
-      nina_artifact_name: nina-real-runtime-proof-${{ env.EXPECTED_COMMIT }}
+      source_commit: ${{ github.sha }}
+      nina_artifact_name: nina-real-runtime-proof-${{ github.sha }}
     permissions:
       contents: read
       actions: read
