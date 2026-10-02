@@ -145,6 +145,8 @@ jobs:
               "OLA Real Runtime Stress Gate": f"ola-runtime-stress-{target}",
               "Provenance Mutation Gate": f"ola-provenance-evidence-{target}",
               "Nina Igor Gate": f"nina-igor-evidence-{target}",
+              "Real LLM Ollama Runtime Gate": f"ollama-real-llm-proof-{target}",
+              "NINA IGOR Ollama Full Flow": f"nina-igor-ollama-full-flow-{target}",
           }
           selected={}
           for name,artifact in wanted.items():
@@ -160,6 +162,30 @@ jobs:
               match=next((a for a in arts if a.get("name")==artifact),None)
               if not match: raise SystemExit(f"MISSING_ARTIFACT={artifact}")
               selected[name]={"run_id":run_id,"head_sha":run["head_sha"],"artifact":artifact,"artifact_digest":match.get("digest")}
+          challenges=[]
+          for root,_,files in os.walk("evidence-correlation"):
+              if "run-challenge.json" in files:
+                  p=os.path.join(root,"run-challenge.json")
+                  d=json.load(open(p,encoding="utf-8"))
+                  nonce=str(d.get("replay_nonce","")).lower()
+                  if len(nonce)!=64 or any(ch not in "0123456789abcdef" for ch in nonce):
+                      raise SystemExit(f"INVALID_REPLAY_NONCE={p}")
+                  if d.get("source_commit")!=target:
+                      raise SystemExit(f"CHALLENGE_SOURCE_MISMATCH={p}")
+                  if not d.get("run_id"):
+                      raise SystemExit(f"CHALLENGE_RUN_ID_MISSING={p}")
+                  challenges.append({
+                      "path":p,
+                      "run_id":d["run_id"],
+                      "source_commit":d["source_commit"],
+                      "replay_nonce":nonce,
+                      "challenge_id":d.get("challenge_id"),
+                  })
+          if len(challenges) < 2:
+              raise SystemExit(f"EXPECTED_AT_LEAST_TWO_REAL_LLM_CHALLENGES={challenges}")
+          nonces=[d["replay_nonce"] for d in challenges]
+          if len(nonces)!=len(set(nonces)):
+              raise SystemExit("REPLAY_NONCE_REUSE_ACROSS_RUNTIME_GATES")
           contexts=[]
           for root,_,files in os.walk("evidence-correlation"):
               for fn in files:
@@ -178,7 +204,7 @@ jobs:
           if len(nina)!=1: raise SystemExit(f"EXPECTED_ONE_NINA_IGOR_EVIDENCE={nina}")
           d=json.load(open(nina[0],encoding="utf-8"))
           assert d["commit"]==target,d
-          manifest={"schema":"ola-evidence-correlation-v1","source_sha":target,"correlation_key":target,"runs":selected}
+          manifest={"schema":"ola-evidence-correlation-v2","source_sha":target,"correlation_key":target,"runs":selected,"anti_replay":{"challenge_count":len(challenges),"unique":True,"challenges":challenges}}
           json.dump(manifest,open("evidence-correlation-manifest.json","w"),sort_keys=True,indent=2)
           PY
           sha256sum evidence-correlation-manifest.json | tee evidence-correlation-manifest.sha256
