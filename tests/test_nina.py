@@ -190,13 +190,6 @@ def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9
             )
         ],
     }, sort_keys=True))
-    (tmp_path / "SHA256SUMS.txt").write_text("")
-    for file in sorted(tmp_path.iterdir()):
-        if file.name == "SHA256SUMS.txt":
-            continue
-        digest = hashlib.sha256(file.read_bytes()).hexdigest()
-        (tmp_path / "SHA256SUMS.txt").open("a", encoding="utf-8").write(f"{digest}  {file.name}\\n")
-
     (tmp_path / "independent-verifier.json").write_text(json.dumps({
         "status": "VERIFIED",
         "verifier_component": "ola-forensic-gate-v1",
@@ -210,6 +203,15 @@ def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9
         "physical_execution": "CAPTURED",
     }
     (tmp_path / "MANIFEST.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+
+    (tmp_path / "SHA256SUMS.txt").write_text("")
+    sums = []
+    for file in sorted(tmp_path.iterdir()):
+        if file.name == "SHA256SUMS.txt":
+            continue
+        digest = hashlib.sha256(file.read_bytes()).hexdigest()
+        sums.append(f"{digest}  {file.name}")
+    (tmp_path / "SHA256SUMS.txt").write_text("\n".join(sums) + "\n")
     return tmp_path
 
 
@@ -243,6 +245,14 @@ def test_forensic_gate_requires_review_when_provider_authenticity_is_not_externa
         "calls": json.loads((tmp_path / "provider-trace.json").read_text())["calls"],
         "external_anchor": False,
     }, sort_keys=True))
+    (tmp_path / "SHA256SUMS.txt").write_text("")
+    import hashlib
+    sums = []
+    for file in sorted(tmp_path.iterdir()):
+        if file.name == "SHA256SUMS.txt":
+            continue
+        sums.append(f"{hashlib.sha256(file.read_bytes()).hexdigest()}  {file.name}")
+    (tmp_path / "SHA256SUMS.txt").write_text("\n".join(sums) + "\n")
     report = evaluate_forensic_bundle(bundle, "df9f8783248812c2c887cc9805524602f4dc3ef2")
     assert report["gates"]["provider_authenticity"]["status"] == "REVIEW_REQUIRED"
     assert report["status"] == "REVIEW_REQUIRED"
