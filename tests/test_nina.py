@@ -38,6 +38,8 @@ def test_nina_allows_registered_tool():
 from app.agent_runtime import _invoke_llm, run_agent_task
 from app.database import SessionLocal
 from app.models import EvidenceRecord, Tenant
+from app.igor import IgorVerifier
+from app.hashchain import AGENT_ROLES, GENESIS_HASH, canonical_json, compute_record_hash
 from scripts.verify_agent_runtime import verify
 
 
@@ -273,3 +275,62 @@ def test_forensic_gate_blocks_missing_skip_and_nonzero_exit_evidence(tmp_path):
     report = evaluate_forensic_bundle(bundle, "df9f8783248812c2c887cc9805524602f4dc3ef2")
     assert report["gates"]["execution_integrity"]["status"] == "BLOCKED"
     assert report["status"] == "BLOCKED"
+
+
+def test_agent_runtime_records_real_execution_timestamps(monkeypatch):
+    tenant_id = _seed_runtime_tenant()
+    monkeypatch.setenv("OLA_SOURCE_COMMIT", "source-sha-timing")
+    result = run_agent_task(tenant_id, "timing proof")
+    execution = result["execution"]
+    assert len(execution) == 6
+    starts = [item["started_at"] for item in execution]
+    ends = [item["ended_at"] for item in execution]
+    assert all(starts[i] < ends[i] for i in range(6))
+    assert starts == sorted(starts)
+    assert ends == sorted(ends)
+
+
+def test_igor_rejects_mixed_source_commits():
+    tenant_id = "igor-source-test"
+    records = []
+    previous = GENESIS_HASH
+    for seq, agent in enumerate(AGENT_ROLES):
+        source = "canonical-source" if seq < 5 else "other-source"
+        payload = {
+            "run_id": "run-1",
+            "agent": agent,
+            "task": "task",
+            "tool_output": "391",
+            "result": "391",
+            "commit": "canonical-source",
+            "source_commit": source,
+            "capability": agent,
+            "provider": "ollama",
+            "model": "qwen2.5:0.5b-instruct",
+            "invocation_type": "real_llm",
+            "response_ids": [f"resp-{seq}"],
+        }
+        payload_json = canonical_json(payload)
+        record_hash = compute_record_hash(tenant_id, seq, previous, payload_json)
+        records.append({
+            "id": f"e-{seq}",
+            "tenant_id": tenant_id,
+            "seq": seq,
+            "record_type": f"agent.{agent}",
+            "payload_json": payload_json,
+            "prev_hash": previous,
+            "record_hash": record_hash,
+        })
+        previous = record_hash
+
+    result = IgorVerifier().verify_records(
+        records,
+        expected_commit="canonical-source",
+        expected_task="task",
+        expected_result="391",
+        expected_provider="ollama",
+        expected_model="qwen2.5:0.5b-instruct",
+        expected_run_id="run-1",
+    )
+    assert result.status == "BLOCK"
+    assert result.reason == "commit/source_commit provenance mismatch"
