@@ -13,6 +13,7 @@ $Container = "ola-workstation-v1"
 $Image = "ola-workstation:$($SourceCommit.Substring(0,12))"
 $Port = 8000
 $OllamaModel = "qwen2.5:0.5b-instruct"
+$OfficialOllamaModelIdPrefix = "a8b0c5157701"
 $OllamaBaseUrl = "http://host.docker.internal:11434"
 $RegistrationRunId = [guid]::NewGuid().ToString()
 $StartedAtDate = (Get-Date).ToUniversalTime()
@@ -46,9 +47,16 @@ if ($modelEntry.Count -ne 1 -or [string]::IsNullOrWhiteSpace($modelEntry[0].dige
     Write-Gate "OLLAMA_MODEL_DIGEST" "BLOCKED" "Ollama model digest missing" 25
     exit 25
 }
+$modelDigestText = ([string]$modelEntry[0].digest) -replace '^sha256:', ''
+if (-not $modelDigestText.StartsWith($OfficialOllamaModelIdPrefix)) {
+    Write-Gate "OLLAMA_MODEL_REGISTRY_BINDING" "REVIEW_REQUIRED" "model digest does not match public Ollama registry identity prefix"
+} else {
+    Write-Gate "OLLAMA_MODEL_REGISTRY_BINDING" "VERIFIED" "public Ollama registry identity prefix matched"
+}
 @{
     model = $OllamaModel
     digest = [string]$modelEntry[0].digest
+    official_registry_id_prefix = $OfficialOllamaModelIdPrefix
     size = $modelEntry[0].size
     modified_at = $modelEntry[0].modified_at
 } | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "ollama-model.json")
