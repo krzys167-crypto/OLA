@@ -67,6 +67,23 @@ jobs:
       - name: Build OLA
         run: docker build --tag ola-nina-ollama --file Dockerfile .
 
+      - name: Issue fresh anti-replay challenge
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPLAY_NONCE="$(openssl rand -hex 32)"
+          echo "REPLAY_NONCE=$REPLAY_NONCE" >> "$GITHUB_ENV"
+          cat > run-challenge.json <<EOF
+          {
+            "schema": "ola-run-challenge/v1",
+            "challenge_id": "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
+            "run_id": "",
+            "source_commit": "${SOURCE_SHA}",
+            "replay_nonce": "${REPLAY_NONCE}",
+            "issued_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
       - name: Start OLA
         shell: bash
         run: |
@@ -76,6 +93,7 @@ jobs:
             --network host \
             -e OLA_EG_DB_PATH=/data/ola.db \
             -e OLA_SOURCE_COMMIT="$SOURCE_SHA" \
+            -e OLA_REPLAY_NONCE="$REPLAY_NONCE" \
             -e OLA_RUNTIME_COMMIT="$SOURCE_SHA" \
             -e OLA_LLM_PROVIDER="$OLA_LLM_PROVIDER" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
@@ -149,6 +167,7 @@ jobs:
           assert body["provenance"]["status"]=="VERIFIED", body
           assert body["provenance"]["commit"]==os.environ["SOURCE_SHA"], body
           assert body["provenance"]["source_commit"]==os.environ["SOURCE_SHA"], body
+          assert body["provenance"]["replay_nonce"]==os.environ["REPLAY_NONCE"], body
           assert body["provenance"]["provider"]=="ollama", body
           assert body["provenance"]["model"]=="qwen2.5:0.5b-instruct", body
           assert body["provenance"]["invocation_type"]=="real_llm", body
@@ -201,7 +220,8 @@ jobs:
               --expected-result "391" \
               --expected-provider "ollama" \
               --expected-model "$OLLAMA_MODEL" \
-              --expected-invocation-type "real_llm"
+              --expected-invocation-type "real_llm" \
+              --expected-nonce "$REPLAY_NONCE"
 
       - name: Capture OLA flow evidence
         shell: bash
@@ -216,6 +236,7 @@ jobs:
           path: |
             ollama-models.json
             nina-igor-ollama-proof.json
+            run-challenge.json
             ola-nina-ollama-runtime.log
 
       - name: Stop OLA
