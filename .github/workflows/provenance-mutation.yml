@@ -30,7 +30,7 @@ jobs:
       - name: Start deployment image with source provenance
         run: |
           set -euo pipefail
-          docker run --detach --rm --name ola-provenance -p 8000:8000 \
+          docker run --detach --name ola-provenance -p 8000:8000 \
             -e OLA_SOURCE_COMMIT="${TARGET_COMMIT}" \
             -e OLA_RUNTIME_COMMIT="${TARGET_COMMIT}" \
             ola:${TARGET_COMMIT}
@@ -38,7 +38,10 @@ jobs:
             if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then exit 0; fi
             sleep 1
           done
-          docker logs ola-provenance
+          echo "CONTAINER_STATUS_BEFORE_FAILURE:"
+          docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' ola-provenance || true
+          echo "CONTAINER_LOGS:"
+          docker logs ola-provenance || true
           exit 1
 
       - name: Clean evidence must verify
