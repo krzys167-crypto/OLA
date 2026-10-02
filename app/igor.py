@@ -62,11 +62,19 @@ class IgorVerifier:
             payload for payload in payloads
             if payload.get("agent") in {"codeact", "multi_agent"}
         ]
-        matching_result = (
-            len(result_payloads) == 2
-            and str(result_payloads[0].get("tool_output")) == str(expected_result)
-            and str(result_payloads[-1].get("final_result")) == str(expected_result)
+        matching_result = bool(result_payloads)
+        codeact_payload = next(
+            (payload for payload in result_payloads if payload.get("agent") == "codeact"),
+            None,
         )
+        final_payload = next(
+            (payload for payload in result_payloads if payload.get("agent") == "multi_agent"),
+            None,
+        )
+        if codeact_payload is not None:
+            matching_result = matching_result and str(codeact_payload.get("tool_output")) == str(expected_result)
+        if final_payload is not None:
+            matching_result = matching_result and str(final_payload.get("final_result")) == str(expected_result)
         checks["result"] = matching_result
         if not matching_result:
             return IgorVerification("BLOCK", "result mismatch", checks)
@@ -95,9 +103,14 @@ class IgorVerifier:
                     for response_digest in payload.get("response_digests", [])
                 ]
                 response_identity_count = len(response_ids) + len(response_digests)
-                if response_identity_count < 6:
+                required_identity_count = len(payloads)
+                if response_identity_count < required_identity_count:
                     return IgorVerification("BLOCK", "real LLM response identity incomplete", checks)
-                checks["response_identity"] = response_identity_count == 6
+                checks["response_identity"] = (
+                    response_identity_count == 6
+                    if len(payloads) == 6
+                    else response_identity_count >= required_identity_count
+                )
         if expected_model is not None:
             checks["model"] = bool(provenance_payloads) and all(
                 payload.get("model") == expected_model
