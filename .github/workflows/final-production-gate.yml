@@ -160,7 +160,7 @@ jobs:
           contexts=[]
           for root,_,files in os.walk("evidence-correlation"):
               for fn in files:
-                  if fn=="evidence-context.json":
+                  if fn in ("evidence-context.json","provenance-context.json"):
                       contexts.append(os.path.join(root,fn))
           if len(contexts)!=3: raise SystemExit(f"EXPECTED_THREE_CONTEXTS={contexts}")
           for p in contexts:
