@@ -15,7 +15,7 @@ from .nina import NinaOrchestrator, NinaTask
 from .igor import IgorVerifier
 from .replay import build_replay, verify_replay
 from .human_gate import HumanGate, ReviewDecision
-from .nina_igor import NinaIgorChain
+from .nina_igor import NinaIgorChain, STATUS_FIELDS
 from .decision_report import build_decision_report
 from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout, payment_verified
@@ -527,7 +527,11 @@ def approve_nina_run(
     candidate_fields = candidate.get("status_fields")
     if not isinstance(candidate_fields, dict):
         raise HTTPException(status_code=409, detail="decision candidate status fields are invalid")
-    approved_fields = dict(candidate_fields)
+    if set(candidate_fields) != set(STATUS_FIELDS) | {"EXECUTION_ALLOWED"}:
+        raise HTTPException(status_code=409, detail="decision candidate status fields are invalid")
+    approved_fields = {field: candidate_fields[field] for field in STATUS_FIELDS}
+    if NinaIgorChain.derive_status(approved_fields) != candidate_fields["EXECUTION_ALLOWED"]:
+        raise HTTPException(status_code=409, detail="decision candidate aggregate is inconsistent")
     approved_fields["HUMAN_GATE"] = "VERIFIED"
     if NinaIgorChain.derive_status(approved_fields) != "VERIFIED":
         raise HTTPException(status_code=409, detail="candidate is not eligible for human approval")
