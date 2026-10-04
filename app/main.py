@@ -20,6 +20,7 @@ from .decision_report import build_decision_report
 from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout, payment_verified
 from .stripe_webhook import process_checkout_event
+from .payment_binding import checkout_result_matches
 
 app = FastAPI(title="OLA Execution Gate")
 Base.metadata.create_all(bind=engine)
@@ -197,12 +198,40 @@ def payment_success(session_id: str):
         return {"status": "BLOCK", "reason": "paid session has no task", "session_id": session_id}
 
     with SessionLocal() as db:
-        completed = db.scalar(
-            select(StripeEvent).where(
-                StripeEvent.status == "COMPLETED",
-                StripeEvent.task == task,
-            )
+        completed = None
+        bound_result = None
+        evidence_rows = db.scalars(
+            select(EvidenceRecord).where(
+                EvidenceRecord.tenant_id == tenant_id,
+                EvidenceRecord.record_type == "stripe.ola_execution_completed",
+            ).order_by(EvidenceRecord.seq.desc())
         )
+        for evidence_row in evidence_rows:
+            try:
+                evidence = json.loads(evidence_row.payload_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(evidence, dict) or evidence.get("checkout_session_id") != session_id:
+                continue
+            candidate = db.scalar(
+                select(StripeEvent).where(
+                    StripeEvent.event_id == evidence.get("stripe_event_id"),
+                    StripeEvent.status == "COMPLETED",
+                    StripeEvent.task == task,
+                    StripeEvent.run_id == evidence.get("ola_run_id"),
+                )
+            )
+            if candidate is None:
+                continue
+            try:
+                result = json.loads(candidate.result_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            evidence["tenant_id"] = evidence_row.tenant_id
+            if checkout_result_matches(tenant_id, session_id, task, evidence, candidate, result):
+                completed = candidate
+                bound_result = result
+                break
 
     if completed is None:
         return {
@@ -218,7 +247,7 @@ def payment_success(session_id: str):
         "task": task,
         "execution": "STRIPE_WEBHOOK",
         "run_id": completed.run_id,
-        "result": json.loads(completed.result_json) if completed.result_json else None,
+        "result": bound_result,
     }
 
 
@@ -282,6 +311,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
     runtime = nina.execute(nina_task)
     run_id = runtime["runtime"]["run_id"]
     execution = runtime["runtime"].get("execution", [])
+    replay_nonce = runtime["runtime"].get("replay_nonce")
     runtime_commit = os.getenv("OLA_SOURCE_COMMIT") or os.getenv("OLA_RUNTIME_COMMIT")
     provider = execution[0].get("provider") if execution else None
     model = execution[0].get("model") if execution else None
@@ -304,6 +334,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
             "response_digests": response_digests,
             "source_commit": runtime_commit or "UNKNOWN",
             "requester_id": requester_id,
+            "replay_nonce": replay_nonce,
         },
     )
 
@@ -346,6 +377,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         expected_provider=expected_provider,
         expected_model=expected_model,
         expected_run_id=run_id,
+        expected_nonce=replay_nonce,
     )
     replay = build_replay(record_dicts)
     replay_verification = verify_replay(
@@ -390,6 +422,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         "response_ids": response_ids,
         "response_digests": response_digests,
         "source_commit": runtime_commit or "UNKNOWN",
+        "replay_nonce": replay_nonce,
     }
     report = build_decision_report(
         task_id=nina_task.task_id,

@@ -107,7 +107,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker cp run-challenge.json ola-ollama-e2e:/data/run-challenge.json
+          docker exec -i ola-ollama-e2e sh -c 'cat > /data/run-challenge.json' < run-challenge.json
           docker exec -i \
             -e EXPECTED_COMMIT="$SOURCE_SHA" \
             -e REPLAY_NONCE="$REPLAY_NONCE" \

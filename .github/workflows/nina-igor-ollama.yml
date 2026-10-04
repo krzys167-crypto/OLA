@@ -115,7 +115,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker cp run-challenge.json ola-nina-ollama:/data/run-challenge.json
+          docker exec -i ola-nina-ollama sh -c 'cat > /data/run-challenge.json' < run-challenge.json
           docker exec -i -e SOURCE_SHA="$SOURCE_SHA" -e REPLAY_NONCE="$REPLAY_NONCE" ola-nina-ollama python - <<'PY' > nina-igor-ollama-proof.json
           import hashlib
           import json
