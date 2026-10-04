@@ -3,7 +3,7 @@ import json
 import os
 import uuid
 from pathlib import Path
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from starlette.responses import FileResponse
 from sqlalchemy import select
 from .database import Base, engine, SessionLocal, install_append_only_triggers
@@ -20,7 +20,7 @@ from .decision_report import build_decision_report
 from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout, payment_verified
 from .stripe_webhook import process_checkout_event
-from . import pipeline_bridge
+from . import ambient, pipeline_bridge
 
 app = FastAPI(title="OLA Execution Gate")
 Base.metadata.create_all(bind=engine)
@@ -138,6 +138,31 @@ def run_controlled_audit(tenant_id, task, scenario):
     }
 
 
+def _ambient_mode():
+    """off | shadow | enforce. A bad setting is a 503 before any model is called, never a silent 'off'."""
+    try:
+        amb = ambient.mode()
+        if amb == "enforce":
+            ambient.preflight()
+        return amb
+    except ambient.AmbientConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _ambient_apply(amb, background, tenant_id, surface, task, output, response, produced_by):
+    """The ambient IGOR can only downgrade: shadow never touches the response, enforce may replace it by BLOCK."""
+    if amb == "shadow":
+        background.add_task(ambient.shadow, tenant_id, surface, task, output, produced_by)
+        return response
+    try:
+        decision = ambient.enforce(tenant_id, surface, task, output, produced_by)
+    except pipeline_bridge.PipelineBusy as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "5"}) from exc
+    except ambient.AmbientConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return response if decision["allow"] else ambient.blocked_response(decision)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -150,7 +175,7 @@ def home():
 
 
 @app.post("/chat")
-def chat_endpoint(body: dict, x_api_key: str | None = Header(default=None)):
+def chat_endpoint(body: dict, background: BackgroundTasks, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
     messages = body.get("messages", [])
     if not isinstance(messages, list) or not messages:
@@ -160,7 +185,12 @@ def chat_endpoint(body: dict, x_api_key: str | None = Header(default=None)):
         if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"} or not isinstance(item.get("content"), str):
             raise HTTPException(status_code=400, detail="invalid message")
         clean.append({"role": item["role"], "content": item["content"]})
-    return chat(tenant_id, clean)
+    amb = _ambient_mode()
+    result = chat(tenant_id, clean)
+    task = next((m["content"] for m in reversed(clean) if m["role"] == "user"), "")
+    if amb != "off" and result.get("status") == "VERIFIED" and isinstance(result.get("message"), str):
+        return _ambient_apply(amb, background, tenant_id, "chat", task, result["message"], result, result.get("model"))
+    return result
 
 
 @app.post("/checkout")
@@ -247,12 +277,18 @@ def create_audit(body: dict, x_api_key: str | None = Header(default=None)):
 
 
 @app.post("/agent-run")
-def create_agent_run(body: dict, x_api_key: str | None = Header(default=None)):
+def create_agent_run(body: dict, background: BackgroundTasks, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
     task = body.get("task")
     if not task:
         raise HTTPException(status_code=400, detail="task is required")
-    return run_agent_task(tenant_id, task)
+    amb = _ambient_mode()
+    result = run_agent_task(tenant_id, task)
+    if amb != "off" and result.get("status") == "VERIFIED":
+        task_text = task if isinstance(task, str) else canonical_json(task)
+        return _ambient_apply(amb, background, tenant_id, "agent-run", task_text, ambient.agent_output_text(result),
+                              result, None)
+    return result
 
 
 @app.post("/nina-run")

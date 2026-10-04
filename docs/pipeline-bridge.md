@@ -178,3 +178,44 @@ records, which a pipeline session does not write (it writes one sealed `pipeline
 (tenant chain intact, unique anchor, rebuilt events equal the anchored envelopes in order, run id and agent) and reports `VERIFIED`
 instead of the former `PASS`. 280 passed, 4 skipped on the merged tree (live Ollama tests skipped locally). The Docker image of the
 merged tree was not built here.
+
+## Ambient NINA/IGOR (`OLA_AMBIENT_IGOR`)
+
+NINA and IGOR are two models that work inside the ecosystem without being a step the caller has to run. NINA
+answers (the chat model, the agent runtime); IGOR, a second model in a separate context, judges what NINA
+produced and leaves the verdict in the tenant evidence chain. Wired into `POST /chat` and `POST /agent-run`.
+
+| `OLA_AMBIENT_IGOR` | Behaviour | Evidence record |
+|---|---|---|
+| `off` (default, also unset) | nothing: no model call, no record | - |
+| `shadow` | response returned **untouched**; IGOR judges afterwards in the background; can never block or delay | `igor.shadow` |
+| `enforce` | answer withheld (`status: BLOCK`) unless IGOR accepted it **and** the judge is QUALIFIED | `igor.ambient` |
+
+Settings: `OLA_IGOR_PROVIDER`, `OLA_IGOR_MODEL` (**required, no fallback to the NINA model**), `OLA_IGOR_BASE_URL`,
+`OLA_IGOR_TIMEOUT_S`, `OLA_AMBIENT_MAX_CHARS` (default 8000 for task + answer), `OLA_PIPELINE_MAX_CONCURRENCY`
+(shared with `/pipeline-run`), and for `enforce` the existing `OLA_JUDGE_QUALIFICATION_FILE` /
+`OLA_JUDGE_QUALIFICATION_DATASET_SHA256` / `OLA_JUDGE_MAX_FALSE_ACCEPT`.
+
+What `enforce` requires before it lets an answer through (any failure = BLOCK, and the reason is in the record):
+verdict ACCEPT (PASS, no open corrections, score >= `OLA_MIN_QUALITY_SCORE`); runtime `OLLAMA_OBSERVED` (never a
+declared test double); the judge is not the model that wrote the answer (unless `OLA_ALLOW_SAME_MODEL_IGOR=1`);
+the judge's provider + model + **digest** match a measurement whose Wilson upper bound of false accepts is within
+the limit.
+
+Invariants, each pinned by `tests/test_ambient.py` (41 tests; mutation-checked):
+* an unknown mode, `enforce` without a judge model, or `enforce` without a qualification is **HTTP 503 before the
+  answering model is called** - never silently `off`;
+* ambient can only **downgrade**: a non-VERIFIED upstream answer is returned as it is and never judged;
+* judge unreachable / unusable JSON / too long / busy -> BLOCK (enforce; busy is 429) or a recorded NO_VERDICT /
+  TOO_LONG / BUSY / ERROR (shadow) - a failing shadow judge is visible in evidence, not swallowed;
+* a failed evidence write in `enforce` blocks (an unrecorded decision is not allowed);
+* records hold SHA-256 digests of the task and answer, never the text; the withheld answer is not echoed.
+
+Honest limits
+* A QUALIFIED judge has a *measured, bounded* false-accept rate on one labelled set. It does not prove an answer
+  is correct and the number does not transfer to other domains.
+* The task and the answer are sent to the judge: with local Ollama they stay on the host, with a hosted
+  provider they do not.
+* `shadow` measures, only `enforce` protects, and `enforce` adds one judge call of latency per request.
+* Not yet wired: `/nina-run`, `/business-invoice-run`, `/checkout`. Not measured against a real model in CI
+  (the tests use the Ollama test double); `shadow` on a real Ollama is the way to collect that data.
