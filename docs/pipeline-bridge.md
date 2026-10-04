@@ -238,3 +238,8 @@ the deterministic verifier. Each is now a test (`tests/test_igor_hardening.py`, 
 
 Not changed (design level, not a bug fix): the tool allow-list is checked *before* the runtime call, not inside the
 runtime; IGOR does not see a model digest (the `ola_pipeline` path does).
+
+CI: job `live-ambient` (`tests/test_ambient_live.py`) runs shadow and enforce against a real Ollama judge
+(llama3.2:3b, qwen3:1.7b) with a stub answerer and publishes the observed verdicts as `LIVE RESULT:` annotations.
+It asserts invariants (recorded verdict, observed runtime + model digest, response untouched in shadow, pass-through
+iff ACCEPT in enforce), not that the judge is right. Its qualification file is a fixture, not a measurement.

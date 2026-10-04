@@ -147,6 +147,54 @@ jobs:
             live-result.txt
             ollama-models.json
 
+  # Ambient NINA/IGOR (OLA_AMBIENT_IGOR=shadow|enforce) with a REAL Ollama judge. The answering model is a stub.
+  # Whatever the judge decides is published as-is; the job fails only when the tests did not run. The
+  # qualification file used for `enforce` is a test fixture (plumbing), not a measurement of the judge.
+  live-ambient:
+    runs-on: ubuntu-latest
+    needs: offline
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - judge: "llama3.2:3b"
+            judge_think: ""
+          - judge: "qwen3:1.7b"
+            judge_think: "1"
+    env:
+      OLA_TEST_IGOR_MODEL: ${{ matrix.judge }}
+      OLA_TEST_IGOR_THINK: ${{ matrix.judge_think }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - name: Set up Ollama and pull the judge
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve >/tmp/ollama.log 2>&1 &
+          for _ in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:11434/api/version >/dev/null && break
+            sleep 2
+          done
+          ollama pull "$OLA_TEST_IGOR_MODEL"
+      - name: Live ambient NINA/IGOR tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -p no:cacheprovider -o addopts="" -q -s -rs tests/test_ambient_live.py | tee live-result.txt
+          if grep -Eq '[0-9]+ skipped' live-result.txt || ! grep -Eq '[0-9]+ passed' live-result.txt; then
+            echo "::error title=live ambient tests did not run::real-runtime result is UNKNOWN"
+            exit 1
+          fi
+          grep -E 'LIVE RESULT:' live-result.txt | while IFS= read -r line; do
+            echo "::notice title=ambient live result::${line}"
+          done
+
   # How often does each judge PASS a WRONG answer? 47 labelled items (tests/data/judge_eval.json), same judge
   # prompt and acceptance rule as Igor. Published as annotations; the job fails only when no verdict was obtained
   # at all (nothing ran = UNKNOWN). Small n: the script prints Wilson 95% intervals, this is not a certification.
