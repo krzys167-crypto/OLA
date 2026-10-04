@@ -1,8 +1,11 @@
 name: Pipeline Bridge Gate (NINA-OLLAMA-EVIDENCE-IGOR-GATE-REPLAY)
 
-# STATUS: written alongside the code, NOT YET RUN on GitHub Actions. The offline job mirrors what was
-# run locally; the live job needs a runner that can install Ollama and pull a model. Treat a green
-# run as the first real CI evidence, not as something already established.
+# STATUS: first run (id 37224802601) was green at job/step level. The test-level counts of that run
+# could not be read (job logs and artifacts were not reachable from the authoring sandbox), and a
+# pytest run in which everything is skipped also exits 0, so that run alone does not prove the live
+# tests executed. This version fails the live job if anything was skipped and publishes the pytest
+# summary and the LIVE RESULT line as annotations.
+# The live job needs a runner that can install Ollama and pull a model.
 
 on:
   pull_request:
@@ -29,7 +32,11 @@ jobs:
           python-version: "3.13"
       - run: pip install -r requirements.txt
       - name: Full suite (live tests are skipped = UNKNOWN here)
-        run: python -m pytest -p no:cacheprovider -o addopts="" -q -rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -p no:cacheprovider -o addopts="" -q -rs | tee offline-result.txt
+          echo "::notice title=offline suite::$(tail -n 1 offline-result.txt)"
       - name: Standalone verifier needs nothing but the stdlib
         run: |
           mkdir /tmp/lone && cp ola_pipeline/verify.py /tmp/lone/
@@ -62,6 +69,16 @@ jobs:
           set -euo pipefail
           python -m pytest -p no:cacheprovider -o addopts="" -q -s -rs \
             tests/pipeline_suite/test_real_ollama.py tests/test_pipeline_bridge_live.py | tee live-result.txt
+          # pytest exits 0 when every test is skipped. A green live job must never mean "nothing ran".
+          if grep -Eq '[0-9]+ skipped' live-result.txt || ! grep -Eq '[0-9]+ passed' live-result.txt; then
+            echo "::error title=live tests did not run::real-runtime result is UNKNOWN"
+            exit 1
+          fi
+          # Annotations are readable through the API even when job logs and artifacts are not.
+          grep -E 'LIVE RESULT:' live-result.txt | while IFS= read -r line; do
+            echo "::notice title=live result::${line}"
+          done
+          echo "::notice title=live suite::$(tail -n 1 live-result.txt)"
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
