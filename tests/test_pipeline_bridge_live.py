@@ -2,6 +2,7 @@
 
     OLA_TEST_MODEL=<pulled model> python -m pytest tests/test_pipeline_bridge_live.py -rs -s
     (optional) OLA_OLLAMA_URL=http://localhost:11434  OLA_TEST_IGOR_MODEL=<second model>
+    (optional) OLA_TEST_IGOR_THINK=0|1|""   judge reasoning flag; empty = not sent (non-reasoning judge)
     (reasoning models, e.g. qwen3) OLA_TEST_THINK=0  OLA_TEST_MAX_TOKENS=96
 
 The Gate's PASS depends on the judge, so the test does NOT assert PASS. It asserts the invariants that
@@ -55,9 +56,12 @@ def test_live_pipeline_run_is_anchored_and_reverifiable(monkeypatch, tmp_path):
     monkeypatch.setenv("OLA_IGOR_SEED", "1")
     if igor_model == MODEL:                                    # one model available: explicit, visible opt-in
         monkeypatch.setenv("OLA_ALLOW_SAME_MODEL_IGOR", "1")
-    if os.environ.get("OLA_TEST_THINK") in ("0", "1"):
-        monkeypatch.setenv("OLA_NINA_THINK", os.environ["OLA_TEST_THINK"])
-        monkeypatch.setenv("OLA_IGOR_THINK", os.environ["OLA_TEST_THINK"])
+    nina_think = os.environ.get("OLA_TEST_THINK")
+    igor_think = os.environ.get("OLA_TEST_IGOR_THINK", nina_think)   # "" = do not send `think` (non-reasoning judge)
+    if nina_think in ("0", "1"):
+        monkeypatch.setenv("OLA_NINA_THINK", nina_think)
+    if igor_think in ("0", "1"):
+        monkeypatch.setenv("OLA_IGOR_THINK", igor_think)
     if os.environ.get("OLA_TEST_MAX_TOKENS"):
         monkeypatch.setenv("OLA_NINA_MAX_TOKENS", os.environ["OLA_TEST_MAX_TOKENS"])
         monkeypatch.setenv("OLA_IGOR_MAX_TOKENS", "400")
@@ -74,13 +78,17 @@ def test_live_pipeline_run_is_anchored_and_reverifiable(monkeypatch, tmp_path):
         "human_approved": True, "human_actor": "live-test", "human_reason": "approved after verification"})
     assert r.status_code == 200, r.text
     b = r.json()
-    print("LIVE RESULT:", b["status"], "| gate", b["igor"]["gate_state"], "| igor", b["igor"]["status"],
+    print("LIVE RESULT:", b["status"], "| nina", MODEL, "| judge", igor_model,
+          "(independent)" if igor_model != MODEL else "(SAME MODEL, opt-in)",
+          "| gate", b["igor"]["gate_state"], "| igor", b["igor"]["status"],
           "| session", b["session_id"], "| head", b["pipeline"]["chain_head"],
           "| reasons", b["igor"]["gate_reasons"])
 
     assert b["nina"]["evidence_class"] == "LIVE_RUNTIME_OBSERVED"
     assert b["nina"]["model_digest"], "live Ollama must expose a model digest"
     assert b["pipeline"]["status"] == "ANCHORED"
+    if igor_model != MODEL:                                    # a different judge must never be reported as non-independent
+        assert "not independent" not in " ".join(map(str, b["igor"]["gate_reasons"])).lower()
     assert verify_chain(pb.load_chain(tenant))[0]
     if b["igor"]["status"] != "VERIFIED":                      # e.g. judge failed calibration -> UNKNOWN
         assert b["status"] == "BLOCK"
