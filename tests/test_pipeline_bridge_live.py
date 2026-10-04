@@ -98,4 +98,4 @@ def test_live_pipeline_run_is_anchored_and_reverifiable(monkeypatch, tmp_path):
     again = client.get(f"/pipeline-session/{b['session_id']}", headers={"X-API-Key": key}).json()
     assert again["verification"]["status"] == b["igor"]["status"]
     assert again["verification"]["chain_head"] == b["pipeline"]["chain_head"]
-    assert again["replay_verification"]["status"] == "PASS"
+    assert again["replay_verification"]["status"] == "VERIFIED"
