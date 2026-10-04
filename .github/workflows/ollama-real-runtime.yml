@@ -107,8 +107,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          docker cp run-challenge.json ola-ollama-e2e:/data/run-challenge.json
           docker exec -i \
             -e EXPECTED_COMMIT="$SOURCE_SHA" \
+            -e REPLAY_NONCE="$REPLAY_NONCE" \
             -e OLLAMA_MODEL="$OLLAMA_MODEL" \
             ola-ollama-e2e python - <<'PY' > ollama-runtime-proof.json
           import hashlib
@@ -168,15 +170,16 @@ jobs:
               "replay_nonce":result["replay_nonce"],
           }
           print(json.dumps(proof,sort_keys=True))
-          with open("run-challenge.json","r",encoding="utf-8") as challenge_stream:
+          with open("/data/run-challenge.json","r",encoding="utf-8") as challenge_stream:
               challenge=json.load(challenge_stream)
           challenge["run_id"]=result["run_id"]
-          with open("run-challenge.json","w",encoding="utf-8") as challenge_stream:
+          with open("/data/run-challenge.json","w",encoding="utf-8") as challenge_stream:
               json.dump(challenge,challenge_stream,sort_keys=True,indent=2)
           with open("/data/ollama-proof-context.json","w",encoding="utf-8") as stream:
               json.dump({"tenant_id":tenant_id,"run_id":result["run_id"],"task":task},stream,sort_keys=True)
 
           PY
+          docker cp ola-ollama-e2e:/data/run-challenge.json run-challenge.json
 
       - name: Standalone verifier over captured runtime evidence
         shell: bash

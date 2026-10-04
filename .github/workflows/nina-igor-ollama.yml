@@ -115,7 +115,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker exec -i ola-nina-ollama python - <<'PY' > nina-igor-ollama-proof.json
+          docker cp run-challenge.json ola-nina-ollama:/data/run-challenge.json
+          docker exec -i -e SOURCE_SHA="$SOURCE_SHA" -e REPLAY_NONCE="$REPLAY_NONCE" ola-nina-ollama python - <<'PY' > nina-igor-ollama-proof.json
           import hashlib
           import json
           import os
@@ -201,9 +202,15 @@ jobs:
               "commit":os.environ["SOURCE_SHA"],
           }
           print(json.dumps(proof,sort_keys=True))
+          with open("/data/run-challenge.json","r",encoding="utf-8") as stream:
+              challenge=json.load(stream)
+          challenge["run_id"]=body["run_id"]
+          with open("/data/run-challenge.json","w",encoding="utf-8") as stream:
+              json.dump(challenge,stream,sort_keys=True,indent=2)
           with open("/data/nina-ollama-proof-context.json","w",encoding="utf-8") as stream:
               json.dump({"tenant_id":tenant_id,"run_id":body["run_id"],"task":task},stream,sort_keys=True)
           PY
+          docker cp ola-nina-ollama:/data/run-challenge.json run-challenge.json
 
       - name: Standalone verifier
         shell: bash

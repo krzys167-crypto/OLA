@@ -226,7 +226,7 @@ def _verify_source_signature(bundle: Path, expected_source_sha: str) -> dict:
         return _gate(
             "BLOCKED",
             "exact source commit is not cryptographically verified by GitHub",
-            reason=data.get("commit", {}).get("verification", {}).get("reason"),
+            verification_reason=data.get("commit", {}).get("verification", {}).get("reason"),
         )
     return _gate("VERIFIED", "GitHub independently reports cryptographically verified source commit", source_sha=expected_source_sha)
 

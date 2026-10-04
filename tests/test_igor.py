@@ -12,7 +12,7 @@ def _record(commit="abc", result="391", source_commit=None):
         "source_commit": source_commit,
         "agent": "codeact",
         "task": "Calculate 17 * 23",
-        "result": result,
+        "tool_output": result,
     }
     record = {
         "record_type": "agent.codeact",
@@ -49,7 +49,7 @@ def test_igor_verifies_real_ollama_provenance():
         "source_commit": "abc",
         "agent": "codeact",
         "task": "Calculate 17 * 23",
-        "result": "391",
+        "tool_output": "391",
         "provider": "ollama",
         "model": "qwen2.5:0.5b-instruct",
         "invocation_type": "real_llm",

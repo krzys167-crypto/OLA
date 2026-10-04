@@ -144,6 +144,7 @@ def _write_complete_forensic_bundle(tmp_path, *, source="df9f8783248812c2c887cc9
             "execution": [
                 {
                     "agent": name,
+                    "source_commit": source,
                     "replay_nonce": "ab" * 32,
                     "started_at": f"2026-10-02T20:{10+i:02d}:00+00:00",
                     "ended_at": f"2026-10-02T20:{10+i:02d}:01+00:00",
@@ -258,9 +259,11 @@ def test_forensic_gate_complete_bundle_requires_external_authenticity_review(tmp
     assert all(
         item["status"] == "VERIFIED"
         for name, item in report["gates"].items()
-        if name not in {"provider_authenticity", "archive_integrity", "freeze_anchor"}
+        if name not in {"provider_authenticity", "archive_integrity", "freeze_anchor", "image_model_digests"}
     )
     assert report["gates"]["provider_authenticity"]["status"] == "REVIEW_REQUIRED"
+    # The synthetic model digest does not establish official registry identity.
+    assert report["gates"]["image_model_digests"]["status"] == "REVIEW_REQUIRED"
 
 
 def test_forensic_gate_blocks_source_mismatch(tmp_path):
