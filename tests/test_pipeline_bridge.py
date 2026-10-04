@@ -424,3 +424,192 @@ def test_concurrent_appends_keep_one_valid_chain():
     chain = pb.load_chain(tenant)
     assert len(chain) == n and [r["seq"] for r in chain] == list(range(n))
     assert verify_chain(chain)[0]
+
+
+# ------------------------------------------------------------------ judge qualification (opt-in)
+DATASET_SHA = hashlib.sha256((Path(__file__).resolve().parent / "data" / "judge_eval.json").read_bytes()).hexdigest()
+JUDGE_DIGEST = "e5f6a1b2c3d4" * 5 + "abcd"          # FakeOllama.add_model default
+
+
+def write_qualification(tmp_path, *, k=0, n=26, model="igor-test", provider="ollama-local", digest=JUDGE_DIGEST,
+                        kind="OLLAMA_OBSERVED", dataset=DATASET_SHA, schema="ola.judge-eval/1", verdicts=47):
+    doc = {"schema": schema, "provider": provider, "model": model, "dataset_sha256": dataset,
+           "meta": {"runtime_kind": kind, "model_digest": digest},
+           "summary": {"false_accept": {"k": k, "n": n}, "verdicts_obtained": verdicts}}
+    path = tmp_path / "judge-eval.json"
+    path.write_text(json.dumps(doc))
+    return path
+
+
+def require_qualification(env, path, *, pin=DATASET_SHA, **limits):
+    env.setenv("OLA_JUDGE_QUALIFICATION_FILE", str(path))
+    if pin is not None:
+        env.setenv("OLA_JUDGE_QUALIFICATION_DATASET_SHA256", pin)
+    for name, value in limits.items():
+        env.setenv(name, str(value))
+
+
+def test_qualification_is_off_by_default_and_the_result_says_so(env):
+    _, key = make_tenant()
+    b = post(key, **HUMAN).json()
+    assert b["igor"]["status"] == "VERIFIED" and b["status"] == "VERIFIED", b
+    assert b["igor"]["judge_qualification"]["state"] == "NOT_CONFIGURED"
+
+
+def test_a_qualified_judge_keeps_verified_and_the_evidence_is_named(env, tmp_path):
+    path = write_qualification(tmp_path, k=0, n=26)
+    require_qualification(env, path)
+    _, key = make_tenant()
+    b = post(key, **HUMAN).json()
+    q = b["igor"]["judge_qualification"]
+    assert b["igor"]["status"] == "VERIFIED" and b["status"] == "VERIFIED", b
+    assert q["state"] == "QUALIFIED" and q["file_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert q["false_accept"] == {"k": 0, "n": 26} and q["model_digest"] == JUDGE_DIGEST
+    assert q["upper95"] == pytest.approx(pb._wilson_upper(0, 26), abs=1e-4) and q["upper95"] <= 0.15
+    assert str(tmp_path) not in json.dumps(b), "the server path of the qualification file must not leak"
+    assert "judge_qualification" in json.dumps(b["decision_report"]), "the qualification is part of the report"
+
+
+@pytest.mark.parametrize("name,kwargs", [
+    ("many false accepts", dict(k=5, n=26)),
+    ("too few wrong items", dict(k=0, n=10)),
+    ("other labelled set", dict(dataset="0" * 64)),
+    ("test double runtime", dict(kind="TEST_DOUBLE")),
+    ("no runtime kind", dict(kind=None)),
+    ("other model", dict(model="someone-else")),
+    ("other provider", dict(provider="openai")),
+    ("other digest", dict(digest="f" * 64)),
+    ("no digest", dict(digest=None)),
+    ("no verdict obtained", dict(verdicts=0)),
+    ("unknown schema", dict(schema="ola.judge-eval/2")),
+    ("k greater than n", dict(k=30, n=26)),
+    ("boolean counts", dict(k=True, n=26)),
+    ("boolean zero count", dict(k=False, n=26)),
+    ("string counts", dict(k="0", n=26)),
+])
+def test_an_unqualified_judge_downgrades_verified_to_unknown_even_with_human_approval(env, tmp_path, name, kwargs):
+    require_qualification(env, write_qualification(tmp_path, **kwargs))
+    tenant, key = make_tenant()
+    b = post(key, **HUMAN).json()
+    assert b["igor"]["pipeline_igor_status"] == "VERIFIED" or b["igor"]["gate_state"] == "PASS", "the gate itself said PASS"
+    assert b["igor"]["judge_qualification"]["state"] == "NOT_QUALIFIED", (name, b["igor"]["judge_qualification"])
+    assert b["igor"]["status"] == "UNKNOWN" and "not qualified" in b["igor"]["reason"]
+    assert b["status"] == "BLOCK" and "UNKNOWN" in b["human_gate"]["reason"], "a human cannot promote UNKNOWN"
+    assert len(anchors(tenant)) == 1, "the refusal is itself evidence"
+
+
+@pytest.mark.parametrize("content", [None, "not json", "[]", "{}", json.dumps({"schema": "ola.judge-eval/1"}),
+                                     json.dumps({"schema": "ola.judge-eval/1", "meta": {}, "summary": {}})])
+def test_missing_or_malformed_qualification_file_is_not_qualified(env, tmp_path, content):
+    path = tmp_path / "judge-eval.json"
+    if content is not None:
+        path.write_text(content)
+    require_qualification(env, path)
+    _, key = make_tenant()
+    b = post(key, **HUMAN).json()
+    assert b["igor"]["judge_qualification"]["state"] == "NOT_QUALIFIED" and b["igor"]["status"] == "UNKNOWN", b
+
+
+def test_the_false_accept_limit_is_applied_to_the_recomputed_upper_bound(env, tmp_path):
+    upper = pb._wilson_upper(1, 40)
+    path = write_qualification(tmp_path, k=1, n=40)
+    _, key = make_tenant()
+    require_qualification(env, path, OLA_JUDGE_MAX_FALSE_ACCEPT=round(upper + 0.002, 4))
+    assert post(key, **HUMAN).json()["igor"]["judge_qualification"]["state"] == "QUALIFIED"
+    env.setenv("OLA_JUDGE_MAX_FALSE_ACCEPT", str(round(upper - 0.002, 4)))
+    assert post(key, **HUMAN).json()["igor"]["judge_qualification"]["state"] == "NOT_QUALIFIED"
+
+
+def test_the_wrong_item_minimum_is_configurable(env, tmp_path):
+    require_qualification(env, write_qualification(tmp_path, k=0, n=10), OLA_JUDGE_MAX_FALSE_ACCEPT=0.5,
+                          OLA_JUDGE_QUALIFICATION_MIN_WRONG=10)
+    _, key = make_tenant()
+    assert post(key, **HUMAN).json()["igor"]["judge_qualification"]["state"] == "QUALIFIED"
+    env.setenv("OLA_JUDGE_QUALIFICATION_MIN_WRONG", "11")
+    assert post(key, **HUMAN).json()["igor"]["judge_qualification"]["state"] == "NOT_QUALIFIED"
+
+
+def test_qualification_can_only_downgrade_never_upgrade(env, fake, tmp_path):
+    fake.canary_mode = "accept"                                   # the gate itself says REVIEW_REQUIRED
+    require_qualification(env, write_qualification(tmp_path, k=0, n=26))
+    _, key = make_tenant()
+    b = post(key, **HUMAN).json()
+    assert b["igor"]["judge_qualification"]["state"] == "QUALIFIED"
+    assert b["igor"]["status"] == "UNKNOWN" and b["status"] == "BLOCK", b
+
+
+@pytest.mark.parametrize("name,value", [
+    ("OLA_JUDGE_MAX_FALSE_ACCEPT", "abc"), ("OLA_JUDGE_MAX_FALSE_ACCEPT", "0"), ("OLA_JUDGE_MAX_FALSE_ACCEPT", "1.5"),
+    ("OLA_JUDGE_MAX_FALSE_ACCEPT", "-0.1"), ("OLA_JUDGE_QUALIFICATION_MIN_WRONG", "0"),
+    ("OLA_JUDGE_QUALIFICATION_MIN_WRONG", "many"),
+])
+def test_bad_qualification_settings_are_503_before_any_model_is_called(env, fake, tmp_path, name, value):
+    require_qualification(env, write_qualification(tmp_path), **{name: value})
+    _, key = make_tenant()
+    r = post(key, **HUMAN)
+    assert r.status_code == 503, r.text
+    assert fake.calls.get("nina-test", 0) == 0 and fake.calls.get("igor-test", 0) == 0
+
+
+@pytest.mark.parametrize("pin", [None, "", "abc", "G" * 64, "a" * 63])
+def test_a_qualification_file_without_a_valid_dataset_pin_is_503(env, fake, tmp_path, pin):
+    require_qualification(env, write_qualification(tmp_path), pin=pin)
+    if pin == "":
+        env.setenv("OLA_JUDGE_QUALIFICATION_DATASET_SHA256", "")
+    elif pin is not None:
+        env.setenv("OLA_JUDGE_QUALIFICATION_DATASET_SHA256", pin)
+    _, key = make_tenant()
+    r = post(key, **HUMAN)
+    assert r.status_code == 503 and fake.calls.get("nina-test", 0) == 0, r.text
+
+
+def test_reverification_applies_the_policy_in_force_now(env, tmp_path):
+    tenant, key = make_tenant()
+    b = post(key, **HUMAN).json()
+    assert b["igor"]["status"] == "VERIFIED"
+    sid = b["session_id"]
+    client = TestClient(app)
+    assert client.get(f"/pipeline-session/{sid}", headers={"X-API-Key": key}).json()["verification"]["status"] == "VERIFIED"
+    require_qualification(env, write_qualification(tmp_path, k=5, n=26))        # operator turns the requirement on
+    v = client.get(f"/pipeline-session/{sid}", headers={"X-API-Key": key}).json()["verification"]
+    assert v["status"] == "UNKNOWN" and v["judge_qualification"]["state"] == "NOT_QUALIFIED"
+    env.setenv("OLA_JUDGE_QUALIFICATION_DATASET_SHA256", "nonsense")
+    assert client.get(f"/pipeline-session/{sid}", headers={"X-API-Key": key}).status_code == 503
+
+
+def test_wilson_upper_bound_matches_the_measuring_script():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("judge_eval_for_test", Path(__file__).resolve().parents[1] / "scripts" / "judge_eval.py")
+    je = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(je)
+    for k, n in [(0, 26), (1, 26), (5, 26), (20, 26), (26, 26), (3, 100)]:
+        assert pb._wilson_upper(k, n) == pytest.approx(je.wilson(k, n)[1], abs=1e-9)
+
+
+def test_default_wrong_item_minimum_is_twenty(env, tmp_path):
+    # the bound is not what rejects the 19-item measurement (limit 50%), the item minimum is
+    path = write_qualification(tmp_path, k=0, n=19)
+    require_qualification(env, path, OLA_JUDGE_MAX_FALSE_ACCEPT=0.5)
+    _, key = make_tenant()
+    q = post(key, **HUMAN).json()["igor"]["judge_qualification"]
+    assert q["state"] == "NOT_QUALIFIED" and "too few wrong answers" in q["reason"]
+    write_qualification(tmp_path, k=0, n=20)
+    assert post(key, **HUMAN).json()["igor"]["judge_qualification"]["state"] == "QUALIFIED"
+
+
+def test_a_judge_without_a_digest_cannot_be_matched_to_a_measurement_without_one(env, fake, tmp_path):
+    fake.add_model("igor-test", digest=None)                    # the runtime does not report a digest for the judge
+    require_qualification(env, write_qualification(tmp_path, digest=None))
+    _, key = make_tenant()
+    b = post(key, **HUMAN).json()
+    assert b["igor"]["judge_qualification"]["state"] == "NOT_QUALIFIED", b["igor"]["judge_qualification"]
+    assert b["igor"]["status"] != "VERIFIED" and b["status"] == "BLOCK"
+
+
+@pytest.mark.parametrize("judge_env", [None, "igor", [], 0])
+def test_a_session_without_a_judge_envelope_is_not_qualified(tmp_path, judge_env):
+    policy = pb.QualificationPolicy(write_qualification(tmp_path), DATASET_SHA, 0.15, 20)
+    q = pb.judge_qualification(judge_env, policy)
+    assert q["state"] == "NOT_QUALIFIED" and "no judge envelope" in q["reason"]
+    good = {"provider": "ollama-local", "model": "igor-test", "model_digest": JUDGE_DIGEST}
+    assert pb.judge_qualification(good, policy)["state"] == "QUALIFIED", "the same file qualifies the matching envelope"

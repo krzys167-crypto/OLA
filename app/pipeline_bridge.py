@@ -30,6 +30,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import re
 import threading
@@ -208,6 +209,111 @@ def map_states(gate_state: Any, verifier_overall: Any) -> tuple[str, str]:
     return "BLOCK", "unrecognised gate state"
 
 
+# ------------------------------------------------------------------ judge qualification (opt-in)
+# A PASS only means something if the judge that issued it has a measured error rate. scripts/judge_eval.py measures
+# how often a judge accepts a WRONG answer on a labelled set; this block lets an operator require such a measurement
+# before a PASS may become VERIFIED. Off unless OLA_JUDGE_QUALIFICATION_FILE is set: behaviour is then unchanged
+# (and every result says so: state NOT_CONFIGURED). When on, anything that cannot be confirmed is NOT_QUALIFIED,
+# which downgrades VERIFIED to UNKNOWN (never to BLOCK, never to anything better).
+QUALIFICATION_SCHEMA = "ola.judge-eval/1"
+
+
+@dataclasses.dataclass(frozen=True)
+class QualificationPolicy:
+    path: Path
+    dataset_sha256: str      # the labelled set the measurement must have been made on (pinned by the operator)
+    max_false_accept: float  # largest allowed UPPER 95% Wilson bound of "wrong answers accepted"
+    min_wrong_items: int     # smallest allowed number of wrong answers in the measurement
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        raise PipelineNotConfigured(f"{name} must be a number in (0, 1]") from None
+    if not 0.0 < value <= 1.0:
+        raise PipelineNotConfigured(f"{name} must be a number in (0, 1]")
+    return value
+
+
+def qualification_policy_from_env() -> Optional[QualificationPolicy]:
+    raw = os.environ.get("OLA_JUDGE_QUALIFICATION_FILE", "").strip()
+    if not raw:
+        return None
+    pin = os.environ.get("OLA_JUDGE_QUALIFICATION_DATASET_SHA256", "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", pin):
+        # a qualification measured on an arbitrary set would prove nothing: the set must be pinned
+        raise PipelineNotConfigured("OLA_JUDGE_QUALIFICATION_DATASET_SHA256 must be the 64-hex SHA-256 of the labelled set "
+                                    "when OLA_JUDGE_QUALIFICATION_FILE is set")
+    return QualificationPolicy(Path(raw), pin, _float_env("OLA_JUDGE_MAX_FALSE_ACCEPT", 0.15),
+                               _int_env("OLA_JUDGE_QUALIFICATION_MIN_WRONG", 20))
+
+
+def _wilson_upper(k: int, n: int, z: float = 1.96) -> float:
+    """Upper end of the Wilson score interval for k/n (recomputed here, never read from the file)."""
+    p = k / n
+    d = 1 + z * z / n
+    return min(1.0, (p + z * z / (2 * n) + z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / d)
+
+
+def judge_qualification(judge_env: Optional[dict], policy: Optional[QualificationPolicy]) -> dict:
+    """Is THIS judge (provider, model, model digest) measured good enough? Fail closed on every doubt."""
+    if policy is None:
+        return {"state": "NOT_CONFIGURED",
+                "reason": "judge accuracy is not measured: no qualification is configured"}
+
+    def no(reason: str, **evidence: Any) -> dict:
+        return {"state": "NOT_QUALIFIED", "reason": reason, **evidence}
+
+    try:
+        raw = policy.path.read_bytes()
+        doc = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError):
+        return no("qualification file is missing or not valid JSON")
+    file_sha = hashlib.sha256(raw).hexdigest()
+    try:
+        meta = doc["meta"]
+        fa = doc["summary"]["false_accept"]
+        k, n = fa["k"], fa["n"]
+        if doc.get("schema") != QUALIFICATION_SCHEMA:
+            return no("qualification file has an unknown schema", file_sha256=file_sha)
+        if doc.get("dataset_sha256") != policy.dataset_sha256:
+            return no("measured on a different labelled set than the pinned one", file_sha256=file_sha)
+        if meta.get("runtime_kind") != "OLLAMA_OBSERVED":
+            return no(f"measurement is not from an observed runtime (runtime_kind={meta.get('runtime_kind')!r})",
+                      file_sha256=file_sha)
+        if not isinstance(judge_env, dict):
+            return no("the session has no judge envelope", file_sha256=file_sha)
+        digest = meta.get("model_digest")
+        if (doc.get("provider"), doc.get("model")) != (judge_env.get("provider"), judge_env.get("model")):
+            return no("measured judge differs from the judge that decided this session", file_sha256=file_sha)
+        if not digest or digest != judge_env.get("model_digest"):
+            return no("model digest of the measurement is missing or differs from the judge's digest",
+                      file_sha256=file_sha)
+        if not (isinstance(k, int) and isinstance(n, int) and not isinstance(k, bool) and not isinstance(n, bool)
+                and 0 <= k <= n):
+            return no("malformed false-accept counts", file_sha256=file_sha)
+        if doc["summary"].get("verdicts_obtained", 0) <= 0:
+            return no("the measurement obtained no verdict at all", file_sha256=file_sha)
+    except (KeyError, TypeError, AttributeError):
+        return no("qualification file is malformed")
+    evidence = {"file_sha256": file_sha, "model": doc["model"], "model_digest": digest,
+                "false_accept": {"k": k, "n": n}, "max_allowed_upper95": policy.max_false_accept,
+                "dataset_sha256": policy.dataset_sha256}
+    if n < policy.min_wrong_items:
+        return no(f"too few wrong answers in the measurement ({n} < {policy.min_wrong_items})", **evidence)
+    upper = _wilson_upper(k, n)
+    evidence["upper95"] = round(upper, 4)
+    if upper > policy.max_false_accept:
+        return no(f"judge accepted {k}/{n} wrong answers: upper 95% bound {upper:.0%} exceeds the allowed "
+                  f"{policy.max_false_accept:.0%}", **evidence)
+    return {"state": "QUALIFIED", "reason": f"judge accepted {k}/{n} wrong answers (upper 95% bound {upper:.0%})",
+            **evidence}
+
+
 # ------------------------------------------------------------------ anchor
 def _envelope_summary(env: dict) -> dict:
     return {
@@ -322,7 +428,11 @@ def verify_anchor(tenant_id: str, session_id: str, *, base: Optional[Path] = Non
     # (gate_state needs no separate comparison: it is read from final.json, whose SHA-256 is anchored.)
     disk_gate = report.get("outcome")
     status, reason = map_states(disk_gate, report["overall"])
+    qualification = judge_qualification(facts.igor[-1] if facts.igor else None, qualification_policy_from_env())
+    if status == "VERIFIED" and qualification["state"] == "NOT_QUALIFIED":
+        status, reason = "UNKNOWN", f"gate PASS but the judge is not qualified: {qualification['reason']}"
     return {"status": status, "reason": reason, "checks": checks, "verifier": verifier,
+            "judge_qualification": qualification,
             "anchor_record_id": anchors[0]["id"], "run_id": anchor.get("run_id"), "gate_state": disk_gate,
             "chain_head": disk_head}
 
@@ -379,6 +489,7 @@ def run_pipeline(tenant_id: str, task: Any, review: ReviewDecision, *, requested
     cfg = cfg or build_config(tenant_id, base)
     if trusted_key is None:
         trusted_key = trusted_key_from_env()
+    qualification_policy_from_env()          # a bad qualification setting is a 503 BEFORE any model is called
     pipe = Pipeline(cfg, **({"source_fn": source_fn} if source_fn else {}))
     signing_failed: Optional[str] = None
     try:
@@ -416,7 +527,8 @@ def run_pipeline(tenant_id: str, task: Any, review: ReviewDecision, *, requested
                     "evidence_class": final.get("evidence_class"), "iterations": final.get("iterations")}
     igor_summary = {"status": igor_status, "reason": verification["reason"], "checks": verification["checks"],
                     "pipeline_igor_status": final.get("igor_status"), "gate_state": final.get("gate_state"),
-                    "gate_reasons": final.get("gate_reasons")}
+                    "gate_reasons": final.get("gate_reasons"),
+                    "judge_qualification": verification.get("judge_qualification")}
     report = build_decision_report(
         task_id=nina_task.task_id, run_id=run_id, task=nina_task.task, nina=nina_summary, igor=igor_summary,
         replay={"status": replay["verification"]["status"], "events": replay["events"],

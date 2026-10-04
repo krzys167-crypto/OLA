@@ -24,6 +24,7 @@ GET  /pipeline-session/{id}       the same independent re-verification later; fo
 |---|---|---|---|
 | PASS | VERIFIED | VERIFIED | VERIFIED only with explicit human approval |
 | PASS | PARTIAL / CONSISTENT / other | UNKNOWN | BLOCK |
+| PASS | VERIFIED, but judge qualification is on and the judge is NOT_QUALIFIED | UNKNOWN | BLOCK |
 | REVIEW_REQUIRED | any but FAILED | UNKNOWN | BLOCK |
 | BLOCKED | any | BLOCK | BLOCK |
 | any | FAILED | BLOCK | BLOCK |
@@ -54,6 +55,10 @@ environments without it, and each attestation records which one signed (`signer_
 | `OLA_SIGNING_KEY_FILE`, `OLA_PIPELINE_TRUSTED_KEY` | sign sessions / pin the accepted public key |
 | `OLA_PIPELINE_MAX_CONCURRENCY` | runs in flight per process (default 4). Over the limit → HTTP 429 + `Retry-After`; an invalid value → 503, never "unlimited" |
 | `OLA_PIPELINE_MAX_TASK_CHARS` | longest accepted task (default 8000) → HTTP 400 before any model call |
+| `OLA_JUDGE_QUALIFICATION_FILE` | result file of `scripts/judge_eval.py`. When set, a PASS can become VERIFIED only if this judge (provider, model, **model digest**) is qualified. Unset = off; every result then says `NOT_CONFIGURED` |
+| `OLA_JUDGE_QUALIFICATION_DATASET_SHA256` | required with the file: SHA-256 of the labelled set the measurement must come from. Missing or malformed → 503 before any model call |
+| `OLA_JUDGE_MAX_FALSE_ACCEPT` | largest allowed *upper 95% Wilson bound* of wrong answers accepted (default `0.15`); outside (0, 1] → 503 |
+| `OLA_JUDGE_QUALIFICATION_MIN_WRONG` | fewest wrong answers in the measurement (default 20) |
 
 ## Verification status
 
@@ -104,6 +109,26 @@ First measurements (CI run 37228334125, commit `354115b`, one run per judge, Oll
 * PASS precision depends on the class balance of this set (21 correct / 26 wrong), not on real-world prevalence.
 * Not implemented, owner's decision: a policy that requires a measured false-accept rate for the judge's model digest
   (recorded as evidence) before a PASS may become VERIFIED. It changes what VERIFIED means.
+
+## Judge qualification (opt-in)
+
+Set `OLA_JUDGE_QUALIFICATION_FILE` (a `judge_eval.py --out` result) and `OLA_JUDGE_QUALIFICATION_DATASET_SHA256` to require a
+measured judge before a PASS may become VERIFIED. The bridge then checks, for the judge envelope of the session: schema,
+pinned labelled set, observed runtime (a test double can never qualify), same provider, model **and model digest**, enough
+wrong answers (`MIN_WRONG`), at least one verdict, and an upper 95% Wilson bound of "wrong answers accepted" (recomputed
+from the counts, never read from the file) not above `MAX_FALSE_ACCEPT`. Anything that cannot be confirmed is
+`NOT_QUALIFIED`, which turns VERIFIED into UNKNOWN (and the terminal decision into BLOCK). It can only downgrade: a
+QUALIFIED judge never upgrades a REVIEW_REQUIRED or BLOCKED result. `GET /pipeline-session/{id}` applies the policy in
+force at the time of the request, and every response carries `judge_qualification` with the state and the evidence
+(file SHA-256, counts, bound).
+
+* With 26 wrong answers the best possible bound is 12.9% (0 accepted), hence the default of 15%. Measured so far
+  (see above): `qwen3:0.6b` 20/26, `qwen3:1.7b` 5/26, `llama3.2:3b` 5-6/26 accepted, upper bounds 58-89%, 38%, 38-42%.
+  **None of them qualifies**: switching this on today means no result can reach VERIFIED with those judges, which is
+  what the measurements say.
+* Off by default, so nothing changes until an operator decides. It is operator configuration, like the key pin: whoever
+  can write the file and the environment can qualify any judge. It binds provider, model and digest, **not** sampling
+  settings (`think`, temperature), and a 47-item toy set says nothing about your own task distribution.
 
 ## Limits that remain
 
