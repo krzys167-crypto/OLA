@@ -219,3 +219,22 @@ Honest limits
 * `shadow` measures, only `enforce` protects, and `enforce` adds one judge call of latency per request.
 * Not yet wired: `/nina-run`, `/business-invoice-run`, `/checkout`. Not measured against a real model in CI
   (the tests use the Ollama test double); `shadow` on a real Ollama is the way to collect that data.
+
+## Upstream IGOR hardening (a59f8c1)
+
+Black-box probing of the upstream NINA/IGOR boundary (34 probes, `scripts`-free: see the PR) found these gaps in
+the deterministic verifier. Each is now a test (`tests/test_igor_hardening.py`, red on the upstream code) and a fix.
+
+| Gap | Fix |
+|---|---|
+| `IgorVerifier`: commit, task and result were each satisfied by `any(...)` over *different* records | one record of one run must carry commit + task + result (the `provenance.runtime` record of a real `/nina-run` does) |
+| without `expected_run_id` records of different runs were mixed | evidence is grouped by `run_id`; one complete run must verify; `evidence_ids` are that run's |
+| provider and model could come from different records | provider, `real_llm`, response ids and model must come from the record that carries the claim |
+| `str(None) == str(None)`, `42 == "42"` | type-strict equality; a missing value never matches |
+| malformed / non-object payload -> exception | not evidence (skipped); never VERIFIED |
+| `NinaOrchestrator.plan` -> `TypeError` (HTTP 500) for non-string tool names | BLOCK; a non-list container is a `ValueError` |
+| `NinaIgorChain.derive_status` -> `TypeError` for list/dict values | BLOCK |
+| `HumanGate`: any truthy `approved` ("false", 1) approved; non-string actor crashed | only boolean `True` approves; otherwise BLOCK |
+
+Not changed (design level, not a bug fix): the tool allow-list is checked *before* the runtime call, not inside the
+runtime; IGOR does not see a model digest (the `ola_pipeline` path does).

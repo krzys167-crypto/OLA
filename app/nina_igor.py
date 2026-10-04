@@ -34,7 +34,7 @@ class NinaIgorChain:
         if set(statuses) != set(STATUS_FIELDS):
             return "BLOCK"
         values = tuple(statuses[field] for field in STATUS_FIELDS)
-        if any(value not in STATUS_VALUES for value in values):
+        if any(not isinstance(value, str) or value not in STATUS_VALUES for value in values):
             return "BLOCK"
         if all(value == "VERIFIED" for value in values):
             return "VERIFIED"

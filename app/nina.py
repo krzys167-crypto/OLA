@@ -20,6 +20,8 @@ class NinaTask:
             raise ValueError("task is required")
         if not isinstance(tenant_id, str) or not tenant_id.strip():
             raise ValueError("tenant_id is required")
+        if not isinstance(requested_tools, (list, tuple)):
+            raise ValueError("requested_tools must be a list")
         return cls(
             task_id=str(uuid.uuid4()),
             tenant_id=tenant_id,
@@ -46,11 +48,12 @@ class NinaOrchestrator:
         self._registered_tools = tuple(registered_tools)
 
     def plan(self, task: NinaTask) -> NinaDecision:
+        # a tool name that is not a string is never registered (and must not break the message below)
         unknown = tuple(tool for tool in task.requested_tools if tool not in self._registered_tools)
         if unknown:
             return NinaDecision(
                 status="BLOCK",
-                reason=f"unknown tool: {', '.join(unknown)}",
+                reason=f"unknown tool: {', '.join(tool if isinstance(tool, str) else repr(tool) for tool in unknown)}",
                 allowed_tools=(),
             )
         return NinaDecision(
