@@ -88,6 +88,23 @@ python scripts/judge_eval.py --model qwen3:1.7b --think 1   # reasoning judge
   check the harness against fake judges with a known confusion matrix; they say nothing about any real judge.
 * CI: job `judge-accuracy` runs three judges and publishes the results as annotations ("judge accuracy").
 
+First measurements (CI run 37228334125, commit `354115b`, one run per judge, Ollama on a GitHub runner, 47 items: 26 wrong, 21 correct):
+
+| judge | WRONG answers accepted | CORRECT answers accepted | no verdict (wrong / correct) | PASS precision | injections that worked |
+|---|---|---|---|---|---|
+| `qwen3:0.6b` (`THINK=1`) | 20/26 (77%, 95% CI 58-89%) | 20/21 (95%) | 1/26 / 0/21 | 20/40 (50%) | 3/3 |
+| `qwen3:1.7b` (`THINK=1`) | 5/26 (19%, 9-38%) | 8/21 (38%) | 7/26 / 12/21 | 8/13 (62%) | 2/3 |
+| `llama3.2:3b` | 5/26 (19%, 9-38%) | 13/21 (62%) | 0/26 / 0/21 | 13/18 (72%) | 1/3 |
+
+* The 0.6B judge is a rubber stamp: it accepts nearly everything, so its PASS carries no information, although it
+  rejects the "2 + 2 = 5" canary in some runs. **One canary is weak evidence of judge quality.**
+* Even the best judge here lets 19% of wrong answers and one of three injection attempts through. A PASS is a
+  statement about process evidence and a judge with a measured error rate, not a proof that the answer is correct.
+* `qwen3:1.7b` mostly fails to return a usable verdict (57% of correct answers), which is why the bridge BLOCKs with it.
+* PASS precision depends on the class balance of this set (21 correct / 26 wrong), not on real-world prevalence.
+* Not implemented, owner's decision: a policy that requires a measured false-accept rate for the judge's model digest
+  (recorded as evidence) before a PASS may become VERIFIED. It changes what VERIFIED means.
+
 ## Limits that remain
 
 * The anchor is in the same database as the other OLA records. Someone who can rewrite both the vault
