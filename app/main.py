@@ -20,6 +20,7 @@ from .decision_report import build_decision_report
 from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout, payment_verified
 from .stripe_webhook import process_checkout_event
+from . import pipeline_bridge
 
 app = FastAPI(title="OLA Execution Gate")
 Base.metadata.create_all(bind=engine)
@@ -515,6 +516,49 @@ def approve_nina_run(
         "record_type": "human.approval",
         "approver_id": approver_id,
     }
+
+
+@app.post("/pipeline-run")
+def create_pipeline_run(body: dict, x_api_key: str | None = Header(default=None)):
+    """NINA -> OLLAMA -> EVIDENCE -> IGOR -> GATE -> REPLAY, anchored in the tenant evidence chain."""
+    tenant_id = tenant_from_key(x_api_key)
+    task_text = body.get("task")
+    if not isinstance(task_text, str) or not task_text.strip():
+        raise HTTPException(status_code=400, detail="task is required")
+    requested_tools = body.get("requested_tools", [])
+    if not isinstance(requested_tools, list):
+        raise HTTPException(status_code=400, detail="requested_tools must be a list")
+    review = ReviewDecision(
+        bool(body.get("human_approved", False)),
+        str(body.get("human_actor", "")),
+        str(body.get("human_reason", "")),
+    )
+    try:
+        return pipeline_bridge.run_pipeline(tenant_id, task_text, review, requested_tools=requested_tools)
+    except pipeline_bridge.PipelineBusy as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "5"}) from exc
+    except pipeline_bridge.PipelineNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/pipeline-session/{session_id}")
+def get_pipeline_session(session_id: str, x_api_key: str | None = Header(default=None)):
+    """Independent re-verification + replay of an anchored session (tenant-scoped; others get 404)."""
+    tenant_id = tenant_from_key(x_api_key)
+    try:
+        trusted_key = pipeline_bridge.trusted_key_from_env()
+        verification = pipeline_bridge.verify_anchor(tenant_id, session_id, trusted_key=trusted_key)
+    except pipeline_bridge.PipelineNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError:
+        raise HTTPException(status_code=404, detail="session not found") from None
+    if verification["checks"] == {} and verification["status"] == "UNKNOWN":
+        raise HTTPException(status_code=404, detail="session not found")
+    replay = pipeline_bridge.replay_from_anchor(tenant_id, session_id)
+    return {"session_id": session_id, "verification": verification, "replay": replay["events"],
+            "replay_verification": replay["verification"]}
 
 
 @app.post("/stripe/webhook")

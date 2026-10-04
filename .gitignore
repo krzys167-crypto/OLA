@@ -109,3 +109,10 @@ if __name__ == "__main__":
 *.flf
 #Test results file
 TestResults.xml
+
+# pipeline evidence vaults (runtime data; never commit signing keys either)
+ola_pipeline_evidence/
+ola_evidence/
+*.key
+__pycache__/
+*.pyc
