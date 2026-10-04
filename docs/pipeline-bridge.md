@@ -93,7 +93,7 @@ python scripts/judge_eval.py --model qwen3:1.7b --think 1   # reasoning judge
   check the harness against fake judges with a known confusion matrix; they say nothing about any real judge.
 * CI: job `judge-accuracy` runs three judges and publishes the results as annotations ("judge accuracy").
 
-First measurements (CI run 37228334125, commit `354115b`, one run per judge, Ollama on a GitHub runner, 47 items: 26 wrong, 21 correct):
+First measurements (run 1 of 3: CI run 37228334125, commit `354115b`, Ollama on a GitHub runner, 47 items: 26 wrong, 21 correct; the other runs are below):
 
 | judge | WRONG answers accepted | CORRECT answers accepted | no verdict (wrong / correct) | PASS precision | injections that worked |
 |---|---|---|---|---|---|
@@ -107,8 +107,23 @@ First measurements (CI run 37228334125, commit `354115b`, one run per judge, Oll
   statement about process evidence and a judge with a measured error rate, not a proof that the answer is correct.
 * `qwen3:1.7b` mostly fails to return a usable verdict (57% of correct answers), which is why the bridge BLOCKs with it.
 * PASS precision depends on the class balance of this set (21 correct / 26 wrong), not on real-world prevalence.
-* Not implemented, owner's decision: a policy that requires a measured false-accept rate for the judge's model digest
-  (recorded as evidence) before a PASS may become VERIFIED. It changes what VERIFIED means.
+
+Repeatability (same set, temperature 0, seed 1; wrong answers accepted, of 26):
+
+| judge | run 1 (`354115b`) | run 2 (`dd8c31a`, 37229766647) | run 3 (`b105093`, 37233109532) |
+|---|---|---|---|
+| `qwen3:0.6b` | 20 | 20 | 21 |
+| `qwen3:1.7b` | 5 | 5 | 2 |
+| `llama3.2:3b` | 5 | 6 | 5 |
+
+* **The counts are not stable between runs**, even with temperature 0 and a fixed seed (`qwen3:1.7b`: 5, 5, 2). An earlier
+  note saying the Qwen judges reproduced exactly was wrong. One run is an observation, not a property of the model.
+  Runner-to-runner and run-to-run variation cannot be separated from these runs (`--repeat` was not used in CI).
+* What holds in all three runs: the 0.6B judge is a rubber stamp. What does not: any ranking of `qwen3:1.7b` against
+  `llama3.2:3b`.
+* Decision (the owner delegated it): the qualification policy below is **implemented and opt-in, off by default**. It is not
+  enforced by default because no measured judge would pass, so enabling it would turn every PASS into UNKNOWN without
+  telling anyone anything new. A qualification file should come from a `--repeat N` run and is a point-in-time observation.
 
 ## Judge qualification (opt-in)
 
@@ -123,7 +138,8 @@ force at the time of the request, and every response carries `judge_qualificatio
 (file SHA-256, counts, bound).
 
 * With 26 wrong answers the best possible bound is 12.9% (0 accepted), hence the default of 15%. Measured so far
-  (see above): `qwen3:0.6b` 20/26, `qwen3:1.7b` 5/26, `llama3.2:3b` 5-6/26 accepted, upper bounds 58-89%, 38%, 38-42%.
+  (see above): `qwen3:0.6b` 20-21/26, `qwen3:1.7b` 2-5/26, `llama3.2:3b` 5-6/26 accepted over three runs; even the best count
+  (2/26) has an upper 95% bound far above 15%.
   **None of them qualifies**: switching this on today means no result can reach VERIFIED with those judges, which is
   what the measurements say.
 * Off by default, so nothing changes until an operator decides. It is operator configuration, like the key pin: whoever

@@ -298,6 +298,7 @@ def test_bad_session_id_is_rejected_and_endpoint_hides_it(env, bad):
     ("REVIEW_REQUIRED", "FAILED", "BLOCK"),
     ("BLOCKED", "CONSISTENT", "BLOCK"), ("BLOCKED", "FAILED", "BLOCK"),
     ("ALLOW", "VERIFIED", "BLOCK"), ("", "VERIFIED", "BLOCK"), (None, None, "BLOCK"), ("pass", "VERIFIED", "BLOCK"),
+    ("BLOCKED", "VERIFIED", "BLOCK"), ("PASS", "", "UNKNOWN"), ("PASS", "verified", "UNKNOWN"), (["PASS"], "VERIFIED", "BLOCK"),
 ])
 def test_state_mapping_is_fail_closed(gate, overall, expected):
     assert pb.map_states(gate, overall)[0] == expected
