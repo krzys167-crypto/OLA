@@ -146,3 +146,71 @@ jobs:
           path: |
             live-result.txt
             ollama-models.json
+
+  # How often does each judge PASS a WRONG answer? 47 labelled items (tests/data/judge_eval.json), same judge
+  # prompt and acceptance rule as Igor. Published as annotations; the job fails only when no verdict was obtained
+  # at all (nothing ran = UNKNOWN). Small n: the script prints Wilson 95% intervals, this is not a certification.
+  judge-accuracy:
+    runs-on: ubuntu-latest
+    needs: offline
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - judge: "qwen3:0.6b"
+            think: "1"
+          - judge: "qwen3:1.7b"
+            think: "1"
+          - judge: "llama3.2:3b"
+            think: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - name: Set up Ollama and pull the judge
+        shell: bash
+        env:
+          JUDGE: ${{ matrix.judge }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve >/tmp/ollama.log 2>&1 &
+          for _ in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:11434/api/version >/dev/null && break
+            sleep 2
+          done
+          ollama pull "$JUDGE"
+      - name: Judge against labelled answers
+        shell: bash
+        env:
+          JUDGE: ${{ matrix.judge }}
+          JUDGE_THINK: ${{ matrix.think }}
+        run: |
+          set -euo pipefail
+          args=(--model "$JUDGE" --out judge-eval.json)
+          if [ -n "$JUDGE_THINK" ]; then args+=(--think "$JUDGE_THINK"); fi
+          python scripts/judge_eval.py "${args[@]}" | tee judge-eval.txt
+          # Annotations are readable through the API even when job logs and artifacts are not.
+          # Few, aggregated lines: GitHub caps annotations per step.
+          grep -E '^JUDGE EVAL:' judge-eval.txt | while IFS= read -r line; do
+            echo "::notice title=judge accuracy::${line}"
+          done
+          python - <<'PY'
+          import json
+          d = json.load(open("judge-eval.json"))
+          bad = [f"{r['id']}" for r in d["runs"] if r["label"] == "wrong" and r["verdict"] == "ACCEPT"]
+          print(f"::notice title=judge false accepts::{d['model']} accepted {len(bad)} wrong answer(s): {', '.join(bad) or 'none'}")
+          cats = "; ".join(f"{c} {v['false_accept']}/{v['wrong_n']}" for c, v in sorted(d["summary"]["by_category"].items()) if v["wrong_n"])
+          print(f"::notice title=judge false accepts by category::{d['model']}: {cats}")
+          PY
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-accuracy-${{ strategy.job-index }}
+          path: |
+            judge-eval.json
+            judge-eval.txt

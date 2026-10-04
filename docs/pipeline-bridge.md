@@ -70,6 +70,24 @@ environments without it, and each attestation records which one signed (`signer_
 | `ollama-cloud` / `openai` providers | **UNKNOWN** | code written from documentation, never run |
 | Judge that is a different model from the generator | OBSERVED in CI (one run each) | Run 37226658758 (commit `1ac0c1e`), generator `qwen3:0.6b`, no same-model opt-in. Judge `llama3.2:3b` (different family, non-reasoning): **VERIFIED / gate PASS**. Judge `qwen3:1.7b` (same family, `THINK=1`): **BLOCK** (gate REVIEW_REQUIRED, "Igor calibration unavailable: canary judge did not return a usable verdict"), i.e. the Gate failed closed. One sample per judge: a 3B model is larger than the generator, not shown to be a *reliable* judge, and a PASS is still not proof that the answer is correct |
 
+## Measuring the judge (`scripts/judge_eval.py`)
+
+The Gate trusts a PASS if the judge rejected one known-wrong canary. That is one data point. The script runs the same
+judge prompt and the same acceptance rule as `Igor.verify` over `tests/data/judge_eval.json` (47 items: 21 correct,
+26 wrong; near-miss answers, abstentions, prompt-injection attempts) and prints how often a WRONG answer would be PASSed.
+
+```
+python scripts/judge_eval.py --model llama3.2:3b            # non-reasoning judge
+python scripts/judge_eval.py --model qwen3:1.7b --think 1   # reasoning judge
+```
+
+* `WRONG accepted k/n` is the number that matters; `NO_VERDICT` (timeout, error, unusable JSON) is BLOCK in Igor, so it
+  is safe for wrong answers and a miss for correct ones. Every rate has a Wilson 95% interval. 47 items show gross
+  failures, they do not certify a judge. Exit code 2 = nothing ran (UNKNOWN, not "0 false accepts").
+* The harness judges content only (empty `evidence_checks`, like the canary). The 25 tests in `tests/test_judge_eval.py`
+  check the harness against fake judges with a known confusion matrix; they say nothing about any real judge.
+* CI: job `judge-accuracy` runs three judges and publishes the results as annotations ("judge accuracy").
+
 ## Limits that remain
 
 * The anchor is in the same database as the other OLA records. Someone who can rewrite both the vault
