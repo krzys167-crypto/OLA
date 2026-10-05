@@ -425,17 +425,50 @@ Reading (one run each, so differences of a few items are noise):
 * The closest to qualifying is `llama3.1:8b` + `combined` (6/72 wrong accepted, upper 17.0%, just above 15%; but only 28/67 correct accepted, lower 30.7%, below 50%).
 * **No judge/variant pair qualifies.** The production prompt and thresholds are unchanged; a variant becomes the production prompt only by a separate change that moves its template into Igor and re-measures (and the measurement must then be repeated: this is one run, `--repeat` was not used).
 
-### Ablation variants (added after the 12-run measurement; not yet measured)
+### Ablation variants (measured, one run each; none qualifies)
 
 `plain-input` changes the layout only (its system text differs from the baseline by one sentence, pinned by a test), yet it
-was the variant that lifted correct-accepted. Two variants split what the layout changes, so the next measurement can say
-which part matters instead of guessing:
+was the variant that lifted correct-accepted. Two variants split what the layout changes:
 
 | variant | what it changes against the baseline | tests |
 |---|---|---|
 | `json-pretty` | same JSON fields and values, indented and not ASCII-escaped | escapes and quotes in a one-line blob |
 | `plain-nomarker` | plain-text sections without the digest marker lines | whether the marker, not the sections, moves the verdicts |
 
-Results: UNKNOWN until `judge-variants` is dispatched with these variants (6 CPU jobs, 1-1.5 h each). Repeating a run with
-the same seed at temperature 0 would not add information (the verdicts are practically deterministic); the sampling
-uncertainty of the 72/67 labelled answers is already in the Wilson bounds.
+Measured 2026-10-05 by the `judge-variants` workflow (run 37295361837, commit f731e39, `judge_eval_v2.json`: 72 wrong / 67
+correct answers, temperature 0, fixed seed). Qualification needs false-accept upper95 <= 0.15 AND correct-accepted lower95 >= 0.50.
+FA = wrong answers accepted (of 72), CA = correct answers accepted (of 67). Wilson 95 % bounds in brackets.
+
+| model | variant | FA (upper95) | CA (lower95) | qualifies |
+|---|---|---|---|---|
+| llama3.2:3b | json-pretty | 9 (0.221) | 21 (0.215) | NO |
+| llama3.2:3b | plain-nomarker | 3 (0.115) | 12 (0.106) | NO |
+| llama3.1:8b | json-pretty | 19 (0.376) | 30 (0.335) | NO |
+| llama3.1:8b | plain-nomarker | 8 (0.204) | 12 (0.106) | NO |
+| qwen2.5:7b | json-pretty | 29 (0.518) | 63 (0.856) | NO |
+| qwen2.5:7b | plain-nomarker | 20 (0.390) | 48 (0.599) | NO |
+| llama3.2:3b | plain-input | 15 (0.316) | 31 (0.349) | NO |
+| llama3.1:8b | plain-input | 20 (0.390) | 26 (0.280) | NO |
+| qwen2.5:7b | plain-input | 31 (0.546) | 58 (0.764) | NO |
+| llama3.2:3b | check-first | 66 (0.961) | 65 (0.898) | NO |
+| llama3.1:8b | check-first | 0 (0.051) | 7 (0.052) | NO |
+| qwen2.5:7b | check-first | 0 (0.051) | 12 (0.106) | NO |
+| llama3.2:3b | scoped-requirements | 6 (0.170) | 11 (0.094) | NO |
+| llama3.1:8b | scoped-requirements | 0 (0.051) | 0 (0.000) | NO |
+| qwen2.5:7b | scoped-requirements | 0 (0.051) | 8 (0.062) | NO |
+| llama3.2:3b | combined | 41 (0.677) | 50 (0.631) | NO |
+| llama3.1:8b | combined | 6 (0.170) | 28 (0.307) | NO |
+| qwen2.5:7b | combined | 32 (0.559) | 64 (0.876) | NO |
+
+What this does and does not say. Against the baseline (0/67 correct accepted for llama3.1:8b and qwen2.5:7b, table above), BOTH
+layout changes that un-escape the one-line JSON blob lift correct-accepted a lot: `json-pretty` to 30/67 and 63/67, `plain-nomarker`
+to 12/67 and 48/67. So the baseline all-reject is most likely caused by the escaped one-line JSON string (which is also what the
+judges' own rejection reason points at), and the digest marker is not the main cause (removing it did not remove the lift and
+did not improve separation). The lift is again paid for in false accepts (`json-pretty` + qwen2.5:7b 29/72), so the judges
+still move along one curve instead of separating right from wrong: no cell has both bounds met. The strict variants
+(`check-first`, `scoped-requirements`) have the best false-accept side but accept almost no correct answer. **Runs are not
+exactly repeatable:** the same (model, variant) pairs measured earlier in this section differ from this dispatch by 1-3
+answers (e.g. llama3.2:3b plain-input correct accepted 28 then 31; qwen2.5:7b combined wrong accepted 33 then 32), so
+temperature 0 with a fixed seed is NOT deterministic on the CI runners and differences of a few answers are noise; the
+Wilson bounds do not cover that run-to-run variation. gemma2:9b was not part of this dispatch (UNKNOWN for these variants).
+This is a measurement, not a certification, and no thresholds or production prompts were changed.
