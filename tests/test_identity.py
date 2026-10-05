@@ -453,7 +453,7 @@ def test_principal_limit(tenant, monkeypatch):
 
 
 def test_policy_digest_unchanged_by_identity():
-    assert fw.policy_digest() == "b3a548f3116560352c090594042a166451c147c267eeb11b03722201036fae42"
+    assert fw.policy_digest() == "dc33989e2bf39c17d2517f5f3c69fb14990debe6276644e8627ed8887649e379"
 
 
 # ------------------------------------------------------------------ registry reading and message format
@@ -497,7 +497,10 @@ def test_properly_signed_but_malformed_fields_are_still_denied(tenant, strict):
     short = idn.sign_request(a.seed, tenant[0], "firewall.authorize", "agent-1", sub, nonce="short")
     assert authorize(a, auth=short).status_code == 401                                  # valid signature, bad nonce shape
     import json as _json
-    sig = idn.sign_request(a.seed, tenant[0], "firewall.authorize", "agent-1", sub, ts=float("nan"), nonce="n" * 20)
+    with pytest.raises(ValueError):                       # a client can no longer even sign a NaN timestamp (strict JSON)
+        idn.sign_request(a.seed, tenant[0], "firewall.authorize", "agent-1", sub, ts=float("nan"), nonce="n" * 20)
+    sig = idn.sign_request(a.seed, tenant[0], "firewall.authorize", "agent-1", sub, nonce="n" * 20)
+    sig["ts"] = float("nan")                              # ... so the body is tampered with after signing
     raw = _json.dumps({"agent_id": "agent-1", "action": SHELL, "context": STAGING, "auth": sig})   # contains NaN
     assert "NaN" in raw
     r = C.post("/firewall/authorize", headers={"X-API-Key": tenant[1], "Content-Type": "application/json"}, content=raw)
@@ -505,3 +508,59 @@ def test_properly_signed_but_malformed_fields_are_still_denied(tenant, strict):
     booly = idn.sign_request(a.seed, tenant[0], "firewall.authorize", "agent-1", sub, ts=True, nonce="m" * 20)
     assert authorize(a, auth=booly).status_code == 401
     assert types(tenant[0]).count("firewall.decision") == 0
+
+
+# ---------------------------------------------------------------- review 2, items 1 and 2: key validation
+def _small_order_variants():
+    """Every encoding (canonical or not) of the eight small-order points of Edwards25519."""
+    p = 2 ** 255 - 19
+    out = set()
+    for raw in idn.SMALL_ORDER_KEYS:
+        n = int.from_bytes(raw, "little")
+        y, sign = n & ((1 << 255) - 1), n >> 255
+        for yy in (y, y + p):
+            for sg in (0, 1):
+                if yy < (1 << 255):
+                    out.add(((sg << 255) | yy).to_bytes(32, "little"))
+    return out
+
+
+def test_every_encoding_of_a_small_order_point_is_refused(tenant):
+    variants = _small_order_variants()
+    assert len(variants) > len(idn.SMALL_ORDER_KEYS)          # includes the non-canonical ones
+    for i, raw in enumerate(sorted(variants)):
+        r = post("/identity/enroll", tenant[1], principal_id=f"so-{i}", role="runner", public_key=raw.hex())
+        assert r.status_code == 400, (raw.hex(), r.text)
+
+
+def test_review_forgery_non_canonical_identity_key_cannot_be_enrolled(tenant):
+    evil = "eeff" + "ff" * 29 + "7f"                          # y = p + 1: the identity point, non-canonical
+    r = post("/identity/enroll", tenant[1], principal_id="runner-evil", role="runner", public_key=evil)
+    assert r.status_code == 400
+    assert idn.registry(idn._chain(tenant[0]))[0] == {}
+
+
+def test_a_key_with_a_torsion_component_is_refused(tenant):
+    """A' = A + T (T of order 8) verifies the same signatures as A when k = 0 mod 8, so one secret could stand for
+    an agent key and an 'independent' approver key."""
+    from ola_pipeline import ed25519 as ed
+    seed, pub = idn.generate_keypair()
+    a = ed._decompress(bytes.fromhex(pub))
+    t = ed._decompress(bytes.fromhex("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"))
+    mixed = ed._compress(ed._add(a, t)).hex()
+    assert mixed != pub
+    r = post("/identity/enroll", tenant[1], principal_id="appr-1", role="approver", public_key=mixed)
+    assert r.status_code == 400 and "prime-order subgroup" in r.text
+
+
+def test_verify_itself_refuses_a_bad_key_already_in_the_chain(tenant, monkeypatch):
+    """Defence in depth: records written before the enrolment check existed must not become universal forgers."""
+    monkeypatch.setattr(idn, "is_prime_order_point", lambda raw: True)          # let the bad key be enrolled
+    evil = "eeff" + "ff" * 29 + "7f"
+    r = post("/identity/enroll", tenant[1], principal_id="runner-evil", role="runner", public_key=evil)
+    assert r.status_code == 200, r.text
+    monkeypatch.undo()
+    chain = idn._chain(tenant[0])
+    forged = {"ts": time.time(), "nonce": "N" * 20, "principal_id": "runner-evil", "signature": "01" + "00" * 63}
+    with pytest.raises(idn.IdentityDenied):
+        idn.verify(chain, tenant[0], "cfr.result", "runner-evil", "runner", "ab" * 32, forged)

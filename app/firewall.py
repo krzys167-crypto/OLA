@@ -53,7 +53,7 @@ from . import pipeline_bridge as pb
 from .hashchain import canonical_json, verify_chain
 
 SCHEMA = "ola.firewall/1"
-POLICY_VERSION = "1.0"
+POLICY_VERSION = "1.1"   # 1.1: the DLP scan and the action digest cover the whole action and context
 DECISION_TYPE, APPROVAL_TYPE, EXECUTION_TYPE = "firewall.decision", "firewall.approval", "firewall.execution"
 ALLOW, REVIEW, BLOCK = "ALLOW", "REVIEW", "BLOCK"
 
@@ -116,18 +116,53 @@ def _sha(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
-def _strings(value: Any, depth: int = 0):
-    if depth > 6:
+MAX_DEPTH, MAX_BYTES = 12, 65536
+
+
+def _strict(value: Any, depth: int = 0) -> None:
+    """Refuse anything the scanner and the digest could not see completely: too deep, not plain JSON, not
+    UTF-8 encodable (a lone surrogate), or non-finite. A scan that silently stops at a depth limit fails open."""
+    if depth > MAX_DEPTH:
+        raise FirewallError(f"action/context are nested deeper than {MAX_DEPTH} levels and cannot be scanned")
+    if value is None or isinstance(value, bool):
         return
+    if isinstance(value, int):
+        return
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            raise FirewallError("action/context must not contain NaN or Infinity")
+        return
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            raise FirewallError("action/context strings must be valid Unicode (no lone surrogates)") from None
+        return
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if not isinstance(k, str):
+                raise FirewallError("action/context keys must be strings")
+            _strict(k, depth + 1)
+            _strict(v, depth + 1)
+        return
+    if isinstance(value, list):
+        for v in value:
+            _strict(v, depth + 1)
+        return
+    raise FirewallError("action/context must be plain JSON")
+
+
+def _strings(value: Any):
+    """Every string in the structure, keys included, at any depth (normalize() has already bounded it)."""
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
         for k, v in value.items():
             yield str(k)
-            yield from _strings(v, depth + 1)
+            yield from _strings(v)
     elif isinstance(value, (list, tuple)):
         for v in value:
-            yield from _strings(v, depth + 1)
+            yield from _strings(v)
 
 
 def has_secret(value: Any) -> bool:
@@ -136,13 +171,17 @@ def has_secret(value: Any) -> bool:
 
 # ------------------------------------------------------------------ normalisation
 def normalize(agent_id: Any, action: Any, context: Any = None) -> Dict[str, Any]:
-    if not isinstance(agent_id, str) or not _ID.match(agent_id):
+    if not isinstance(agent_id, str) or not _ID.fullmatch(agent_id):
         raise FirewallError("agent_id must match [A-Za-z0-9_.:@-]{1,64}")
     if not isinstance(action, dict):
         raise FirewallError("action must be an object")
     if context is not None and not isinstance(context, dict):
         raise FirewallError("context must be an object")
     context = context or {}
+    _strict(action)
+    _strict(context)
+    if len(canonical_json({"action": action, "context": context}).encode("utf-8")) > MAX_BYTES:
+        raise FirewallError(f"action and context together must be at most {MAX_BYTES} bytes")
     atype = action.get("type")
     if not isinstance(atype, str) or not atype.strip() or len(atype) > 64:
         raise FirewallError("action.type is required")
@@ -162,14 +201,16 @@ def normalize(agent_id: Any, action: Any, context: Any = None) -> Dict[str, Any]
             "value": float(value), "environment": env or "production", "environment_assumed": env is None,
             "flag_secret": action.get("contains_secret") is True or context.get("contains_secret") is True,
             "external_side_effect": action.get("external_side_effect") is True,
-            "scan": {k: action.get(k) for k in ("command", "payload", "args", "arguments", "body", "content", "url")
-                     if k in action}}
+            # the WHOLE action and context: every field is scanned for secrets and signed, none is "unlisted"
+            "scan": {"action": action, "context": context}}
 
 
 def action_digest(n: Dict[str, Any]) -> str:
-    """Identity of the action: what must be identical at approval and at execution."""
+    """Identity of the action: what must be identical at approval and at execution. It covers the whole action
+    and context (flags and every other field included), so nothing that influences the decision, the approval
+    or the executor can be changed after the agent signed it."""
     return _sha({"agent_id": n["agent_id"], "type": n["type"], "target": n["target"], "value": n["value"],
-                 "environment": n["environment"], "scan_sha256": _sha(n["scan"])})
+                 "environment": n["environment"], "full_sha256": _sha(n["scan"])})
 
 
 # ------------------------------------------------------------------ the decision (pure, deterministic)
@@ -214,7 +255,10 @@ def _events(tenant_id: str) -> Tuple[List[dict], Dict[str, List[Tuple[dict, dict
     if not ok:                                   # state derived from a chain that does not verify is not state
         raise FirewallUnavailable(f"the tenant evidence chain does not verify ({why})")
     by_req: Dict[str, List[Tuple[dict, dict]]] = {}
+    void = identity.duplicate_nonce_seqs(chain)    # a nonce is single-use: only its first record is real
     for rec in chain:
+        if rec["seq"] in void:
+            continue
         if rec["record_type"] in (DECISION_TYPE, APPROVAL_TYPE, EXECUTION_TYPE):
             try:
                 p = json.loads(rec["payload_json"])
@@ -259,6 +303,12 @@ def consume_subject(request_id: str, agent_id: Any, action: Any, context: Any = 
 
 def approve_subject(request_id: str, reason: str) -> str:
     return _sha({"request_id": request_id, "reason_sha256": hashlib.sha256(reason.encode("utf-8")).hexdigest()})
+
+
+def _request_id(value: Any) -> str:
+    if not isinstance(value, str) or not value or len(value) > 128:
+        raise FirewallError("request_id must be a non-empty string of at most 128 characters")
+    return value
 
 
 def _ttl() -> int:
@@ -318,6 +368,12 @@ def authorize(tenant_id: str, agent_id: Any, action: Any, context: Any = None, a
                "policy_version": POLICY_VERSION, "policy_sha256": policy_digest(), "reasons": ev["reasons"],
                "secret_detected": ev["secret_detected"], "created_at": _now(), **_auth_fields(proof)}
     rec = _append(tenant_id, DECISION_TYPE, payload)
+    if proof is not None:
+        # a nonce passes the check above in every request that read the chain before any of them appended; the
+        # lowest seq owns the nonce, a later record is void (see _events) and its caller is told so
+        again, _ = _events(tenant_id)
+        if rec["seq"] in identity.duplicate_nonce_seqs(again):
+            raise identity.IdentityDenied("this nonce was already used")
     return {"request_id": request_id, "decision": ev["decision"], "risk_score": ev["risk_score"],
             "policy_id": ev["policy_id"], "policy_version": POLICY_VERSION, "reasons": ev["reasons"],
             "approval_required": ev["decision"] == REVIEW, "evidence_seq": rec["seq"],
@@ -326,6 +382,7 @@ def authorize(tenant_id: str, agent_id: Any, action: Any, context: Any = None, a
 
 
 def state(tenant_id: str, request_id: str) -> Dict[str, Any]:
+    request_id = _request_id(request_id)
     _, by_req = _events(tenant_id)
     if request_id not in by_req:
         raise FirewallNotFound("no such request")
@@ -333,13 +390,14 @@ def state(tenant_id: str, request_id: str) -> Dict[str, Any]:
 
 
 def approve(tenant_id: str, request_id: str, approver_id: Any, reason: Any, auth: Any = None) -> Dict[str, Any]:
-    if not isinstance(approver_id, str) or not _ID.match(approver_id):
+    if not isinstance(approver_id, str) or not _ID.fullmatch(approver_id):
         raise FirewallError("approver_id must match [A-Za-z0-9_.:@-]{1,64}")
     if not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
         raise FirewallError("reason is required (1-1000 characters)")
+    request_id = _request_id(request_id)
     chain, by_req = _events(tenant_id)
     proof = _authenticate(chain, tenant_id, "firewall.approve", approver_id, "approver",
-                          approve_subject(str(request_id), reason), auth)
+                          approve_subject(request_id, reason), auth)
     if request_id not in by_req:
         raise FirewallNotFound("no such request")
     v = _view(request_id, by_req[request_id], _now(), _ttl())
@@ -371,6 +429,7 @@ def approve(tenant_id: str, request_id: str, approver_id: Any, reason: Any, auth
 def consume(tenant_id: str, request_id: str, agent_id: Any, action: Any, context: Any = None,
             auth: Any = None) -> Dict[str, Any]:
     """The executor calls this immediately before acting. permit=True at most once per request."""
+    request_id = _request_id(request_id)
     n = normalize(agent_id, action, context)
     chain, by_req = _events(tenant_id)
     proof = _authenticate(chain, tenant_id, "firewall.consume", n["agent_id"], "agent",

@@ -141,9 +141,9 @@ def validate_manifest(m: Any) -> Dict[str, Any]:
     if not isinstance(m, dict):
         raise CfrError("manifest must be an object")
     sid, ver = m.get("scenario_id"), m.get("version")
-    if not isinstance(sid, str) or not _ID.match(sid):
+    if not isinstance(sid, str) or not _ID.fullmatch(sid):
         raise CfrError("scenario_id must match [A-Za-z0-9_.:@-]{1,64}")
-    if not isinstance(ver, str) or not _ID.match(ver):
+    if not isinstance(ver, str) or not _ID.fullmatch(ver):
         raise CfrError("version must match [A-Za-z0-9_.:@-]{1,64}")
     sc = m.get("scoring")
     if not isinstance(sc, dict):
@@ -170,7 +170,7 @@ def validate_manifest(m: Any) -> Dict[str, Any]:
         raise CfrError("tiers must satisfy 0 < pass < merit < elite <= 1")
     req, hid = m.get("required_assertions"), m.get("hidden_assertions", [])
     for name, lst in (("required_assertions", req), ("hidden_assertions", hid)):
-        if not isinstance(lst, list) or len(lst) > 64 or not all(isinstance(a, str) and _ID.match(a) for a in lst) \
+        if not isinstance(lst, list) or len(lst) > 64 or not all(isinstance(a, str) and _ID.fullmatch(a) for a in lst) \
                 or len(set(lst)) != len(lst):
             raise CfrError(f"{name} must be a list of up to 64 unique ids")
     if not req:
@@ -178,7 +178,7 @@ def validate_manifest(m: Any) -> Dict[str, Any]:
     if set(req) & set(hid):
         raise CfrError("an assertion cannot be both required and hidden")
     var = m.get("variants")
-    if not isinstance(var, list) or not 1 <= len(var) <= 64 or not all(isinstance(v, str) and _ID.match(v) for v in var) \
+    if not isinstance(var, list) or not 1 <= len(var) <= 64 or not all(isinstance(v, str) and _ID.fullmatch(v) for v in var) \
             or len(set(var)) != len(var):
         raise CfrError("variants must be 1-64 unique ids")
     out = {"scenario_id": sid, "version": ver, "required_assertions": list(req), "hidden_assertions": list(hid),
@@ -382,9 +382,9 @@ def register_scenario(tenant_id: str, manifest: Any, token: Any = None) -> Dict[
 
 
 def issue_run(tenant_id: str, scenario_id: Any, participant_id: Any) -> Dict[str, Any]:
-    if not isinstance(scenario_id, str) or not _ID.match(scenario_id):
+    if not isinstance(scenario_id, str) or not _ID.fullmatch(scenario_id):
         raise CfrError("scenario_id is required")
-    if not isinstance(participant_id, str) or not _ID.match(participant_id):
+    if not isinstance(participant_id, str) or not _ID.fullmatch(participant_id):
         raise CfrError("participant_id must match [A-Za-z0-9_.:@-]{1,64}")
     secret = _secret()
     ttl = _ttl()
@@ -410,8 +410,11 @@ def issue_run(tenant_id: str, scenario_id: Any, participant_id: Any) -> Dict[str
 
 def result_subject(submission: Dict[str, Any]) -> str:
     """What the runner signs: the whole submission except the signature."""
-    return _sha({k: submission.get(k) for k in ("run_id", "manifest_sha256", "started_at", "ended_at", "metrics",
-                                                "assertions", "artifacts")})
+    try:
+        return _sha({k: submission.get(k) for k in ("run_id", "manifest_sha256", "started_at", "ended_at", "metrics",
+                                                    "assertions", "artifacts")})
+    except (ValueError, UnicodeEncodeError, RecursionError):      # NaN / Infinity / lone surrogate: not strict JSON
+        raise CfrError("the submission must be strict JSON (no NaN or Infinity, valid Unicode)") from None
 
 
 SUBMISSION_KEYS = frozenset({"run_id", "manifest_sha256", "started_at", "ended_at", "metrics", "assertions", "artifacts"})
@@ -431,7 +434,7 @@ def submit_result(tenant_id: str, submission: Any, auth: Any) -> Dict[str, Any]:
     if extra:
         raise CfrError(f"unexpected fields {extra[:5]}: the score and tier are computed by the server, not accepted")
     run_id = submission.get("run_id")
-    if not isinstance(run_id, str) or not _RUN.match(run_id):
+    if not isinstance(run_id, str) or not _RUN.fullmatch(run_id):
         raise CfrError("run_id is required")
     chain = _chain(tenant_id)
     # identity first: an unauthenticated caller learns nothing about runs
@@ -458,13 +461,15 @@ def submit_result(tenant_id: str, submission: Any, auth: Any) -> Dict[str, Any]:
     if now > run["expires_at"] or ended > run["expires_at"] + skew:
         raise CfrConflict("this run has expired")
     metrics = validate_metrics(submission.get("metrics"))
-    assertions = validate_assertions(manifest, submission.get("assertions"))
     artifacts = submission.get("artifacts", {})
     if not isinstance(artifacts, dict) or len(artifacts) > 64 or not all(
-            isinstance(k, str) and _ID.match(k) and isinstance(v, str) and _SHA.match(v) for k, v in artifacts.items()):
+            isinstance(k, str) and _ID.fullmatch(k) and isinstance(v, str) and _SHA.fullmatch(v) for k, v in artifacts.items()):
         raise CfrError("artifacts must map up to 64 names to lowercase sha256 hex digests")
     if run_id in _results(chain):
         raise CfrConflict("this run already has a result")
+    # LAST: whether an assertion id is known is the only thing that tells a hidden id from a made-up one, so every
+    # other check (which has no such side channel) runs first and a probe with a bad field never reaches this line
+    assertions = validate_assertions(manifest, submission.get("assertions"))
     scored = score(manifest, metrics)
     verdict = judge(manifest, assertions, scored)
     payload = {"schema": SCHEMA, "run_id": run_id, "scenario_id": run["scenario_id"],
@@ -494,7 +499,10 @@ WITNESS_KEYS = frozenset({"run_id", "manifest_sha256", "observed_from", "observe
 
 def witness_subject(observation: Dict[str, Any]) -> str:
     """What the witness signs: the whole observation except the signature."""
-    return _sha({k: observation.get(k) for k in sorted(WITNESS_KEYS)})
+    try:
+        return _sha({k: observation.get(k) for k in sorted(WITNESS_KEYS)})
+    except (ValueError, UnicodeEncodeError, RecursionError):      # NaN / Infinity / lone surrogate: not strict JSON
+        raise CfrError("the observation must be strict JSON (no NaN or Infinity, valid Unicode)") from None
 
 
 def sign_witness(seed_hex: str, tenant_id: str, witness_id: str, observation: Dict[str, Any], **kw: Any) -> Dict[str, Any]:
@@ -505,7 +513,7 @@ def sign_witness(seed_hex: str, tenant_id: str, witness_id: str, observation: Di
 
 
 def _witness_from(auth: Any) -> str:
-    if not isinstance(auth, dict) or not isinstance(auth.get("witness_id"), str) or not _ID.match(auth["witness_id"]):
+    if not isinstance(auth, dict) or not isinstance(auth.get("witness_id"), str) or not _ID.fullmatch(auth["witness_id"]):
         raise identity.IdentityDenied("a signed request is required (auth.witness_id, ts, nonce, signature)")
     return auth["witness_id"]
 
@@ -525,7 +533,7 @@ def submit_witness(tenant_id: str, observation: Any, auth: Any) -> Dict[str, Any
     if extra:
         raise CfrError(f"unexpected fields {extra[:5]}: the score, state and tier are computed by the server")
     run_id = observation.get("run_id")
-    if not isinstance(run_id, str) or not _RUN.match(run_id):
+    if not isinstance(run_id, str) or not _RUN.fullmatch(run_id):
         raise CfrError("run_id is required")
     chain = _chain(tenant_id)
     witness = _witness_from(auth)
@@ -549,16 +557,16 @@ def submit_witness(tenant_id: str, observation: Any, auth: Any) -> Dict[str, Any
     if now > run["expires_at"] or until > now + skew or until > run["expires_at"] + skew:
         raise CfrError("the run expired, or the observation ends in the future or after the run expired")
     metrics = validate_witness_metrics(observation.get("metrics"))
-    assertions = validate_assertions(manifest, observation.get("assertions"))
     artifacts = observation.get("artifacts", {})
     if not isinstance(artifacts, dict) or len(artifacts) > 64 or not all(
-            isinstance(k, str) and _ID.match(k) and isinstance(v, str) and _SHA.match(v) for k, v in artifacts.items()):
+            isinstance(k, str) and _ID.fullmatch(k) and isinstance(v, str) and _SHA.fullmatch(v) for k, v in artifacts.items()):
         raise CfrError("artifacts must map up to 64 names to lowercase sha256 hex digests")
     seen = _witnesses(chain).get(run_id, [])
     if any(q["witness_id"] == witness for _, q in seen):
         raise CfrConflict("this witness already observed this run")
     if len(seen) >= MAX_WITNESSES:
         raise CfrConflict(f"at most {MAX_WITNESSES} witnesses per run")
+    assertions = validate_assertions(manifest, observation.get("assertions"))      # last: see submit_result
     payload = {"schema": SCHEMA, "run_id": run_id, "scenario_id": run["scenario_id"],
                "manifest_sha256": run["manifest_sha256"], "witness_id": witness, "observed_from": float(frm),
                "observed_until": float(until), "metrics": metrics, "assertions": assertions,
@@ -653,7 +661,7 @@ def _effective(manifest: Dict[str, Any], rp: Dict[str, Any], wits: List[Dict[str
 
 
 def _runner_from(auth: Any) -> str:
-    if not isinstance(auth, dict) or not isinstance(auth.get("runner_id"), str) or not _ID.match(auth["runner_id"]):
+    if not isinstance(auth, dict) or not isinstance(auth.get("runner_id"), str) or not _ID.fullmatch(auth["runner_id"]):
         raise identity.IdentityDenied("a signed request is required (auth.runner_id, ts, nonce, signature)")
     return auth["runner_id"]
 
@@ -682,7 +690,7 @@ def _public(p: Dict[str, Any], eff: Optional[Dict[str, Any]] = None) -> Dict[str
 
 
 def result(tenant_id: str, run_id: Any) -> Dict[str, Any]:
-    if not isinstance(run_id, str) or not _RUN.match(run_id):
+    if not isinstance(run_id, str) or not _RUN.fullmatch(run_id):
         raise CfrError("run_id is required")
     chain = _chain(tenant_id)
     run = _runs(chain).get(run_id)
@@ -700,7 +708,7 @@ def result(tenant_id: str, run_id: Any) -> Dict[str, Any]:
 
 
 def leaderboard(tenant_id: str, scenario_id: Any, limit: int = 20) -> Dict[str, Any]:
-    if not isinstance(scenario_id, str) or not _ID.match(scenario_id):
+    if not isinstance(scenario_id, str) or not _ID.fullmatch(scenario_id):
         raise CfrError("scenario_id is required")
     chain = _chain(tenant_id)
     sc = _scenarios(chain).get(scenario_id)

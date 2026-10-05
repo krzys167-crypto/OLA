@@ -117,8 +117,8 @@ def test_unknown_or_missing_environment_is_production(tenant):
 
 def test_policy_digest_is_pinned():
     """Change a rule, a weight or a threshold -> this fails -> bump POLICY_VERSION and update the pin."""
-    assert fw.POLICY_VERSION == "1.0"
-    assert fw.policy_digest() == "b3a548f3116560352c090594042a166451c147c267eeb11b03722201036fae42"
+    assert fw.POLICY_VERSION == "1.1"
+    assert fw.policy_digest() == "dc33989e2bf39c17d2517f5f3c69fb14990debe6276644e8627ed8887649e379"
 
 
 @pytest.mark.parametrize("agent,action", [

@@ -5,7 +5,9 @@ GENESIS_HASH = "0" * 64
 
 
 def canonical_json(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    # allow_nan=False: NaN/Infinity are not JSON; a record that contains them cannot be read back by a strict
+    # verifier (and GET /evidence/{id} would fail for ever).
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
 def compute_record_hash(tenant_id, seq, prev_hash, payload_json):

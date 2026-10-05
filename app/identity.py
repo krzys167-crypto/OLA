@@ -52,6 +52,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from . import pipeline_bridge as pb
+from .ed25519_point import is_prime_order_point
 from .hashchain import canonical_json, verify_chain
 
 SCHEMA = "ola.identity/1"
@@ -201,7 +202,7 @@ def _check_enroll_token(token: Any) -> None:
             raise IdentityUnavailable("enrolment is disabled: set OLA_IDENTITY_ENROLL_TOKEN_SHA256 "
                                       "(sha256 hex of an operator token) when OLA_FIREWALL_AGENT_AUTH=required")
         return
-    if not _HEX64.match(configured):
+    if not _HEX64.fullmatch(configured):
         raise IdentityUnavailable("OLA_IDENTITY_ENROLL_TOKEN_SHA256 must be 64 hex characters")
     given = hashlib.sha256(token.encode("utf-8")).hexdigest() if isinstance(token, str) and token else ""
     if not hmac.compare_digest(given, configured):
@@ -209,11 +210,16 @@ def _check_enroll_token(token: Any) -> None:
 
 
 def _public_key_bytes(value: Any) -> bytes:
-    if not isinstance(value, str) or not _HEX64.match(value):
+    if not isinstance(value, str) or not _HEX64.fullmatch(value):
         raise IdentityError("public_key must be 64 hex characters (an Ed25519 public key)")
     raw = bytes.fromhex(value)
     if raw in SMALL_ORDER_KEYS:
         raise IdentityError("public_key is a small-order point and is refused")
+    if not is_prime_order_point(raw):
+        # non-canonical encodings of small-order points (they verify a universal forgery) and keys with a torsion
+        # component (A + T: one secret behind two different keys) are not keys of one principal
+        raise IdentityError("public_key must be a canonical encoding of a point of the prime-order subgroup "
+                            "(small-order, non-canonical and torsion keys are refused)")
     try:
         Ed25519PublicKey.from_public_bytes(raw)
     except Exception as exc:                                         # noqa: BLE001
@@ -230,7 +236,7 @@ def _append(tenant_id: str, rtype: str, payload: dict) -> dict:
 
 def enroll(tenant_id: str, principal_id: Any, role: Any, public_key: Any, token: Any = None) -> Dict[str, Any]:
     _check_enroll_token(token)
-    if not isinstance(principal_id, str) or not _ID.match(principal_id):
+    if not isinstance(principal_id, str) or not _ID.fullmatch(principal_id):
         raise IdentityError("principal_id must match [A-Za-z0-9_.:@-]{1,64}")
     if role not in ROLES:
         raise IdentityError("role must be 'agent', 'approver', 'runner' or 'witness'")
@@ -256,7 +262,7 @@ def enroll(tenant_id: str, principal_id: Any, role: Any, public_key: Any, token:
 
 def revoke(tenant_id: str, principal_id: Any, reason: Any, token: Any = None) -> Dict[str, Any]:
     _check_enroll_token(token)
-    if not isinstance(principal_id, str) or not _ID.match(principal_id):
+    if not isinstance(principal_id, str) or not _ID.fullmatch(principal_id):
         raise IdentityError("principal_id must match [A-Za-z0-9_.:@-]{1,64}")
     if not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
         raise IdentityError("reason is required (1-1000 characters)")
@@ -290,6 +296,24 @@ def nonce_used(chain: List[dict], principal_id: str, nonce: str) -> bool:
     return False
 
 
+def duplicate_nonce_seqs(chain: List[dict]) -> set:
+    """Seqs of records that reuse a (principal, nonce) already carried by a LOWER seq. Two requests with the same
+    nonce can both pass nonce_used() when they read the chain before either appended; the chain order decides:
+    the first record owns the nonce, every later one is void."""
+    first: Dict[Tuple[str, str], int] = {}
+    void = set()
+    for rec, p in _payloads(chain, ("firewall.decision", "firewall.approval", "firewall.execution",
+                                    "cfr.result", "cfr.witness")):
+        a = p.get("auth")
+        if isinstance(a, dict) and isinstance(a.get("principal_id"), str) and isinstance(a.get("nonce"), str):
+            k = (a["principal_id"], a["nonce"])
+            if k in first and first[k] != rec["seq"]:
+                void.add(rec["seq"])
+            else:
+                first.setdefault(k, rec["seq"])
+    return void
+
+
 def verify(chain: List[dict], tenant_id: str, purpose: str, principal_id: str, role: str, subject_sha256: str,
            auth: Any) -> Dict[str, Any]:
     """Raise IdentityDenied unless `auth` proves that `principal_id` (active, with this role) signed exactly
@@ -299,8 +323,8 @@ def verify(chain: List[dict], tenant_id: str, purpose: str, principal_id: str, r
     if not isinstance(auth, dict):
         raise IdentityDenied("a signed request is required (auth.ts, auth.nonce, auth.signature)")
     ts, nonce, sig = auth.get("ts"), auth.get("nonce"), auth.get("signature")
-    if not _num(ts) or not isinstance(nonce, str) or not _NONCE.match(nonce) \
-            or not isinstance(sig, str) or not _HEX128.match(sig):
+    if not _num(ts) or not isinstance(nonce, str) or not _NONCE.fullmatch(nonce) \
+            or not isinstance(sig, str) or not _HEX128.fullmatch(sig):
         raise IdentityDenied("auth must carry a numeric ts, a 16-64 character nonce and a 128-hex signature")
     if abs(_now() - float(ts)) > _skew():
         raise IdentityDenied("the signed timestamp is outside the allowed clock skew")
@@ -313,6 +337,8 @@ def verify(chain: List[dict], tenant_id: str, purpose: str, principal_id: str, r
     if entry["role"] != role:
         raise IdentityDenied(f"this principal is not enrolled as '{role}'")
     raw = bytes.fromhex(entry["public_key"])
+    if not is_prime_order_point(raw):                       # a record enrolled before this check: never trusted
+        raise IdentityDenied("the enrolled public key is not a valid prime-order Ed25519 key")
     try:
         Ed25519PublicKey.from_public_bytes(raw).verify(
             bytes.fromhex(sig), request_message(tenant_id, purpose, principal_id, subject_sha256, ts, nonce))

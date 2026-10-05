@@ -493,8 +493,10 @@ def test_nan_and_infinite_times_are_rejected(world):
     run = run_of(tenant)
     for field, value in (("started_at", float("nan")), ("ended_at", float("nan")), ("ended_at", float("inf"))):
         sub = submission(run, **{field: value})
+        with pytest.raises(cfr.CfrError):                       # a client cannot even sign a non-strict-JSON body
+            cfr.sign_result(runner.seed, runner.tid, runner.rid, sub)
         body = dict(sub)
-        body["auth"] = cfr.sign_result(runner.seed, runner.tid, runner.rid, sub)
+        body["auth"] = cfr.sign_result(runner.seed, runner.tid, runner.rid, submission(run))   # signature of another body
         r = C.post("/cfr/results", headers={"X-API-Key": runner.key, "Content-Type": "application/json"},
                    content=json.dumps(body))
         assert r.status_code == 400, (field, value, r.text)

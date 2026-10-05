@@ -423,7 +423,7 @@ action cannot be reused for another, nor in another tenant or for another purpos
 |---|---|
 | one key = one principal, ever; an id is never reused, not after revocation | `enroll` 409 + `registry()` first-wins when reading |
 | an agent key can never be an approver key | the same rule (+ `approve()` compares key digests as a second line) |
-| small-order public keys refused | `SMALL_ORDER_KEYS`, checked against the standalone Ed25519 in the tests |
+| a public key must be a canonical encoding of a non-identity point of the prime-order subgroup (`[L]A = O`): small-order points in ANY encoding, and torsion keys `A + T`, are refused at enrolment and again in `verify` | `app/ed25519_point.py` on the standalone Ed25519; tests enumerate every encoding of the eight small-order points |
 | unknown / revoked / wrong role / bad signature / stale or future `ts` / reused nonce | 401, nothing is recorded |
 | `ts` NaN, bool, non-numeric; nonce not 16-64 `[A-Za-z0-9_-]` | 401 (a NaN `ts` would otherwise pass the skew comparison) |
 | a signature that IS supplied is always verified, in every mode | a bad one is 401, never ignored |
@@ -537,6 +537,36 @@ survivor is an equivalent mutant (an epsilon-masked boundary). **Honest limit:**
 deployment. In local-process mode participant and witness share a machine, so a participant who can read the witness key or
 stop its process defeats it; that is why the shipped manifest has `required: false`. Restarts and blast radius stay
 runner-attested. Control EC-15.
+
+## Second independent security review (identity / firewall / evidence routes)
+
+An adversarial reviewer that had not seen the code before attacked `app/identity.py`, `app/firewall.py`, the runner path of
+`app/cfr.py`, `app/hashchain.py` and the routes in `app/main.py`; every finding below was reproduced with a script before
+anything was changed. Regression tests: `tests/test_security_review2.py` (+ additions in `test_identity.py`, `test_cfr.py`).
+
+| # | severity | defect (reproduced) | state |
+|---|---|---|---|
+| 1 | critical | a **non-canonical encoding of a small-order key** (e.g. `y = p+1`) passed the canonical-only list; the signature `01 00*31 \|\| 00*32` then verified for *any* message, so a self-enrolled runner got PASS / elite / rank 1 with no secret | **fixed**: strict decode + `[L]A = O` at enrolment and in `verify` |
+| 2 | high | a torsion key `A + T` is a second key for the same secret ("one key = one principal" and "approver != agent key" bypassed) | **fixed** (same check) |
+| 3 | high | the authorize digest left out `contains_secret`, `external_side_effect` and every unlisted field: a relay could strip flags under a valid signature (BLOCK became ALLOW), and an approval/permit held for a changed `destination_iban` | **fixed**: the digest covers the whole action and context; policy 1.0 -> 1.1 (pinned digest updated) |
+| 4 | high | DLP scanned 7 keys to depth 6: the same AWS key was BLOCK in `body`, ALLOW in `message`, `target` or nested deeper | **fixed**: every string (keys included) is scanned; nesting beyond 12 levels and bodies over 64 KiB are refused with 400 instead of silently skipped |
+| 5 | high | a nonce was single-use only sequentially: 12 concurrent identical signed authorizes gave 5 x 200 and 5 consumable permits | **fixed**: the first chain record owns a (principal, nonce); later records are void when state is read and the late caller gets 401. Measured: 12 concurrent -> exactly 1 x 200 / 11 x 401 / 1 permit, 15 of 15 repetitions |
+| 6 | medium | `record_type` is not part of the record hash, so a retyped record is not detected by the chain or by an anchored tip | **NOT fixed** (see below) |
+| 7 | medium | concurrent `POST /evidence`: 19 of 24 returned 500 | **fixed**: shared retrying append; 24 of 24 succeed, chain verifies. `agent_runtime._append_agent_evidence` has the same pattern and is **not** changed |
+| 8 | medium | `NaN` / `1e400` accepted into a record, after which `GET /evidence/{id}` was a permanent 500 | **fixed**: `canonical_json` is strict, the route returns 400, payload must be an object of at most 256 KiB |
+| 9 | low-medium | lone surrogate or a non-string `request_id` gave 500 | **fixed** (400) |
+| 10 | low-medium | a hidden assertion id could be told from an unknown one by a signed runner without spending a run | **reduced**: assertion ids are validated last, after every other check. A submission that is otherwise valid still shows whether an id is known, and the id is observable by the runner anyway because the harness has to evaluate it |
+| 11 | low | `$` accepted a trailing newline in ids, keys, nonces, digests | **fixed**: `fullmatch` in identity, firewall and cfr |
+| 12 | config | with `OLA_IDENTITY_ENROLL_TOKEN_SHA256` unset and mode `off` (the default) any tenant-key holder can register scenarios, enrol a runner and submit its own elite result; runs are not bound to a runner | **not changed**: documented default; the operator must set the enrolment token. Binding a run to a runner is a design decision |
+
+**Item 6 is open on purpose.** Putting `record_type` into the hash changes the hash of every record, which is replicated in
+`scripts/verify_*.py`, several independent writers and every existing database. It needs a versioned hash format and the owner's decision.
+Until then the tamper evidence covers payloads, order and deletions in the middle (all give 503), but not a retyped
+record; it needs write access to the database. Tail truncation stays a documented limit.
+
+Heuristic limits that remain: the DLP is a regex set, so an encoded (base64, split) secret passes; `environment` is
+asserted by the caller; ALLOW decisions do not expire; every call re-hashes the whole chain (about 65 microseconds per record).
+`pipeline_bridge.run_pipeline` / `verify_anchor` were read but not exercised by this review: UNKNOWN.
 
 ## Control evidence matrix (`governance/controls.json`)
 15 controls (EC-01..EC-15: chain, server-only records, fail-closed gate, anchor, signing, RFC 3161, judge qualification,

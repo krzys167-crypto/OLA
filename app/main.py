@@ -56,32 +56,25 @@ def bearer_identity(authorization):
 
 
 def append_record(tenant_id, record_type, payload):
-    payload_json = canonical_json(payload)
-    with SessionLocal() as db:
-        last = db.scalar(
-            select(EvidenceRecord)
-            .where(EvidenceRecord.tenant_id == tenant_id)
-            .order_by(EvidenceRecord.seq.desc())
-        )
-        seq = 0 if last is None else last.seq + 1
-        prev_hash = GENESIS_HASH if last is None else last.record_hash
-        record = EvidenceRecord(
-            id=str(uuid.uuid4()),
-            tenant_id=tenant_id,
-            seq=seq,
-            record_type=record_type,
-            payload_json=payload_json,
-            prev_hash=prev_hash,
-            record_hash=compute_record_hash(tenant_id, seq, prev_hash, payload_json),
-        )
-        db.add(record)
-        db.commit()
-        return {
-            "id": record.id,
-            "tenant_id": record.tenant_id,
-            "seq": record.seq,
-            "record_hash": record.record_hash,
-        }
+    """Same hashing as before, now through pipeline_bridge.append_evidence: a concurrent writer that took the same
+    (tenant_id, seq) is retried (UNIQUE constraint -> clean IntegrityError, never a fork, never a 500)."""
+    return pipeline_bridge.append_evidence(tenant_id, record_type, payload, attempts=96)
+
+
+MAX_EVIDENCE_BYTES = 262144
+
+
+def _checked_payload(payload):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be a JSON object")
+    try:
+        encoded = canonical_json(payload).encode("utf-8")
+    except (ValueError, UnicodeEncodeError, RecursionError):
+        raise HTTPException(status_code=400, detail="payload must be strict JSON (no NaN/Infinity, valid Unicode, "
+                                                    "bounded nesting)") from None
+    if len(encoded) > MAX_EVIDENCE_BYTES:
+        raise HTTPException(status_code=400, detail=f"payload must be at most {MAX_EVIDENCE_BYTES} bytes")
+    return payload
 
 
 def run_controlled_audit(tenant_id, task, scenario):
@@ -296,7 +289,7 @@ def create_evidence(body: dict, x_api_key: str | None = Header(default=None)):
     return append_record(
         tenant_id,
         record_type,
-        body.get("payload", {}),
+        _checked_payload(body.get("payload", {})),
     )
 
 
