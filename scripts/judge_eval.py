@@ -42,6 +42,18 @@ DEFAULT_DATASET = ROOT / "tests" / "data" / "judge_eval.json"
 ACCEPT, REJECT, NO_VERDICT = "ACCEPT", "REJECT", "NO_VERDICT"
 
 
+def rejection_why(text: str, min_quality_score: int) -> Dict[str, Any]:
+    """Why a REJECT was a REJECT (diagnosis only: not used by any acceptance decision or qualification)."""
+    judged, _ = parse_judge(text or "")
+    if judged is None:
+        return {}
+    clip = lambda v: str(v)[:160]  # noqa: E731
+    corr = judged["required_corrections"]
+    return {"decision": judged["decision"], "quality_score": judged["quality_score"],
+            "below_min_score": judged["quality_score"] < min_quality_score, "corrections": len(corr),
+            "reason": clip(judged["reason"]), "first_correction": clip(corr[0]) if corr else ""}
+
+
 def load_dataset(path: Path) -> Tuple[List[Dict[str, Any]], str]:
     raw = path.read_bytes()
     doc = json.loads(raw.decode("utf-8"))
@@ -137,8 +149,11 @@ def evaluate(items: List[Dict[str, Any]], cfg: ProviderConfig, policy: Policy, *
                 verdict, detail = NO_VERDICT, "TIMEOUT"
             except OlaPipelineError as e:
                 verdict, detail = NO_VERDICT, f"{type(e).__name__}: {e}"[:200]
-            runs.append({"id": item["id"], "category": item["category"], "label": item["label"], "rep": rep,
-                         "verdict": verdict, "detail": detail, "seconds": round(time.monotonic() - t0, 2)})
+            run = {"id": item["id"], "category": item["category"], "label": item["label"], "rep": rep,
+                   "verdict": verdict, "detail": detail, "seconds": round(time.monotonic() - t0, 2)}
+            if verdict == REJECT:
+                run["why"] = rejection_why(text, policy.min_quality_score)
+            runs.append(run)
             log(f"{item['id']:<9} {item['label']:<8} -> {verdict}{(' (' + detail + ')') if detail else ''}")
     flips = 0
     if repeat > 1:

@@ -319,6 +319,17 @@ jobs:
           p2 = ck / cn; d2 = 1 + z * z / cn
           lo = max(0.0, (p2 + z * z / (2 * cn) - z * math.sqrt(p2 * (1 - p2) / cn + z * z / (4 * cn * cn))) / d2)
           ok = up <= 0.15 and lo >= 0.5 and n >= 20 and cn >= 20 and d["summary"]["verdicts_obtained"] > 0
+          rej = [r for r in d["runs"] if r["label"] == "correct" and r["verdict"] == "REJECT" and r.get("why")]
+          if rej:
+              not_pass = sum(1 for r in rej if r["why"]["decision"] != "PASS")
+              low = sum(1 for r in rej if r["why"]["below_min_score"])
+              corr = sum(1 for r in rej if r["why"]["corrections"] > 0)
+              print(f"::notice title=judge v2 why correct answers were rejected::{d['model']} {len(rej)} rejected: "
+                    f"decision!=PASS {not_pass}, score<min {low}, with corrections {corr}")
+              for r in rej[:3]:
+                  w = r["why"]
+                  print(f"::notice title=judge v2 sample rejection::{d['model']} {r['id']} decision={w['decision']} score={w['quality_score']} "
+                        f"reason={w['reason']!r} first_correction={w['first_correction']!r}")
           print(f"::notice title=judge v2 summary::{d['model']} false_accept {k}/{n} upper95={up:.3f} (<=0.150 needed); "
                 f"correct_accepted {ck}/{cn} lower95={lo:.3f} (>=0.500 needed); verdicts_obtained {d['summary']['verdicts_obtained']}; "
                 f"WOULD_QUALIFY={'yes' if ok else 'NO'}; model_digest={d['meta'].get('model_digest')}")

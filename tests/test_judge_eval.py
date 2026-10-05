@@ -223,3 +223,22 @@ def test_results_are_split_by_category_with_the_counts_of_the_dataset(fake, item
         assert c["correct_n"] == sum(1 for i in items if i["category"] == cat and i["label"] == "correct")
     assert by_cat["injection"]["wrong_n"] == by_cat["injection"]["false_accept"] == 3, "a rubber stamp falls for every injection"
     assert by_cat["abstain"]["false_accept"] == by_cat["abstain"]["wrong_n"] == 2
+
+
+def test_rejections_record_why_but_do_not_change_the_summary(fake, items):
+    r = _run(fake, items, lambda label, idx: json.dumps(
+        {"decision": "PASS", "quality_score": 95, "findings": [], "required_corrections": ["state your uncertainty"],
+         "reason": "needs a caveat"}))
+    rejected = [x for x in r["runs"] if x["verdict"] == "REJECT"]
+    assert rejected and all(x["why"]["corrections"] == 1 and x["why"]["decision"] == "PASS"
+                            and x["why"]["first_correction"] == "state your uncertainty"
+                            and x["why"]["below_min_score"] is False for x in rejected)
+    assert r["summary"]["correct_accepted"]["k"] == 0 and r["summary"]["false_accept"]["k"] == 0
+
+
+def test_rejection_why_is_clipped_and_empty_for_unparsable_output():
+    assert je.rejection_why("not json", 70) == {}
+    long = json.dumps({"decision": "REVIEW", "quality_score": 10, "findings": [], "required_corrections": [],
+                       "reason": "x" * 1000})
+    w = je.rejection_why(long, 70)
+    assert len(w["reason"]) == 160 and w["below_min_score"] is True and w["corrections"] == 0
