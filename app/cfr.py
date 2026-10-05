@@ -381,7 +381,7 @@ def register_scenario(tenant_id: str, manifest: Any, token: Any = None) -> Dict[
     return {"scenario_id": norm["scenario_id"], "manifest_sha256": digest, "evidence_seq": rec["seq"]}
 
 
-def issue_run(tenant_id: str, scenario_id: Any, participant_id: Any) -> Dict[str, Any]:
+def issue_run(tenant_id: str, scenario_id: Any, participant_id: Any, runner_id: Any = None) -> Dict[str, Any]:
     if not isinstance(scenario_id, str) or not _ID.fullmatch(scenario_id):
         raise CfrError("scenario_id is required")
     if not isinstance(participant_id, str) or not _ID.fullmatch(participant_id):
@@ -392,6 +392,17 @@ def issue_run(tenant_id: str, scenario_id: Any, participant_id: Any) -> Dict[str
     sc = _scenarios(chain).get(scenario_id)
     if sc is None:
         raise CfrNotFound("no such scenario")
+    # The run is bound to the runner that may report it: another enrolled runner could otherwise report first (and
+    # first wins), e.g. a FAIL that locks the real runner out. Required when signatures are required.
+    if runner_id is None:
+        if identity.auth_mode() == "required":
+            raise CfrError("runner_id is required: a run must be bound to the runner that will report it")
+    else:
+        if not isinstance(runner_id, str) or not _ID.fullmatch(runner_id):
+            raise CfrError("runner_id must match [A-Za-z0-9_.:@-]{1,64}")
+        entry = identity.registry(chain)[0].get(runner_id)
+        if entry is None or entry["role"] != "runner" or entry["status"] != "active":
+            raise CfrError("runner_id must be an active enrolled principal with the role 'runner'")
     run_id = "run_" + uuid.uuid4().hex[:24]
     mac = hmac.new(secret, canonical_json({"t": tenant_id, "p": participant_id, "s": scenario_id,
                                            "m": sc["manifest_sha256"], "r": run_id}).encode(), hashlib.sha256).digest()
@@ -401,11 +412,12 @@ def issue_run(tenant_id: str, scenario_id: Any, participant_id: Any) -> Dict[str
     now = _now()
     rec = _append(tenant_id, RUN_TYPE, {"schema": SCHEMA, "run_id": run_id, "scenario_id": scenario_id,
                                         "manifest_sha256": sc["manifest_sha256"], "participant_id": participant_id,
+                                        "runner_id": runner_id,
                                         "variant_sha256": hashlib.sha256(variant.encode()).hexdigest(),
                                         "seed_sha256": hashlib.sha256(mac).hexdigest(), "issued_at": now,
                                         "expires_at": now + ttl})
     return {"run_id": run_id, "scenario_id": scenario_id, "manifest_sha256": sc["manifest_sha256"], "variant": variant,
-            "seed": seed, "expires_in_s": ttl, "evidence_seq": rec["seq"]}
+            "runner_id": runner_id, "seed": seed, "expires_in_s": ttl, "evidence_seq": rec["seq"]}
 
 
 def result_subject(submission: Dict[str, Any]) -> str:
@@ -446,6 +458,11 @@ def submit_result(tenant_id: str, submission: Any, auth: Any) -> Dict[str, Any]:
     sc = _scenarios(chain).get(run["scenario_id"])
     if sc is None or sc["manifest_sha256"] != run["manifest_sha256"]:
         raise CfrConflict("the scenario of this run is not registered with the same manifest")
+    if run.get("runner_id") is None:
+        if identity.auth_mode() == "required":
+            raise CfrConflict("this run was not bound to a runner when it was issued; issue a new run with runner_id")
+    elif run["runner_id"] != runner:
+        raise identity.IdentityDenied("this run is bound to another runner")
     if submission.get("manifest_sha256") != run["manifest_sha256"]:
         raise CfrError("manifest_sha256 does not match the run")
     manifest = sc["manifest"]

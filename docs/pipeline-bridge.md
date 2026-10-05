@@ -461,7 +461,7 @@ A CFR scenario run becomes tenant evidence the participant cannot write, scored 
 ```
 POST /cfr/scenarios   (X-Enroll-Token)   register a manifest: SLO-style scoring weights, limits, penalties, tiers,
                                          required + hidden assertions, fault variants     -> cfr.scenario
-POST /cfr/runs                           per-run fault variant + seed from HMAC(OLA_CFR_SEED_SECRET); chain keeps digests only -> cfr.run
+POST /cfr/runs                           per-run fault variant + seed from HMAC(OLA_CFR_SEED_SECRET), bound to `runner_id` (mandatory when signatures are required); chain keeps digests only -> cfr.run
 POST /cfr/results                        a RUNNER (role `runner`, Ed25519) signs metrics + assertion results -> cfr.result
 GET  /cfr/results/{run_id}               PENDING | EXPIRED | the scored result
 GET  /cfr/leaderboard/{scenario_id}      PASS results only, best per participant
@@ -557,7 +557,7 @@ anything was changed. Regression tests: `tests/test_security_review2.py` (+ addi
 | 9 | low-medium | lone surrogate or a non-string `request_id` gave 500 | **fixed** (400) |
 | 10 | low-medium | a hidden assertion id could be told from an unknown one by a signed runner without spending a run | **reduced**: assertion ids are validated last, after every other check. A submission that is otherwise valid still shows whether an id is known, and the id is observable by the runner anyway because the harness has to evaluate it |
 | 11 | low | `$` accepted a trailing newline in ids, keys, nonces, digests | **fixed**: `fullmatch` in identity, firewall and cfr |
-| 12 | config | with `OLA_IDENTITY_ENROLL_TOKEN_SHA256` unset and mode `off` (the default) any tenant-key holder can register scenarios, enrol a runner and submit its own elite result; runs are not bound to a runner | **not changed**: documented default; the operator must set the enrolment token. Binding a run to a runner is a design decision |
+| 12 | config | with `OLA_IDENTITY_ENROLL_TOKEN_SHA256` unset and mode `off` (the default) any tenant-key holder can register scenarios, enrol a runner and submit its own elite result; runs were not bound to a runner | **runs: fixed** (`POST /cfr/runs` takes `runner_id`: an active enrolled runner, stored in the chain; another runner's result is 401 and cannot lock the real one out; in `required` mode `runner_id` is mandatory and a run issued without one is refused with 409 at submission). **Default openness: not changed**, the operator must set the enrolment token |
 
 **Hash v2 (item 6).** A record hash is `sha256("ola.chain/2|tenant|seq|prev|<len>:<record_type>|payload")`; the type is
 length-prefixed, so no (type, payload) pair can be re-split into another. Every writer (`pipeline_bridge.append_evidence`,

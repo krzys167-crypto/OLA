@@ -20,7 +20,7 @@ make down
 ## Scored by the OLA server
 ```
 OLA_URL=... OLA_API_KEY=... OLA_ENROLL_TOKEN=... python3 score.py register      # operator, once
-OLA_URL=... OLA_API_KEY=...                       python3 score.py issue --participant alice
+OLA_URL=... OLA_API_KEY=... OLA_RUNNER_ID=...   python3 score.py issue --participant alice   # binds the run to that runner
 make up && make break ... (participant works) ... 
 OLA_URL=... OLA_API_KEY=... OLA_TENANT_ID=... OLA_RUNNER_ID=... OLA_RUNNER_SEED=<ed25519 hex> python3 score.py submit
 ```

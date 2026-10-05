@@ -91,8 +91,11 @@ def register(api: Api, token: str) -> Dict[str, Any]:
     return r.json()
 
 
-def issue(api: Api, state: Path, participant_id: str) -> Dict[str, Any]:
-    r = api.post("/cfr/runs", {"scenario_id": json.loads(MANIFEST.read_text())["scenario_id"], "participant_id": participant_id})
+def issue(api: Api, state: Path, participant_id: str, runner_id: Optional[str] = None) -> Dict[str, Any]:
+    body = {"scenario_id": json.loads(MANIFEST.read_text())["scenario_id"], "participant_id": participant_id}
+    if runner_id:
+        body["runner_id"] = runner_id            # the only runner allowed to report this run (required in signed mode)
+    r = api.post("/cfr/runs", body)
     r.raise_for_status()
     run = r.json()
     state.mkdir(parents=True, exist_ok=True)
@@ -126,6 +129,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--stable-s", type=float, default=rng.STABLE_S)
     p.add_argument("cmd", choices=["register", "issue", "submit", "preview"])
     p.add_argument("--participant", default=os.environ.get("USER", "participant"))
+    p.add_argument("--runner", default=os.environ.get("OLA_RUNNER_ID"),
+                   help="runner id the run is bound to (default: $OLA_RUNNER_ID)")
     a = p.parse_args(argv)
     st = Path(a.state)
     if a.cmd == "preview":
@@ -142,7 +147,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps(register(api, os.environ["OLA_ENROLL_TOKEN"])))
         return 0
     if a.cmd == "issue":
-        run = issue(api, st, a.participant)
+        run = issue(api, st, a.participant, a.runner)
         print(json.dumps({k: run[k] for k in ("run_id", "manifest_sha256", "expires_in_s")}))
         return 0
     sub = build_submission(st, a.stable_s)

@@ -744,7 +744,8 @@ def cfr_register(body: dict, x_api_key: str | None = Header(default=None),
 @app.post("/cfr/runs")
 def cfr_issue(body: dict, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
-    return _firewall_call(cfr.issue_run, tenant_id, body.get("scenario_id"), body.get("participant_id"))
+    return _firewall_call(cfr.issue_run, tenant_id, body.get("scenario_id"), body.get("participant_id"),
+                          body.get("runner_id"))
 
 
 @app.post("/cfr/results")
