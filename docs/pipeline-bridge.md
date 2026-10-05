@@ -515,8 +515,22 @@ IT saw. The server never trusts either side more than the other; it reconciles w
 * scenario side: `cfr_scenarios/certificate-apocalypse/witness.py` (own probe loop, its own timeline, the range CA pinned when
   it starts so replacing the CA does not hide the outage, MTTR from the first failure IT observed). `make witness-up|witness-submit`.
 
-Tested: `tests/test_cfr_witness.py` (62 tests) and four end-to-end scenario tests (honest run CONFIRMED, a fix nobody made is
-DISPUTED, pinned CA, no incident observed = nothing to submit); 37 of 38 mutants of the reconcile logic are killed, the one
+Found by an independent adversarial review (a separate agent that had not seen the work) and fixed, each with a test that
+fails on the old code: the `POST /cfr/results` response ignored the reconciliation (it showed PASS for a required manifest or
+after a dissent; it now returns the same effective view as the read side); hidden assertion ids leaked through
+`measurement.reasons` (now "a hidden assertion disagrees"); integers beyond float range (`10**400`) raised an unhandled
+OverflowError, also before authentication (now refused); one failed probe before the fault was taken as the incident start and
+collapsed MTTR into a false DISPUTED (an incident now needs `MIN_INCIDENT_ROUNDS` = 3 consecutive failing rounds); a stopped
+observer kept answering `health_stable` "pass" from old data (a timeline older than `STALE_S` is `unknown`, and
+`observed_until` is the last round actually watched); a witness could submit after the run expired, or with a window that did
+not overlap the runner's run (refused / INSUFFICIENT). **Known and not fixed:** revoking a witness key does not void its
+already recorded observation (same as runner results; it keeps one of the 3 slots); a witness contradiction turns a runner
+FAIL or UNKNOWN into DISPUTED, so treat DISPUTED as at least as bad as FAIL (it never ranks and has tier none); a witness
+started after the participant already replaced the CA would pin the replaced CA, so start it together with the range; the
+witness reads `ports.json`/`run.json` from the range state, which the participant can write.
+
+Tested: `tests/test_cfr_witness.py` (70 tests) and four end-to-end scenario tests (honest run CONFIRMED, a fix nobody made is
+DISPUTED, pinned CA, no incident observed = nothing to submit); 46 of 47 mutants of the witness logic are killed, the one
 survivor is an equivalent mutant (an epsilon-masked boundary). **Honest limit:** the witness is only as independent as its
 deployment. In local-process mode participant and witness share a machine, so a participant who can read the witness key or
 stop its process defeats it; that is why the shipped manifest has `required: false`. Restarts and blast radius stay

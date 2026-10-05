@@ -432,3 +432,43 @@ def test_the_witness_needs_a_running_range_and_an_issued_run(tmp_path):
     r = subprocess.run([sys.executable, str(DIR / "witness.py"), "--state", str(tmp_path / "w"), "--range-state",
                         str(tmp_path / "nothing"), "up"], capture_output=True, text=True)
     assert r.returncode == 2 and "must be up" in r.stderr
+
+
+# ------------------------------------------------------------------ findings of the independent review
+def test_one_failed_probe_before_the_fault_is_a_blip_not_an_incident():
+    """A single failed round (a loaded host, a 2 s probe timeout) must not become the incident start: MTTR would collapse."""
+    tl = rounds([set()] * 5 + [{"api"}] + [set()] * 20 + [{"api", "billing"}] * 400 + [set()] * 60)
+    m = wit.compute_witness_metrics(tl, stable_s=5)
+    assert m["mttr_s"] == pytest.approx(400 * 0.2, abs=0.5), "the outage is 80 s, not the blip's 0.2 s"
+    assert wit.compute_witness_metrics(rounds([set()] * 5 + [{"api"}] + [set()] * 50), stable_s=5) is None
+    assert wit.compute_witness_metrics(rounds([set()] * 5 + [{"api"}, {"api"}] + [set()] * 50), stable_s=5) is None
+    assert wit.compute_witness_metrics(rounds([set()] * 5 + [{"api"}] * wit.MIN_INCIDENT_ROUNDS + [set()] * 50),
+                                       stable_s=5) is not None
+
+
+def test_a_timeline_that_stopped_growing_is_not_a_pass():
+    tl = rounds([set()] * 100)
+    last = tl[-1]["t"]
+    assert wit.stable_now(tl, 10) == "pass", "without `now` the pure check is unchanged"
+    assert wit.stable_now(tl, 10, now=last + 1.0) == "pass"
+    assert wit.stable_now(tl, 10, now=last + wit.STALE_S + 1) == "unknown", "the observer may be dead: no pass from old data"
+
+
+def test_the_witness_that_never_came_up_does_not_block_the_next_up(tmp_path):
+    state = tmp_path / "range"
+    (state / "certs").mkdir(parents=True)
+    (state / "certs" / "ca.crt").write_text("x")
+    (state / "run.json").write_text("not json")                      # the daemon dies on start
+    ws = tmp_path / "w"
+    r = subprocess.run([sys.executable, str(DIR / "witness.py"), "--state", str(ws), "--range-state", str(state), "up"],
+                       capture_output=True, text=True)
+    assert r.returncode == 1 and "did not become ready" in r.stderr
+    assert not (ws / "witness.pid").exists(), "a stale pid file would make every later `up` say 'already running'"
+
+
+def test_submit_names_the_missing_environment(tmp_path, monkeypatch):
+    env = {k: v for k, v in __import__("os").environ.items() if not k.startswith("OLA_")}
+    env.update(OLA_URL="http://127.0.0.1:1", OLA_API_KEY="k")
+    r = subprocess.run([sys.executable, str(DIR / "witness.py"), "--state", str(tmp_path), "--range-state", str(tmp_path),
+                        "submit"], capture_output=True, text=True, env=env)
+    assert r.returncode == 2 and "OLA_TENANT_ID" in r.stderr and "OLA_WITNESS_SEED" in r.stderr

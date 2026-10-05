@@ -43,6 +43,8 @@ sys.path.insert(0, str(HERE))
 import cfr_range as rng  # noqa: E402
 
 WITNESS_METRICS = ("availability", "latency_p95_ms", "mttr_s", "downtime_s")
+MIN_INCIDENT_ROUNDS = 3      # consecutive failing rounds that make an incident; one failed probe is a blip, not an incident
+STALE_S = 5.0                # a timeline whose last round is older than this is not "now" (the observer may have died)
 
 
 def compute_witness_metrics(timeline: List[Dict[str, Any]], *, stable_s: float = rng.STABLE_S) -> Optional[Dict[str, Any]]:
@@ -53,21 +55,27 @@ def compute_witness_metrics(timeline: List[Dict[str, Any]], *, stable_s: float =
     """
     rounds = sorted((r for r in timeline if isinstance(r.get("results"), dict) and set(r["results"]) >= set(rng.SERVICES)),
                     key=lambda r: r["t"])
-    first_bad = next((r["t"] for r in rounds if any(not p["ok"] for p in r["results"].values())), None)
+    first_bad, run = None, 0
+    for i, r in enumerate(rounds):                       # the incident starts at the first SUSTAINED failure
+        run = run + 1 if any(not p["ok"] for p in r["results"].values()) else 0
+        if run >= MIN_INCIDENT_ROUNDS:
+            first_bad = rounds[i - MIN_INCIDENT_ROUNDS + 1]["t"]
+            break
     if first_bad is None or len(rounds) < 2:
         return None
     m = rng.compute_metrics(rounds, [{"t": first_bad, "event": "fault_injected"}], stable_s=stable_s)
     return None if m is None else {k: m[k] for k in WITNESS_METRICS}
 
 
-def stable_now(timeline: List[Dict[str, Any]], stable_s: float) -> str:
-    """pass: the latest `stable_s` seconds of this timeline hold only fully healthy rounds (and the window is covered)."""
+def stable_now(timeline: List[Dict[str, Any]], stable_s: float, now: Optional[float] = None) -> str:
+    """pass: the latest `stable_s` seconds of this timeline hold only fully healthy rounds (and the window is covered).
+    With `now`, a timeline that stopped growing (observer died) is `unknown`, never a pass from stale data."""
     rounds = sorted((r for r in timeline if isinstance(r.get("results"), dict) and set(r["results"]) >= set(rng.SERVICES)),
                     key=lambda r: r["t"])
     if len(rounds) < 2:
         return "unknown"
     end = rounds[-1]["t"]
-    if end - rounds[0]["t"] < stable_s:
+    if end - rounds[0]["t"] < stable_s or (now is not None and now - end > STALE_S):
         return "unknown"
     window = [r for r in rounds if r["t"] >= end - stable_s]
     return "pass" if all(p["ok"] for r in window for p in r["results"].values()) else "fail"
@@ -119,6 +127,11 @@ def cmd_up(a) -> int:
             print(f"witness up: pid={proc.pid}")
             return 0
         time.sleep(0.1)
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+    (ws / "witness.pid").unlink(missing_ok=True)         # a daemon that never came up must not block the next `up`
     print("witness did not become ready; see witness.log", file=sys.stderr)
     return 1
 
@@ -155,12 +168,13 @@ def build_observation(wstate: Path, range_state: Path, stable_s: float = rng.STA
     shutil.copyfile(range_state / "ports.json", view / "ports.json")
     import score as sc
     got = {a["id"]: a["result"] for a in sc.collect_assertions(view, rng.host_for(run["seed"]), stable_s=1)}
-    got["health_stable_10s"] = stable_now(timeline, stable_s)           # from the continuous observation, not a 1 s check
+    got["health_stable_10s"] = stable_now(timeline, stable_s, time.time())   # from the continuous observation, not a 1 s check
     ids = json.loads((HERE / "manifest.json").read_text())
     assertions = [{"id": i, "result": got.get(i, "unknown")} for i in ids["required_assertions"] + ids["hidden_assertions"]]
     tl = wstate / "timeline.jsonl"
     return {"run_id": run["run_id"], "manifest_sha256": run["manifest_sha256"],
-            "observed_from": min(r["t"] for r in timeline), "observed_until": time.time(),
+            "observed_from": min(r["t"] for r in timeline),
+            "observed_until": min(time.time(), max(r["t"] for r in timeline)),      # what it actually watched, not "now"
             "metrics": metrics, "assertions": assertions,
             "artifacts": {"witness_timeline": hashlib.sha256(tl.read_bytes()).hexdigest(),
                           "pinned_ca": hashlib.sha256((wstate / "ca.crt").read_bytes()).hexdigest()}}
@@ -186,6 +200,10 @@ def cmd_submit(a) -> int:
     url, key = os.environ.get("OLA_URL"), os.environ.get("OLA_API_KEY")
     if not url or not key:
         print("OLA_URL and OLA_API_KEY are required", file=sys.stderr)
+        return 2
+    missing = [k for k in ("OLA_TENANT_ID", "OLA_WITNESS_ID", "OLA_WITNESS_SEED") if not os.environ.get(k)]
+    if missing:
+        print("required: " + ", ".join(missing), file=sys.stderr)
         return 2
     obs = build_observation(Path(a.state), Path(a.range_state), a.stable_s)
     if obs is None:

@@ -274,7 +274,12 @@ def revoke(tenant_id: str, principal_id: Any, reason: Any, token: Any = None) ->
 
 # ------------------------------------------------------------------ verification of a signed request
 def _num(v: Any) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:                                  # an int beyond float range (10**400): refused, never a 500
+        return False
 
 
 def nonce_used(chain: List[dict], principal_id: str, nonce: str) -> bool:

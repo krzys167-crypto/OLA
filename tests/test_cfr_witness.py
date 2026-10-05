@@ -639,3 +639,105 @@ def test_a_witness_that_lost_the_slot_race_is_refused(world, monkeypatch):
     monkeypatch.setattr(cfr, "_witnesses", racing)
     r = witness_submits(w, obs(run))
     assert r.status_code == 409 and "took this slot first" in r.text
+
+
+# ------------------------------------------------------------------ findings of the independent review
+def test_the_submit_response_tells_the_same_story_as_the_read_side(world):
+    """A client that trusts the POST /cfr/results response must not see a PASS the server will not stand behind."""
+    tenant, runner, w = world
+    run = run_of(tenant, "cfr-req")                                  # required witness, none yet
+    r = runner_submits(runner, result_sub(run))
+    assert r.status_code == 200
+    assert r.json()["state"] == "UNKNOWN" and r.json()["tier"] == "none" and r.json()["measurement"]["required"] is True
+    assert r.json()["runner_claim"]["state"] == "PASS"
+    assert r.json()["state"] == outcome(tenant, run)["state"]
+    run2 = run_of(tenant, "cfr-opt", "bob")                          # a dissenting witness posted BEFORE the result
+    assert witness_submits(w, obs(run2, metrics={**SEEN, "availability": 0.2})).json()["measurement"] == "AWAITING_RESULT"
+    r2 = runner_submits(runner, result_sub(run2))
+    assert r2.json()["state"] == "DISPUTED" and r2.json()["tier"] == "none" and r2.json()["score"] < 1.0, r2.text
+    assert r2.json()["state"] == outcome(tenant, run2)["state"]
+
+
+def test_hidden_assertion_ids_stay_out_of_the_public_reasons(world):
+    tenant, runner, w = world
+    run = run_of(tenant, "cfr-opt")
+    assert runner_submits(runner, result_sub(run)).status_code == 200
+    seen = [{"id": "tls_handshake_ok", "result": "pass"}, {"id": "x509_chain_ok", "result": "pass"},
+            {"id": "HIDDEN-001", "result": "fail"}]
+    assert witness_submits(w, obs(run, assertions=seen)).json()["measurement"] == "CONTRADICTED"
+    res = outcome(tenant, run)
+    assert res["state"] == "DISPUTED" and res["measurement"]["reasons"] == [f"witness-1: a hidden assertion disagrees"]
+    assert "HIDDEN-001" not in json.dumps(res)
+    run2 = run_of(tenant, "cfr-opt", "bob")                          # a REQUIRED assertion keeps its id: it is public anyway
+    assert runner_submits(runner, result_sub(run2)).status_code == 200
+    bad = [{"id": "tls_handshake_ok", "result": "fail"}, {"id": "x509_chain_ok", "result": "pass"},
+           {"id": "HIDDEN-001", "result": "pass"}]
+    assert witness_submits(w, obs(run2, assertions=bad)).status_code == 200
+    assert "assertion tls_handshake_ok witness=fail runner=pass" in outcome(tenant, run2)["measurement"]["reasons"][0]
+
+
+@pytest.mark.parametrize("field", ["observed_from", "observed_until", "availability"])
+def test_integers_beyond_float_range_are_refused_not_a_500(world, field):
+    tenant, _, w = world
+    run = run_of(tenant, "cfr-opt")
+    o = obs(run)
+    if field == "availability":
+        o["metrics"]["availability"] = 10 ** 400
+    else:
+        o[field] = 10 ** 400
+    r = witness_submits(w, o)
+    assert r.status_code == 400, r.text
+    assert "cfr.witness" not in types(tenant[0])
+
+
+def test_a_huge_integer_timestamp_in_auth_is_a_denial_not_a_500(world):
+    tenant, _, w = world
+    run = run_of(tenant, "cfr-opt")
+    o = obs(run)
+    auth = cfr.sign_witness(w.seed, w.tid, w.pid, o)
+    auth["ts"] = 10 ** 400
+    assert witness_submits(w, o, auth=auth).status_code in (400, 401, 403)
+    assert not cfr._num(10 ** 400) and not idn._num(10 ** 400) and cfr._num(3) and not cfr._num(True)
+
+
+def test_the_tolerance_block_refuses_huge_integers():
+    bad = {**IM, "tolerance": {**IM["tolerance"], "mttr_s": 10 ** 400}}
+    with pytest.raises(cfr.CfrError):
+        cfr._validate_independent(bad, set(REQ + ["HIDDEN-001"]))
+
+
+def test_a_witness_cannot_observe_after_the_run_expired(world, monkeypatch):
+    tenant, runner, w = world
+    monkeypatch.setenv("OLA_CFR_RUN_TTL_S", "60")
+    run = run_of(tenant, "cfr-req")
+    real = time.time
+    monkeypatch.setattr(cfr, "_now", lambda: real() + 3600)
+    r = witness_submits(w, obs(run, observed_from=real() - 30, observed_until=real() - 5))
+    assert r.status_code == 400 and "expired" in r.text, r.text
+    assert "cfr.witness" not in types(tenant[0])
+
+
+def test_a_witness_that_did_not_watch_during_the_runners_run_confirms_nothing(world):
+    tenant, runner, w = world
+    run = run_of(tenant, "cfr-req")
+    now = time.time()
+    assert runner_submits(runner, result_sub(run, started_at=now - 120, ended_at=now - 60)).status_code == 200
+    late = obs(run, observed_from=now - 10, observed_until=now - 5)         # a short look AFTER the runner finished
+    assert witness_submits(w, late).json()["measurement"] == "INSUFFICIENT"
+    res = outcome(tenant, run)
+    assert res["state"] == "UNKNOWN" and "does not overlap" in res["measurement"]["reasons"][0], res
+    assert board(tenant, "cfr-req") == []
+
+
+def test_reconcile_reports_the_gap_only_when_nothing_contradicts(world):
+    rp = {"metrics": {**PERFECT}, "assertions": {a["id"]: a["result"] for a in ALL_PASS}, "started_at": 100.0,
+          "ended_at": 200.0}
+    rp["assertions"] = dict(rp["assertions"])
+    m = {**OPTIONAL_MANIFEST}
+    w = {"witness_id": "w", "metrics": dict(SEEN), "assertions": {a["id"]: a["result"] for a in WITNESSED},
+         "observed_from": 300.0, "observed_until": 310.0}
+    assert cfr.reconcile(m, rp, [w])["status"] == "INSUFFICIENT"
+    assert cfr.reconcile(m, rp, [{**w, "observed_from": 150.0, "observed_until": 160.0}])["status"] == "CONFIRMED"
+    assert cfr.reconcile(m, rp, [{**w, "observed_from": 50.0, "observed_until": 99.0}])["status"] == "INSUFFICIENT"
+    res = cfr.reconcile(m, rp, [{**w, "metrics": {**SEEN, "availability": 0.1}}])
+    assert res["status"] == "CONTRADICTED" and "does not overlap" not in " ".join(res["reasons"])

@@ -107,7 +107,12 @@ def _now() -> float:
 
 
 def _num(v: Any) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:                                  # an int beyond float range (10**400): refused, never a 500
+        return False
 
 
 def _ttl() -> int:
@@ -468,7 +473,10 @@ def submit_result(tenant_id: str, submission: Any, auth: Any) -> Dict[str, Any]:
     first = min(r["seq"] for r, _ in _results(_chain(tenant_id)).get(run_id, []))     # one result per run
     if first != rec["seq"]:
         raise CfrConflict("another result for this run was recorded first")
-    return {**_public(payload), "evidence_seq": rec["seq"]}
+    sc = _scenarios(_chain(tenant_id)).get(run["scenario_id"])
+    wits = [q for _, q in _witnesses(_chain(tenant_id)).get(run_id, [])]
+    return {**_public(payload, _effective(sc["manifest"], payload, wits) if sc is not None else None),
+            "evidence_seq": rec["seq"]}
 
 
 # ------------------------------------------------------------------ independent measurement (witness)
@@ -530,8 +538,8 @@ def submit_witness(tenant_id: str, observation: Any, auth: Any) -> Dict[str, Any
     skew, now = identity._skew(), _now()
     if frm < run["issued_at"] - skew:
         raise CfrError("the observation starts before the run was issued")
-    if until > now + skew or until > run["expires_at"] + skew:
-        raise CfrError("the observation ends in the future or after the run expired")
+    if now > run["expires_at"] or until > now + skew or until > run["expires_at"] + skew:
+        raise CfrError("the run expired, or the observation ends in the future or after the run expired")
     metrics = validate_witness_metrics(observation.get("metrics"))
     assertions = validate_assertions(manifest, observation.get("assertions"))
     artifacts = observation.get("artifacts", {})
@@ -571,7 +579,9 @@ def reconcile(manifest: Dict[str, Any], rp: Dict[str, Any], wits: List[Dict[str,
     if not wits:
         return {"status": "UNWITNESSED", "required": required, "witnesses": [], "reasons": []}
     reasons: List[str] = []
+    gaps: List[str] = []
     uncovered = False
+    hidden = set(manifest.get("hidden_assertions", []))
     rm, ra = rp["metrics"], rp["assertions"]
     for w in wits:
         wid, wm, wa = w["witness_id"], w["metrics"], w["assertions"]
@@ -588,12 +598,19 @@ def reconcile(manifest: Dict[str, Any], rp: Dict[str, Any], wits: List[Dict[str,
         for aid, wr in sorted(wa.items()):
             rr = ra.get(aid, "missing")
             if wr in ("pass", "fail") and rr in ("pass", "fail") and wr != rr:
-                reasons.append(f"{wid}: assertion {aid} witness={wr} runner={rr}")
+                # hidden assertion ids stay out of the participant-facing view: only the fact of a disagreement is shown
+                reasons.append(f"{wid}: assertion {aid} witness={wr} runner={rr}" if aid not in hidden
+                               else f"{wid}: a hidden assertion disagrees")
+        win = (w.get("observed_from"), w.get("observed_until"), rp.get("started_at"), rp.get("ended_at"))
+        if all(_num(x) for x in win) and (win[1] < win[2] or win[0] > win[3]):
+            uncovered = True                               # it did not watch while the runner's run was going on
+            gaps.append(f"{wid}: the observation window does not overlap the runner's run")
         for aid in confirm:                                # confirmed = both sides gave the SAME pass/fail answer
             if not (wa.get(aid) in ("pass", "fail") and wa.get(aid) == ra.get(aid)):
                 uncovered = True
     status = "CONTRADICTED" if reasons else ("INSUFFICIENT" if uncovered else "CONFIRMED")
-    return {"status": status, "required": required, "witnesses": ids, "reasons": reasons[:20]}
+    return {"status": status, "required": required, "witnesses": ids,
+            "reasons": (reasons if reasons else gaps)[:20]}
 
 
 def _pessimistic(rm: Dict[str, Any], wits: List[Dict[str, Any]]) -> Dict[str, Any]:
