@@ -20,23 +20,37 @@ jobs:
       - name: Install
         run: python -m pip install -r requirements.txt
       - name: Decision Fabric contract tests
-        run: python -m pytest -q tests/test_decision_fabric.py
+        run: python -m pytest -q tests/test_decision_fabric.py tests/test_decision_endpoint.py tests/test_jev_eval.py
+      - name: Labelled set is what the generator produces
+        run: python scripts/make_jev_eval.py --check
       - name: Compile
         run: python -m compileall -q app
 
   live-jev:
     runs-on: ubuntu-latest
-    if: ${{ secrets.TYPESAFE_API_KEY != '' }}
+    outputs:
+      configured: ${{ steps.key.outputs.configured }}
     steps:
+      # The `secrets` context is not available in a job-level `if`, so the check is a step.
+      - name: Is the Jev credential configured?
+        id: key
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: |
+          if [ -n "${TYPESAFE_API_KEY:-}" ]; then echo "configured=true" >> "$GITHUB_OUTPUT"; else echo "configured=false" >> "$GITHUB_OUTPUT"; echo "LIVE_JEV=NOT_PROVEN (no TYPESAFE_API_KEY)"; fi
       - name: Checkout exact source
+        if: steps.key.outputs.configured == 'true'
         uses: actions/checkout@v4
       - name: Set up Python
+        if: steps.key.outputs.configured == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
       - name: Install
+        if: steps.key.outputs.configured == 'true'
         run: python -m pip install -r requirements.txt
       - name: Live Jev decision
+        if: steps.key.outputs.configured == 'true'
         env:
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
         run: |
@@ -61,8 +75,10 @@ jobs:
           assert result.model == "jev-1.13.0", result.model
           PY
       - name: Hash live evidence
+        if: steps.key.outputs.configured == 'true'
         run: sha256sum jev-live-evidence.json | tee jev-live-evidence.sha256
       - name: Upload live evidence
+        if: steps.key.outputs.configured == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ola-jev-live-evidence-${{ github.sha }}
@@ -71,18 +87,70 @@ jobs:
             jev-live-evidence.sha256
           if-no-files-found: error
 
+  jev-quality:
+    # Measures how often Jev lets through a bundle that needed review or a block (scripts/jev_eval.py).
+    # Without the credential nothing is measured: JEV_QUALITY=NOT_PROVEN, never a pass.
+    runs-on: ubuntu-latest
+    outputs:
+      verdict: ${{ steps.eval.outputs.verdict }}
+    steps:
+      - name: Is the Jev credential configured?
+        id: key
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: |
+          if [ -n "${TYPESAFE_API_KEY:-}" ]; then echo "configured=true" >> "$GITHUB_OUTPUT"; else echo "configured=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Checkout exact source
+        if: steps.key.outputs.configured == 'true'
+        uses: actions/checkout@v4
+      - name: Set up Python
+        if: steps.key.outputs.configured == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        if: steps.key.outputs.configured == 'true'
+        run: python -m pip install -r requirements.txt
+      - name: Measure Jev routing quality
+        id: eval
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: |
+          if [ "${{ steps.key.outputs.configured }}" != "true" ]; then
+            echo "verdict=NOT_PROVEN" >> "$GITHUB_OUTPUT"; echo "JEV_QUALITY=NOT_PROVEN (no TYPESAFE_API_KEY)"; exit 0
+          fi
+          set +e
+          python scripts/jev_eval.py --repeats 2 --out jev-eval-result.json | tee jev-eval.txt
+          code=${PIPESTATUS[0]}
+          case "$code" in 0) v=PASS;; 1) v=FAIL;; *) v=UNKNOWN;; esac
+          echo "verdict=$v" >> "$GITHUB_OUTPUT"
+          { echo '### Jev routing quality (advisory)'; echo "Verdict: **$v** (this is not a verification)"; echo '```'; cat jev-eval.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+      - name: Upload measurement
+        if: steps.key.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ola-jev-eval-${{ github.sha }}
+          path: |
+            jev-eval-result.json
+            jev-eval.txt
+          if-no-files-found: error
+
   evidence:
     if: ${{ always() }}
-    needs: [contract, live-jev]
+    needs: [contract, live-jev, jev-quality]
     runs-on: ubuntu-latest
     steps:
       - name: Decision gate summary
         env:
           CONTRACT_RESULT: ${{ needs.contract.result }}
           LIVE_RESULT: ${{ needs.live-jev.result }}
+          LIVE_CONFIGURED: ${{ needs.live-jev.outputs.configured }}
+          QUALITY_VERDICT: ${{ needs.jev-quality.outputs.verdict }}
         run: |
           echo "CONTRACT_JOB=$CONTRACT_RESULT"
           echo "LIVE_JEV_JOB=$LIVE_RESULT"
           if [ "$CONTRACT_RESULT" != "success" ]; then exit 1; fi
           if [ "$LIVE_RESULT" = "failure" ]; then exit 1; fi
-          if [ "$LIVE_RESULT" = "skipped" ]; then echo "LIVE_JEV=NOT_PROVEN"; else echo "LIVE_JEV=VERIFIED"; fi
+          if [ "$LIVE_CONFIGURED" != "true" ]; then echo "LIVE_JEV=NOT_PROVEN"; else echo "LIVE_JEV=CALL_OK (advisory; a successful call proves reachability, not quality)"; fi
+          echo "JEV_QUALITY=${QUALITY_VERDICT:-NOT_PROVEN}"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -13,6 +14,15 @@ import httpx
 JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 DEFAULT_JEV_MODEL = "jev-1.13.0"
 TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504, 529}
+
+
+def _num(value: Any) -> bool:
+    """A real finite number. bool is an int in Python and must never pass as a probability or a score."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _unit(value: Any) -> bool:
+    return _num(value) and 0.0 <= float(value) <= 1.0
 
 
 class DecisionProvider(Protocol):
@@ -43,11 +53,15 @@ class DecisionPolicy:
     def classify(self, answer: Mapping[str, Any]) -> str:
         kind = answer.get("type")
         if kind in {"choice", "score"}:
-            confidence = float(answer.get("confidence", 0.0))
+            if not _unit(answer.get("confidence")):
+                return "BLOCK"
+            confidence = float(answer["confidence"])
             threshold = self.min_choice_confidence if kind == "choice" else self.min_score_confidence
             return "ACCEPT" if confidence >= threshold else "REVIEW"
         if kind == "noul":
-            value = float(answer.get("noul", 0.5))
+            if not _unit(answer.get("noul")):
+                return "BLOCK"
+            value = float(answer["noul"])
             if value >= self.noul_yes_threshold: return "YES"
             if value <= self.noul_no_threshold: return "NO"
             return "REVIEW"
@@ -77,6 +91,8 @@ class JevProvider:
                         time.sleep(2 ** attempt)
                         continue
                     response.raise_for_status()
+                    if len(response.content) > MAX_RESPONSE_BYTES:
+                        raise ValueError("Jev response is too large")
                     body = response.json()
                     if not isinstance(body, Mapping):
                         raise ValueError("Jev response body must be an object")
@@ -92,6 +108,12 @@ class JevProvider:
             raise RuntimeError("Jev request failed")
         finally:
             if owns_client: client.close()
+
+
+MAX_STATE_BYTES = 64 * 1024
+MAX_QUESTIONS = 32
+MAX_RESPONSE_BYTES = 1024 * 1024
+PROBABILITY_SUM_TOLERANCE = 0.02
 
 
 class DecisionFabric:
@@ -110,8 +132,12 @@ class DecisionFabric:
             raise ValueError("state must be a string, object, or array")
         if not questions:
             raise ValueError("at least one question is required")
+        if len(questions) > MAX_QUESTIONS:
+            raise ValueError("too many questions")
+        if len(json.dumps(state, sort_keys=True, default=str).encode("utf-8")) > MAX_STATE_BYTES:
+            raise ValueError("state is too large")
         for name, q in questions.items():
-            if not isinstance(name, str) or not name:
+            if not isinstance(name, str) or not name or len(name) > 64:
                 raise ValueError("question names must be non-empty strings")
             if not isinstance(q, Mapping):
                 raise ValueError(f"question {name!r} must be an object")
@@ -150,13 +176,15 @@ class DecisionFabric:
             kind = q["type"]
             if kind == "choice":
                 if a.get("choice") not in q["criteria"]: raise ValueError(f"choice answer {name!r} is outside criteria")
-                if not isinstance(a.get("confidence"), (int, float)) or not 0 <= float(a["confidence"]) <= 1:
+                if not _unit(a.get("confidence")):
                     raise ValueError(f"choice answer {name!r} has invalid confidence")
                 p = a.get("probabilities")
                 if not isinstance(p, Mapping) or set(p) != set(q["criteria"]): raise ValueError(f"choice answer {name!r} has invalid probabilities")
+                if not all(_unit(v) for v in p.values()) or abs(sum(float(v) for v in p.values()) - 1.0) > PROBABILITY_SUM_TOLERANCE:
+                    raise ValueError(f"choice answer {name!r} probabilities are not a distribution")
             elif kind == "score":
-                if not isinstance(a.get("score"), (int, float)): raise ValueError(f"score answer {name!r} is malformed")
-                if not isinstance(a.get("confidence"), (int, float)) or not 0 <= float(a["confidence"]) <= 1:
+                if not _num(a.get("score")): raise ValueError(f"score answer {name!r} is malformed")
+                if not _unit(a.get("confidence")):
                     raise ValueError(f"score answer {name!r} has invalid confidence")
                 max_score = len(q["criteria"]) - 1
                 if not 0 <= float(a["score"]) <= max_score:
@@ -167,12 +195,14 @@ class DecisionFabric:
                 expected_keys = {str(i) for i in range(len(q["criteria"]))}
                 if set(probabilities) != expected_keys:
                     raise ValueError(f"score answer {name!r} has invalid probability keys")
-                if any(not isinstance(value, (int, float)) or not 0 <= float(value) <= 1 for value in probabilities.values()):
+                if not all(_unit(value) for value in probabilities.values()):
                     raise ValueError(f"score answer {name!r} has invalid probability values")
+                if abs(sum(float(v) for v in probabilities.values()) - 1.0) > PROBABILITY_SUM_TOLERANCE:
+                    raise ValueError(f"score answer {name!r} probabilities are not a distribution")
                 legend = a.get("legend")
                 if not isinstance(legend, Mapping) or set(legend) != expected_keys:
                     raise ValueError(f"score answer {name!r} has invalid legend")
-            elif not isinstance(a.get("noul"), (int, float)) or not 0 <= float(a["noul"]) <= 1:
+            elif not _unit(a.get("noul")):
                 raise ValueError(f"noul answer {name!r} is malformed")
 
     def evaluate(self, *, state: Any, questions: Mapping[str, Mapping[str, Any]]) -> DecisionResult:
@@ -204,7 +234,7 @@ class DecisionFabric:
         return {name: self.policy.classify(answer) for name, answer in result.answers.items()}
 
     def evidence(self, result: DecisionResult) -> dict[str, Any]:
-        return {"schema": "ola.decision.v1", "provider": result.provider, "model": result.model,
+        return {"schema": "ola.decision.v1", "advisory_only": True, "provider": result.provider, "model": result.model,
                 "status": result.status, "reason": result.reason, "request_sha256": result.request_sha256,
                 "response_sha256": result.response_sha256, "request_id": result.request_id, "usage": result.usage,
                 "answers": result.answers, "classifications": self.classify(result)}

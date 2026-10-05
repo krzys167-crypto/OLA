@@ -729,7 +729,16 @@ def verify_evidence(record_id: str, x_api_key: str | None = Header(default=None)
 
 @app.post("/decision-evaluate")
 def decision_evaluate(body: dict, x_api_key: str | None = Header(default=None)):
+    """Advisory decision vector from the hosted Jev model. Never a verification: the answer is recorded as
+    `decision.fabric` evidence and returned with advisory_only=true. OFF unless OLA_JEV=on, because the state
+    and questions are sent to api.typesafe.ai."""
     tenant_id = tenant_from_key(x_api_key)
+    mode = os.getenv("OLA_JEV", "").strip().lower()
+    if mode not in ("", "off", "on"):
+        raise HTTPException(status_code=503, detail="OLA_JEV must be 'on' or 'off'")
+    if mode != "on":
+        raise HTTPException(status_code=503, detail="the Jev decision layer is not enabled (set OLA_JEV=on; "
+                                                    "the request is sent to a hosted third-party model)")
     state = body.get("state")
     questions = body.get("questions")
     if state is None:
@@ -738,7 +747,13 @@ def decision_evaluate(body: dict, x_api_key: str | None = Header(default=None)):
         raise HTTPException(status_code=400, detail="questions object is required")
 
     fabric = DecisionFabric()
-    result = fabric.evaluate(state=state, questions=questions)
+    try:
+        with pipeline_bridge._run_slot():
+            result = fabric.evaluate(state=state, questions=questions)
+    except pipeline_bridge.PipelineBusy as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "5"}) from exc
+    except pipeline_bridge.PipelineNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     evidence = fabric.evidence(result)
     evidence["tenant_id"] = tenant_id
     record_type = "decision.fabric" if result.status == "READY" else "decision.fabric_blocked"

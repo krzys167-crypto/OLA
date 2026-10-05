@@ -285,7 +285,8 @@ def verdict(c, key, seq):
 def test_modified_stored_file_is_block(env, victim):
     _, key, c, seq, d = anchored(env)
     f = next(d.glob(f"*{victim}"))
-    f.write_bytes(f.read_bytes()[:-1] + b"\x00")
+    raw = f.read_bytes()
+    f.write_bytes(raw[:-1] + bytes([raw[-1] ^ 0xFF]))        # always changes the byte (a fixed \x00 was a no-op 1 time in 256)
     v = verdict(c, key, seq)
     assert v["status"] == "BLOCK" and "recorded hashes" in v["reason"], v
 
