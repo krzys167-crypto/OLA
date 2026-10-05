@@ -20,7 +20,7 @@ CHECKS = [{"name": "c1", "status": "PASS", "detail": "d", "critical": True}]
 # Produced by the code BEFORE the refactor (Igor._messages inlined): the refactor changed no byte of the prompt.
 GOLDEN_DEFAULT = "fcdc936908a8ad7c89d25b42f7c74ce15422ec2460b8fe04aae9e5a13859313c"
 GOLDEN_CUSTOM = "46523f2750f8d8256433b975317b9bbac4ef43a92b5f9195f71df3d9e7d7238f"
-GOLDEN_FINGERPRINT = "8d8fea9e4af028a96108d4f0ae04a964cbc5c473b6ea3fccfc21e5605a4a1144"
+GOLDEN_FINGERPRINT = "1b08fa92b3b4d79a00a0310259f477e603c63b43ffe14f84674a0f38439129a1"
 
 
 def sha(obj):
@@ -116,3 +116,17 @@ def test_igor_uses_the_shared_builder(monkeypatch):
     out = j._messages("task", "out", CHECKS)
     assert calls == [("task", "out", CHECKS, ("r1",))]
     assert out == real("task", "out", CHECKS, ("r1",))
+
+
+def test_the_probe_sees_truncation_and_ignored_checks():
+    """Found by review: with empty checks and short probe strings, a template that truncates the output or drops the
+    evidence checks had the same fingerprint as the production template."""
+    def truncating(task, output, checks, reqs):
+        return build_messages(task, (output or "")[:20], checks, reqs)
+
+    def ignoring_checks(task, output, checks, reqs):
+        return build_messages(task, output, [], reqs)
+
+    base = judge_prompt_fingerprint(DEFAULT_REQUIREMENTS, 70)
+    assert judge_prompt_fingerprint(DEFAULT_REQUIREMENTS, 70, truncating) != base
+    assert judge_prompt_fingerprint(DEFAULT_REQUIREMENTS, 70, ignoring_checks) != base

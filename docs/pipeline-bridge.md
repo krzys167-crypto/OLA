@@ -163,7 +163,7 @@ proven by rebuilding the prompt from the stored input and requiring its SHA-256 
 qualification file without the field, with another fingerprint, or a session whose prompt cannot be reconstructed is
 `NOT_QUALIFIED`. Consequences: changing `OLA_MIN_QUALITY_SCORE` or `OLA_QUALITY_REQUIREMENTS`, or editing the prompt, invalidates
 every existing qualification until the judge is measured again, and a measurement made with a measurement-only variant
-(`scripts/judge_variants.py`) never qualifies a judge that runs the production prompt. The refactor that made this
+(`scripts/judge_variants.py`) never qualifies anything: the file records `variant` and only `baseline` files are accepted (found in review: the `scoped-requirements` variant has the same fingerprint as a production run configured with the same requirements). The refactor that made this
 possible changed no byte of the prompt (golden hashes in `tests/test_judge_prompt.py` were taken from the old code). Ambient
 `enforce` builds the prompt itself, so it passes the fingerprint of the requirements and threshold it is configured with
 (`judge_qualification(..., prompt_fingerprint=...)`); the same rules apply.

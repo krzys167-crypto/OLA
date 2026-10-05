@@ -440,11 +440,13 @@ _DEFAULT = object()
 
 def write_qualification(tmp_path, *, k=0, n=26, model="igor-test", provider="ollama-local", digest=JUDGE_DIGEST,
                         kind="OLLAMA_OBSERVED", dataset=DATASET_SHA, schema="ola.judge-eval/1", verdicts=47,
-                        ck=21, cn=21, prompt=_DEFAULT):
+                        ck=21, cn=21, prompt=_DEFAULT, variant="baseline"):
     doc = {"schema": schema, "provider": provider, "model": model, "dataset_sha256": dataset,
            "meta": {"runtime_kind": kind, "model_digest": digest},
            "summary": {"false_accept": {"k": k, "n": n}, "correct_accepted": {"k": ck, "n": cn},
                        "verdicts_obtained": verdicts}}
+    if variant is not None:
+        doc["variant"] = variant
     if prompt is not None:
         doc["judge_prompt_sha256"] = PROMPT_FP if prompt is _DEFAULT else prompt
     path = tmp_path / "judge-eval.json"
@@ -746,9 +748,7 @@ def test_a_session_made_with_another_prompt_template_is_not_qualified(env, tmp_p
     _, key = make_tenant()
     b = post(key, **HUMAN).json()
     assert b["igor"]["judge_qualification"]["state"] == "QUALIFIED"
-    sid = b["session_id"]
-    tenant_vault = Path(os.environ["OLA_PIPELINE_VAULT_DIR"])
-    sd = next(tenant_vault.glob(f"*/{sid}"))
+    sd = next(Path(os.environ["OLA_PIPELINE_VAULT_DIR"]).glob(f"*/{b['session_id']}"))
     real = pb.build_messages
     monkeypatch.setattr(pb, "build_messages", lambda *a: real(*a)[:1] + [{"role": "user", "content": "lenient"}])
     final = json.loads((sd / "final.json").read_text())
@@ -846,3 +846,27 @@ def test_a_modified_input_artifact_is_refused_even_when_the_prompt_is_unchanged(
     path.write_text(json.dumps(inp, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
     fp, why = pb.session_judge_fingerprint(sd, igor_env, final)
     assert fp is None and "cannot be reconstructed" in why
+
+
+@pytest.mark.parametrize("variant", ["scoped-requirements", "plain-input", None, "", 0])
+def test_a_measurement_made_with_a_prompt_variant_never_qualifies(env, tmp_path, variant):
+    """Found by review: the scoped-requirements variant has the fingerprint of a production run configured with the
+    same requirements. Its measurement still must not qualify a session - only 'baseline' files can."""
+    scoped = ("Answers the task correctly.", "Follows every explicit constraint stated in the task.")
+    env.setenv("OLA_QUALITY_REQUIREMENTS", "\n".join(scoped))
+    fp = judge_prompt_fingerprint(scoped, 70)
+    q = qualified_with(env, tmp_path, prompt=fp, variant=variant)["judge_qualification"]
+    assert q["state"] == "NOT_QUALIFIED" and "variant" in q["reason"], q
+    ok = qualified_with(env, tmp_path, prompt=fp, variant="baseline")["judge_qualification"]
+    assert ok["state"] == "QUALIFIED", "the same fingerprint measured as the baseline qualifies"
+
+
+def test_a_pathologically_nested_stored_input_fails_closed(env):
+    sd, igor_env, final = real_session(env)
+    forged = _forge_input(sd, igor_env, lambda i: i.__setitem__("task", None))
+    deep = "[" * 100000 + "]" * 100000
+    data = ('{"evidence_checks":[],"nina_output":"x","quality_requirements":["r"],"task":' + deep + '}').encode()
+    h = hashlib.sha256(data).hexdigest()
+    (sd / "artifacts" / h).write_bytes(data)
+    fp, why = pb.session_judge_fingerprint(sd, {**forged, "input_hash": h}, final)
+    assert fp is None and why

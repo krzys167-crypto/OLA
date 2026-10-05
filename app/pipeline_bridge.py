@@ -301,7 +301,7 @@ def session_judge_fingerprint(session_dir: Path, judge_env: dict, final: Optiona
         if hashlib.sha256(rebuilt).hexdigest() != judge_env.get("prompt_hash"):
             return None, "the stored judge prompt is not what the current prompt template produces"
         return judge_prompt_fingerprint(tuple(reqs), threshold), ""
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError):
         return None, "the judge prompt of this session cannot be reconstructed from its stored artifacts"
 
 
@@ -353,6 +353,11 @@ def judge_qualification(judge_env: Optional[dict], policy: Optional[Qualificatio
             session_fp, why = None, "no session directory to reconstruct the judge prompt from"
         if session_fp is None:
             return no(why, file_sha256=file_sha)
+        if doc.get("variant") != "baseline":
+            # a measurement made with a measurement-only prompt variant never qualifies anything, even if its
+            # fingerprint happens to equal that of a configuration someone runs in production
+            return no("the measurement was made with a measurement-only prompt variant (variant must be 'baseline')",
+                      file_sha256=file_sha)
         if doc.get("judge_prompt_sha256") != session_fp:
             return no("measured with a different judge prompt, quality requirements or threshold than this session "
                       "used (judge_prompt_sha256 is missing or differs)", file_sha256=file_sha,

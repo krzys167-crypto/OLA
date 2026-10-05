@@ -132,14 +132,15 @@ def build_messages(task: str, output: Optional[str], checks: List[Dict[str, Any]
     ]
 
 
-_PROBE_TASK, _PROBE_OUTPUT = "\x00PROBE-TASK", "\x00PROBE-OUTPUT"
+_PROBE_TASK, _PROBE_OUTPUT = "\x00PROBE-TASK ż", "\x00PROBE-OUTPUT ż " + "0123456789" * 30       # long and non-ASCII: truncation/escaping shows
+_PROBE_CHECKS = [{"name": "probe-check", "status": "PASS", "detail": "probe detail ż", "critical": True}]
 
 
 def judge_prompt_fingerprint(requirements: Tuple[str, ...], min_quality_score: int,
                              builder=build_messages) -> str:
     """Identity of the judge AS CONFIGURED: the prompt template (system text, instruction, key layout), the quality
     requirements and the acceptance threshold. A judge measurement is only about the judge with this fingerprint."""
-    probe = builder(_PROBE_TASK, _PROBE_OUTPUT, [], tuple(requirements))
+    probe = builder(_PROBE_TASK, _PROBE_OUTPUT, _PROBE_CHECKS, tuple(requirements))
     return sha256_hex(canonical_bytes({"messages": probe, "requirements": list(requirements),
                                        "min_quality_score": min_quality_score}))
 
