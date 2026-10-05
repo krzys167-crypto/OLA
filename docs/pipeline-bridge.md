@@ -523,13 +523,14 @@ OverflowError, also before authentication (now refused); one failed probe before
 collapsed MTTR into a false DISPUTED (an incident now needs `MIN_INCIDENT_ROUNDS` = 3 consecutive failing rounds); a stopped
 observer kept answering `health_stable` "pass" from old data (a timeline older than `STALE_S` is `unknown`, and
 `observed_until` is the last round actually watched); a witness could submit after the run expired, or with a window that did
-not overlap the runner's run (refused / INSUFFICIENT). **Known and not fixed:** revoking a witness key does not void its
-already recorded observation (same as runner results; it keeps one of the 3 slots); a witness contradiction turns a runner
+not overlap the runner's run (refused / INSUFFICIENT). A **revoked witness** (its key may have been compromised) keeps its
+power to lower or dispute a result but can no longer confirm one: a required PASS it had confirmed becomes UNKNOWN
+(INSUFFICIENT, reason "the witness key was revoked"); its record keeps one of the 3 slots. **Known and not fixed:** a witness contradiction turns a runner
 FAIL or UNKNOWN into DISPUTED, so treat DISPUTED as at least as bad as FAIL (it never ranks and has tier none); a witness
 started after the participant already replaced the CA would pin the replaced CA, so start it together with the range; the
 witness reads `ports.json`/`run.json` from the range state, which the participant can write.
 
-Tested: `tests/test_cfr_witness.py` (72 tests) and end-to-end and pure scenario tests (honest run CONFIRMED, a fix nobody made is
+Tested: `tests/test_cfr_witness.py` (75 tests) and end-to-end and pure scenario tests (honest run CONFIRMED, a fix nobody made is
 DISPUTED, pinned CA, no incident observed = nothing to submit); 46 of 47 mutants of the witness logic are killed, the one
 survivor is an equivalent mutant (an epsilon-masked boundary). **Honest limit:** the witness is only as independent as its
 deployment. In local-process mode participant and witness share a machine, so a participant who can read the witness key or

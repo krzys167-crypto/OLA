@@ -340,6 +340,7 @@
         "tests/test_cfr_witness.py::test_a_witness_cannot_vote_twice_to_outweigh_a_dissenter",
         "tests/test_cfr_witness.py::test_the_runner_cannot_be_its_own_witness",
         "tests/test_cfr_witness.py::test_a_witness_key_cannot_submit_a_runner_result",
+        "tests/test_cfr_witness.py::test_a_revoked_witness_can_no_longer_confirm_a_required_pass",
         "tests/test_cfr_certificate_apocalypse.py::test_a_runner_that_claims_a_fix_nobody_made_is_disputed_by_the_witness"
       ],
       "ci": [

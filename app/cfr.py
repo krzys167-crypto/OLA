@@ -358,6 +358,13 @@ def _witnesses(chain: List[dict]) -> Dict[str, List[Tuple[dict, dict]]]:
     return out
 
 
+def _live(chain: List[dict], items: List[Tuple[dict, dict]]) -> List[Dict[str, Any]]:
+    """The witness observations as the reconciliation sees them: a witness whose key was revoked (possibly because it was
+    compromised) keeps its power to LOWER a result but can no longer CONFIRM one."""
+    reg, _ = identity.registry(chain)
+    return [{**q, "revoked": reg.get(q["witness_id"], {}).get("status") == "revoked"} for _, q in items]
+
+
 # ------------------------------------------------------------------ operations
 def register_scenario(tenant_id: str, manifest: Any, token: Any = None) -> Dict[str, Any]:
     identity._check_enroll_token(token)
@@ -474,7 +481,8 @@ def submit_result(tenant_id: str, submission: Any, auth: Any) -> Dict[str, Any]:
     if first != rec["seq"]:
         raise CfrConflict("another result for this run was recorded first")
     sc = _scenarios(_chain(tenant_id)).get(run["scenario_id"])
-    wits = [q for _, q in _witnesses(_chain(tenant_id)).get(run_id, [])]
+    _c = _chain(tenant_id)
+    wits = _live(_c, _witnesses(_c).get(run_id, []))
     return {**_public(payload, _effective(sc["manifest"], payload, wits) if sc is not None else None),
             "evidence_seq": rec["seq"]}
 
@@ -564,7 +572,7 @@ def submit_witness(tenant_id: str, observation: Any, auth: Any) -> Dict[str, Any
     got = _results(_chain(tenant_id)).get(run_id)
     view = None
     if got:
-        view = _effective(manifest, min(got, key=lambda x: x[0]["seq"])[1], [q for _, q in kept])["measurement"]["status"]
+        view = _effective(manifest, min(got, key=lambda x: x[0]["seq"])[1], _live(_chain(tenant_id), kept))["measurement"]["status"]
     return {"run_id": run_id, "witness_id": witness, "evidence_seq": rec["seq"], "witnesses": len(kept),
             "measurement": view or "AWAITING_RESULT"}
 
@@ -602,6 +610,9 @@ def reconcile(manifest: Dict[str, Any], rp: Dict[str, Any], wits: List[Dict[str,
                 reasons.append(f"{wid}: assertion {aid} witness={wr} runner={rr}" if aid not in hidden
                                else f"{wid}: a hidden assertion disagrees")
         win = (w.get("observed_from"), w.get("observed_until"), rp.get("started_at"), rp.get("ended_at"))
+        if w.get("revoked"):
+            uncovered = True                               # a revoked key may lower a result but never confirms one
+            gaps.append(f"{wid}: the witness key was revoked")
         if all(_num(x) for x in win) and (win[1] < win[2] or win[0] > win[3]):
             uncovered = True                               # it did not watch while the runner's run was going on
             gaps.append(f"{wid}: the observation window does not overlap the runner's run")
@@ -683,7 +694,7 @@ def result(tenant_id: str, run_id: Any) -> Dict[str, Any]:
                 else "EXPIRED", "tier": "none"}
     rec, p = min(got, key=lambda x: x[0]["seq"])
     sc = _scenarios(chain).get(run["scenario_id"])
-    wits = [q for _, q in _witnesses(chain).get(run_id, [])]
+    wits = _live(chain, _witnesses(chain).get(run_id, []))
     eff = _effective(sc["manifest"], p, wits) if sc is not None else None
     return {**_public(p, eff), "evidence_seq": rec["seq"]}
 
@@ -701,7 +712,7 @@ def leaderboard(tenant_id: str, scenario_id: Any, limit: int = 20) -> Dict[str, 
         rec, p = min(items, key=lambda x: x[0]["seq"])
         if p["scenario_id"] != scenario_id:
             continue
-        eff = _effective(sc["manifest"], p, [q for _, q in wit.get(run_id, [])])
+        eff = _effective(sc["manifest"], p, _live(chain, wit.get(run_id, [])))
         if eff["state"] != "PASS":                  # only PASS enters the board; UNKNOWN and DISPUTED never rank
             continue
         cur = best.get(p["participant_id"])

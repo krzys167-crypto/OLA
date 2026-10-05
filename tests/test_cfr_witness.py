@@ -741,3 +741,37 @@ def test_reconcile_reports_the_gap_only_when_nothing_contradicts(world):
     assert cfr.reconcile(m, rp, [{**w, "observed_from": 50.0, "observed_until": 99.0}])["status"] == "INSUFFICIENT"
     res = cfr.reconcile(m, rp, [{**w, "metrics": {**SEEN, "availability": 0.1}}])
     assert res["status"] == "CONTRADICTED" and "does not overlap" not in " ".join(res["reasons"])
+
+
+# ------------------------------------------------------------------ a revoked witness
+def test_a_revoked_witness_can_no_longer_confirm_a_required_pass(world):
+    """Revocation may mean 'compromised': its earlier confirmation must not keep a required PASS alive."""
+    tenant, runner, w = world
+    run = run_of(tenant, "cfr-req")
+    assert runner_submits(runner, result_sub(run)).status_code == 200
+    assert witness_submits(w, obs(run)).json()["measurement"] == "CONFIRMED"
+    assert outcome(tenant, run)["state"] == "PASS" and [r["participant_id"] for r in board(tenant, "cfr-req")] == ["alice"]
+    assert post("/identity/revoke", tenant[1], TOKEN, principal_id="witness-1", reason="compromised").status_code == 200
+    res = outcome(tenant, run)
+    assert res["state"] == "UNKNOWN" and res["tier"] == "none", res
+    assert res["measurement"]["status"] == "INSUFFICIENT" and "revoked" in res["measurement"]["reasons"][0], res
+    assert board(tenant, "cfr-req") == []
+
+
+def test_a_revoked_witness_can_still_only_lower_never_raise(world):
+    tenant, runner, w = world
+    run = run_of(tenant, "cfr-opt")
+    assert runner_submits(runner, result_sub(run)).status_code == 200
+    assert witness_submits(w, obs(run, metrics={**SEEN, "availability": 0.2})).json()["measurement"] == "CONTRADICTED"
+    assert post("/identity/revoke", tenant[1], TOKEN, principal_id="witness-1", reason="rotated").status_code == 200
+    res = outcome(tenant, run)
+    assert res["state"] == "DISPUTED" and res["score"] < res["runner_claim"]["score"], res
+    assert board(tenant, "cfr-opt") == []
+
+
+def test_reconcile_treats_a_revoked_witness_as_no_confirmation():
+    rp = {"metrics": {**PERFECT}, "assertions": {a["id"]: a["result"] for a in ALL_PASS}}
+    w = {"witness_id": "w", "metrics": dict(SEEN), "assertions": {a["id"]: a["result"] for a in WITNESSED}}
+    assert cfr.reconcile(OPTIONAL_MANIFEST, rp, [w])["status"] == "CONFIRMED"
+    assert cfr.reconcile(OPTIONAL_MANIFEST, rp, [{**w, "revoked": True}])["status"] == "INSUFFICIENT"
+    assert cfr.reconcile(OPTIONAL_MANIFEST, rp, [{**w, "revoked": False}])["status"] == "CONFIRMED"
