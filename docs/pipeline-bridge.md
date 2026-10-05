@@ -488,3 +488,14 @@ chain proves which runner key signed what and that the server scored it consiste
 true. The per-run seed is returned to the caller of `POST /cfr/runs`; call it from the runner, not from the participant,
 or the per-user mutation stops being a secret. Hidden assertion ids are kept out of the participant-facing view only by
 convention: every holder of the tenant key can read the manifest and the chain.
+
+### First CFR scenario: Certificate Apocalypse (`cfr_scenarios/certificate-apocalypse/`)
+A runnable scenario for the CFR integration above: four local TLS services (two share the broken certificate), three fault
+variants (`expired`, `untrusted-chain`, `wrong-san`) chosen per run by the server, a host name that derives from the per-run
+seed, six assertions (two hidden: `san_matches_host`, `ca_untouched`), a probe loop that measures availability, p95 latency,
+MTTR (start of the first 10 s window in which every service was healthy), collateral damage (blast radius = unaffected
+services that failed after the injection, e.g. after replacing the CA), restarts and downtime. `score.py` signs the result as
+an enrolled `runner`; the server computes the score. Tested end to end (`tests/test_cfr_certificate_apocalypse.py`, 16 tests:
+fixed run -> PASS and ranked, unfixed -> FAIL and not ranked, CA replaced -> FAIL with blast radius 2, one test per variant).
+**Not covered:** Docker/k3d/compose (not provided), k6 (script provided, not run), independent measurement (the runner
+attests the metrics), calibration of the weights.
