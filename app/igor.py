@@ -4,6 +4,20 @@ import json
 from .hashchain import verify_chain
 
 
+def _payload(record):
+    """The record's payload as a dict, or None when it is not a JSON object."""
+    try:
+        payload = json.loads(record["payload_json"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _same_result(actual, expected):
+    """A missing value (None) never matches, not even the string "None"."""
+    return actual is not None and expected is not None and str(actual) == str(expected)
+
+
 @dataclass(frozen=True)
 class IgorVerification:
     status: str
@@ -19,7 +33,7 @@ class IgorVerifier:
     classification from the supplied records and expected provenance/outcome.
     """
 
-    def verify_records(self, records, expected_commit, expected_task, expected_result, expected_provider=None, expected_model=None, expected_run_id=None):
+    def verify_records(self, records, expected_commit, expected_task, expected_result, expected_provider=None, expected_model=None, expected_run_id=None, expected_invocation_type=None, expected_nonce=None):
         if not records:
             return IgorVerification("UNKNOWN", "missing evidence", {"chain": False})
 
@@ -28,79 +42,108 @@ class IgorVerifier:
         if not chain_ok:
             return IgorVerification("BLOCK", chain_reason, checks)
 
-        # Group the chain-verified records by run. A claim (commit + task + result [+ provider/model]) has to be
-        # carried by ONE record of ONE run: facts taken from different records or runs do not add up to evidence.
-        groups: dict = {}
-        for record in records:
-            try:
-                payload = json.loads(record["payload_json"])
-            except (TypeError, ValueError):
-                continue                      # chain-verified but not evidence: unattributable, never used
-            if isinstance(payload, dict):
-                groups.setdefault(payload.get("run_id"), []).append((record, payload))
+        # A chain-verified record whose payload is not a JSON object is not evidence (and must not crash the verifier).
+        parsed = [(record, _payload(record)) for record in records]
+        payloads = [
+            payload for record, payload in parsed
+            if payload is not None and str(record.get("record_type", "")).startswith("agent.")
+        ]
         if expected_run_id is not None:
-            groups = {expected_run_id: groups[expected_run_id]} if expected_run_id in groups else {}
-        if not groups:
+            payloads = [
+                payload for payload in payloads
+                if payload.get("run_id") == expected_run_id
+            ]
+            scoped_records = [
+                record for record, payload in parsed
+                if payload is not None and payload.get("run_id") == expected_run_id
+            ]
+        else:
+            scoped_records = list(records)
+        if not payloads:
             return IgorVerification("UNKNOWN", "missing current-run evidence", checks)
+        source_values = {payload.get("source_commit") for payload in payloads if payload.get("source_commit") is not None}
+        legacy_values = {payload.get("commit") for payload in payloads if payload.get("commit") is not None}
+        checks["source_commit"] = bool(expected_commit) and source_values == {expected_commit}
+        checks["commit"] = checks["source_commit"] and (not legacy_values or legacy_values == {expected_commit})
+        if not checks["source_commit"] or not checks["commit"]:
+            return IgorVerification("BLOCK", "commit/source_commit provenance mismatch", checks)
 
-        best = None
-        for members in groups.values():
-            verdict = self._verify_group(members, checks, expected_commit, expected_task, expected_result,
-                                         expected_provider, expected_model)
-            if verdict.status == "VERIFIED":
-                return verdict
-            if best is None or len(verdict.checks) >= len(best.checks):
-                best = verdict
-        return best
-
-    @staticmethod
-    def _same(actual, expected):
-        """Type-strict equality; a missing value (None) never matches anything."""
-        return actual is not None and type(actual) is type(expected) and actual == expected
-
-    def _verify_group(self, members, base_checks, expected_commit, expected_task, expected_result,
-                      expected_provider, expected_model):
-        checks = dict(base_checks)
-        candidates = [(r, p) for r, p in members if bool(expected_commit) and self._same(p.get("commit"), expected_commit)]
-        checks["commit"] = bool(candidates)
-        if not candidates:
-            return IgorVerification("BLOCK", "commit provenance mismatch", checks)
-
-        candidates = [(r, p) for r, p in candidates if self._same(p.get("task"), expected_task)]
-        checks["task"] = bool(candidates)
-        if not candidates:
+        matching_task = bool(payloads) and all(payload.get("task") == expected_task for payload in payloads)
+        checks["task"] = matching_task
+        if not matching_task:
             return IgorVerification("BLOCK", "task mismatch", checks)
 
-        candidates = [(r, p) for r, p in candidates
-                      if self._same(p.get("result"), expected_result) or self._same(p.get("tool_output"), expected_result)]
-        checks["result"] = bool(candidates)
-        if not candidates:
+        result_payloads = [
+            payload for payload in payloads
+            if payload.get("agent") in {"codeact", "multi_agent"}
+        ]
+        # No result-bearing agent record means nothing was compared: that is not a match.
+        matching_result = bool(result_payloads)
+        codeact_payload = next(
+            (payload for payload in result_payloads if payload.get("agent") == "codeact"),
+            None,
+        )
+        final_payload = next(
+            (payload for payload in result_payloads if payload.get("agent") == "multi_agent"),
+            None,
+        )
+        if codeact_payload is not None:
+            matching_result = matching_result and _same_result(codeact_payload.get("tool_output"), expected_result)
+        if final_payload is not None:
+            matching_result = matching_result and _same_result(final_payload.get("final_result"), expected_result)
+        checks["result"] = matching_result
+        if not matching_result:
             return IgorVerification("BLOCK", "result mismatch", checks)
 
-        def has_provenance(p):
-            return (isinstance(p.get("response_ids"), list) or p.get("provider") is not None
-                    or p.get("model") is not None or p.get("invocation_type") is not None)
-
-        candidates = [(r, p) for r, p in candidates if has_provenance(p)] \
-            if (expected_provider is not None or expected_model is not None) else candidates
+        provenance_payloads = [
+            payload for payload in payloads
+            if payload.get("invocation_type") is not None
+        ]
         if expected_provider is not None:
-            candidates = [(r, p) for r, p in candidates
-                          if p.get("provider") == expected_provider and p.get("invocation_type") == "real_llm"]
-            checks["provider"] = bool(candidates)
-            if not candidates:
+            checks["provider"] = bool(provenance_payloads) and all(
+                payload.get("provider") == expected_provider
+                and payload.get("invocation_type") == "real_llm"
+                for payload in provenance_payloads
+            )
+            if not checks["provider"]:
                 return IgorVerification("BLOCK", "provider provenance mismatch", checks)
             if expected_provider != "local":
-                candidates = [(r, p) for r, p in candidates
-                              if isinstance(p.get("response_ids"), list) and p["response_ids"]]
-                if not candidates:
-                    return IgorVerification("BLOCK", "real LLM response ids missing", checks)
-                checks["response_ids"] = True
+                response_identity_count = sum(
+                    1
+                    for payload in provenance_payloads
+                    if payload.get("response_id")
+                    or payload.get("response_digest")
+                    or payload.get("response_ids")
+                    or payload.get("response_digests")
+                )
+                required_identity_count = len(payloads)
+                if response_identity_count < required_identity_count:
+                    return IgorVerification("BLOCK", "real LLM response identity incomplete", checks)
+                checks["response_identity"] = (
+                    response_identity_count == 6
+                    if len(payloads) == 6
+                    else response_identity_count >= required_identity_count
+                )
         if expected_model is not None:
-            candidates = [(r, p) for r, p in candidates if p.get("model") == expected_model]
-            checks["model"] = bool(candidates)
-            if not candidates:
+            checks["model"] = bool(provenance_payloads) and all(
+                payload.get("model") == expected_model
+                for payload in provenance_payloads
+            )
+            if not checks["model"]:
                 return IgorVerification("BLOCK", "model provenance mismatch", checks)
+        if expected_invocation_type is not None:
+            checks["invocation_type"] = bool(provenance_payloads) and all(
+                payload.get("invocation_type") == expected_invocation_type
+                for payload in provenance_payloads
+            )
+            if not checks["invocation_type"]:
+                return IgorVerification("BLOCK", "invocation type provenance mismatch", checks)
+        if expected_nonce is not None:
+            nonce_values = {payload.get("replay_nonce") for payload in payloads}
+            checks["replay_nonce"] = nonce_values == {expected_nonce}
+            if not checks["replay_nonce"]:
+                return IgorVerification("BLOCK", "replay nonce provenance mismatch", checks)
 
         checks["evidence"] = True
-        evidence_ids = tuple(r.get("id") for r, _ in members if r.get("id"))
+        evidence_ids = tuple(record.get("id") for record in scoped_records if record.get("id"))
         return IgorVerification("VERIFIED", "independent verification passed", checks, evidence_ids)

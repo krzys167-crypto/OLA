@@ -3,7 +3,9 @@ import hashlib
 import json
 import operator
 import os
+import re
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
@@ -20,6 +22,14 @@ AGENT_ROLES = [
     "self_reflection",
     "multi_agent",
 ]
+
+def _replay_nonce():
+    nonce = os.getenv("OLA_REPLAY_NONCE", "").strip().lower()
+    required = os.getenv("OLA_LLM_MODE", "deterministic") == "required"
+    if required and not re.fullmatch(r"[0-9a-f]{64}", nonce):
+        raise RuntimeError("OLA_REPLAY_NONCE must be a fresh 256-bit hexadecimal challenge")
+    return nonce or "NOT_REQUIRED"
+
 
 _SAFE_BINOPS = {
     ast.Add: operator.add,
@@ -99,10 +109,17 @@ def _invoke_llm(agent, task, context):
     provider = os.getenv("OLA_LLM_PROVIDER", "openai").strip().lower()
     mode = os.getenv("OLA_LLM_MODE", "deterministic")
     prompt = canonical_json({"agent": agent, "task": task, "context": context})
-    system_message = (
-        "You are one agent in OLA di-OS. Return concise JSON-compatible reasoning output. "
-        "Do not claim tools or evidence you did not actually use."
-    )
+    if agent == "codeact":
+        system_message = (
+            "You are the CodeAct agent in OLA di-OS. Return only JSON with "
+            '{"action":"safe_expression","result":"<verified arithmetic result>"} '
+            "and no markdown. Do not claim tools or evidence you did not actually use."
+        )
+    else:
+        system_message = (
+            "You are one agent in OLA di-OS. Return concise JSON-compatible reasoning output. "
+            "Do not claim tools or evidence you did not actually use."
+        )
     import httpx
 
     if provider == "openai":
@@ -145,6 +162,8 @@ def _invoke_llm(agent, task, context):
             "prompt_digest": _digest(prompt),
             "output": output,
             "response_id": body.get("id"),
+            "response_digest": _digest(canonical_json(body)),
+            "response_id_source": "provider" if body.get("id") else "missing",
         }
 
     if provider == "ollama":
@@ -170,14 +189,16 @@ def _invoke_llm(agent, task, context):
         output = body.get("message", {}).get("content")
         if not output:
             raise RuntimeError("Ollama response contained no message content")
-        response_id = body.get("id") or f"ollama:{_digest(canonical_json(body))}"
+        provider_response_id = body.get("id")
         return {
             "provider": "ollama",
             "model": model,
             "invocation_type": "real_llm",
             "prompt_digest": _digest(prompt),
             "output": output,
-            "response_id": response_id,
+            "response_id": provider_response_id,
+            "response_digest": _digest(canonical_json(body)),
+            "response_id_source": "provider" if provider_response_id else "local_response_digest",
         }
 
     if mode == "required":
@@ -203,7 +224,22 @@ def _execute_agent(agent, tenant_id, task, previous_output, execution):
     }
     model = _invoke_llm(agent, task, context) or _invoke_local_deterministic_model(agent, task, context)
     if agent == "codeact":
-        tool_output = _safe_expression(task)
+        if model["invocation_type"] == "real_llm":
+            try:
+                proposal = json.loads(model["output"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise RuntimeError("real LLM codeact output must be JSON") from exc
+            if not isinstance(proposal, dict) or proposal.get("action") != "safe_expression":
+                raise RuntimeError("real LLM codeact output must declare safe_expression")
+            proposed_result = str(proposal.get("result", ""))
+            verified_result = _safe_expression(task)
+            if proposed_result != verified_result:
+                raise RuntimeError(
+                    f"LLM proposed result {proposed_result!r}, verified execution result is {verified_result!r}"
+                )
+            tool_output = proposed_result
+        else:
+            tool_output = _safe_expression(task)
         result = {"capability": "executed_safe_expression", "tool": "safe_expression", "tool_output": tool_output, "result": f"safe execution returned {tool_output}"}
     elif agent == "react":
         data = _run_react(task, previous_output)
@@ -236,11 +272,13 @@ def _execute_agent(agent, tenant_id, task, previous_output, execution):
         "invocation_type": model["invocation_type"],
         "prompt_digest": model["prompt_digest"],
         "response_id": model.get("response_id"),
+        "response_digest": model.get("response_digest"),
+        "response_id_source": model.get("response_id_source"),
     })
     return result
 
 
-def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution):
+def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution, replay_nonce):
     agent_instance_id = str(uuid.uuid4())
     context = {
         "run_id": run_id,
@@ -250,14 +288,21 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
         "previous_output": previous_output,
         "upstream_agents": [item["agent"] for item in execution],
     }
+    started_at = datetime.now(timezone.utc).isoformat()
+    execution_output = _execute_agent(agent, tenant_id, task, previous_output, execution)
+    ended_at = datetime.now(timezone.utc).isoformat()
     output = {
         "agent": agent,
         "agent_instance_id": agent_instance_id,
         "execution_boundary": "independent",
+        "source_commit": os.getenv("OLA_SOURCE_COMMIT", "UNKNOWN"),
+        "replay_nonce": replay_nonce,
         "context_digest": _digest(canonical_json(context)),
         "task": task,
         "input_digest": _digest(json.dumps(previous_output, sort_keys=True)),
-        **_execute_agent(agent, tenant_id, task, previous_output, execution),
+        "started_at": started_at,
+        "ended_at": ended_at,
+        **execution_output,
         "status": "VERIFIED",
         "llm_required": os.getenv("OLA_LLM_MODE", "deterministic") == "required",
     }
@@ -274,11 +319,12 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
 
 def run_agent_task(tenant_id, task):
     run_id = str(uuid.uuid4())
+    replay_nonce = _replay_nonce()
     evidence_ids = []
     execution = []
     previous_output = {"task": task}
     for agent in AGENT_ROLES:
-        evidence_id, output = _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution)
+        evidence_id, output = _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution, replay_nonce)
         evidence_ids.append(evidence_id)
         execution.append(output)
         previous_output = output
@@ -286,6 +332,8 @@ def run_agent_task(tenant_id, task):
     final_result = execution[-1].get("final_result") if execution else None
     result = {
         "run_id": run_id,
+        "source_commit": os.getenv("OLA_SOURCE_COMMIT", os.getenv("OLA_RUNTIME_COMMIT", "UNKNOWN")),
+        "replay_nonce": replay_nonce,
         "task": task,
         "final_result": final_result,
         "status": verification["status"],
@@ -383,17 +431,30 @@ def verify_agent_run(tenant_id, run_id):
     context_digests = set()
     for row in run_rows:
         payload = json.loads(row.payload_json)
-        required = {"capability", "tool", "tool_output", "result", "status", "agent_instance_id", "execution_boundary", "context_digest", "invocation_type", "model", "provider", "response_id"}
+        required = {"capability", "tool", "tool_output", "result", "status", "agent_instance_id", "execution_boundary", "source_commit", "replay_nonce", "context_digest", "invocation_type", "model", "provider", "response_id", "response_digest", "started_at", "ended_at"}
         if not required.issubset(payload):
             return {"status": "BLOCK", "reason": "agent execution evidence incomplete", "evidence_count": len(run_rows)}
         if payload["status"] != "VERIFIED":
             return {"status": "BLOCK", "reason": "agent execution not verified", "evidence_count": len(run_rows)}
         if payload["execution_boundary"] != "independent":
             return {"status": "BLOCK", "reason": "agent execution boundary is not independent", "evidence_count": len(run_rows)}
+        if payload["invocation_type"] == "real_llm" and not (payload.get("response_id") or payload.get("response_digest")):
+            return {"status": "BLOCK", "reason": "real LLM response identity missing", "evidence_count": len(run_rows)}
+        if payload["invocation_type"] == "real_llm" and not (payload.get("response_id") or payload.get("response_digest")):
+            return {"status": "BLOCK", "reason": "real LLM response identity missing", "evidence_count": len(run_rows)}
         instance_ids.add(payload["agent_instance_id"])
         context_digests.add(payload["context_digest"])
     if len(instance_ids) != len(AGENT_ROLES) or len(context_digests) != len(AGENT_ROLES):
         return {"status": "BLOCK", "reason": "agent instances or contexts are not unique", "evidence_count": len(run_rows)}
+    source_commits = {json.loads(row.payload_json).get("source_commit") for row in run_rows}
+    if len(source_commits) != 1 or None in source_commits:
+        return {"status": "BLOCK", "reason": "source commit binding is missing or inconsistent", "evidence_count": len(run_rows)}
+    source_commits = {json.loads(row.payload_json).get("source_commit") for row in run_rows}
+    if len(source_commits) != 1 or None in source_commits:
+        return {"status": "BLOCK", "reason": "source commit binding is missing or inconsistent", "evidence_count": len(run_rows)}
+    replay_nonces = {json.loads(row.payload_json).get("replay_nonce") for row in run_rows}
+    if len(replay_nonces) != 1:
+        return {"status": "BLOCK", "reason": "replay nonce mismatch across evidence", "evidence_count": len(run_rows)}
     chain = [{"tenant_id": row.tenant_id, "seq": row.seq, "prev_hash": row.prev_hash, "record_hash": row.record_hash, "payload_json": row.payload_json} for row in rows]
     chain_ok, reason = verify_chain(chain)
     if not chain_ok:

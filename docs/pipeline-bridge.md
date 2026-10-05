@@ -220,24 +220,27 @@ Honest limits
 * Not yet wired: `/nina-run`, `/business-invoice-run`, `/checkout`. Not measured against a real model in CI
   (the tests use the Ollama test double); `shadow` on a real Ollama is the way to collect that data.
 
-## Upstream IGOR hardening (a59f8c1)
+## Upstream IGOR hardening (on upstream PR #60, 8afdb7d)
 
-Black-box probing of the upstream NINA/IGOR boundary (34 probes, `scripts`-free: see the PR) found these gaps in
-the deterministic verifier. Each is now a test (`tests/test_igor_hardening.py`, red on the upstream code) and a fix.
+Black-box probing of the upstream NINA/IGOR boundary found the gaps below. On a59f8c1 they were red; PR #60
+(`IgorVerifier` rewritten: `agent.*` records only, `all()` instead of `any()`, `source_commit`, replay nonce) closes
+the record/run splicing ones. What is still red on PR #60, and fixed here (`tests/test_igor_hardening.py`):
 
-| Gap | Fix |
+| Gap on PR #60 | Fix |
 |---|---|
-| `IgorVerifier`: commit, task and result were each satisfied by `any(...)` over *different* records | one record of one run must carry commit + task + result (the `provenance.runtime` record of a real `/nina-run` does) |
-| without `expected_run_id` records of different runs were mixed | evidence is grouped by `run_id`; one complete run must verify; `evidence_ids` are that run's |
-| provider and model could come from different records | provider, `real_llm`, response ids and model must come from the record that carries the claim |
-| `str(None) == str(None)`, `42 == "42"` | type-strict equality; a missing value never matches |
-| malformed / non-object payload -> exception | not evidence (skipped); never VERIFIED |
+| no `codeact`/`multi_agent` record in the run -> the result was **not compared at all** and the run VERIFIED | no result-bearing record = result mismatch |
+| `str(None) == "None"`: a missing `tool_output`/`final_result` matched an expected `"None"` | a missing value never matches |
+| malformed or non-object payload in the chain -> `JSONDecodeError`/`AttributeError` inside the verifier | not evidence; never VERIFIED; no crash |
 | `NinaOrchestrator.plan` -> `TypeError` (HTTP 500) for non-string tool names | BLOCK; a non-list container is a `ValueError` |
 | `NinaIgorChain.derive_status` -> `TypeError` for list/dict values | BLOCK |
 | `HumanGate`: any truthy `approved` ("false", 1) approved; non-string actor crashed | only boolean `True` approves; otherwise BLOCK |
 
-Not changed (design level, not a bug fix): the tool allow-list is checked *before* the runtime call, not inside the
-runtime; IGOR does not see a model digest (the `ola_pipeline` path does).
+One upstream test fixture was changed on purpose: `tests/test_igor.py::test_igor_scopes_checks_to_current_run_but_verifies_full_chain`
+used a lone `react` record and relied on the result not being compared. It now carries a `codeact` record with a `tool_output`.
+
+Not changed (design level): the tool allow-list is checked *before* the runtime call, not inside the runtime; the
+upstream IGOR does not see a model digest (the `ola_pipeline` path does). F07 (`/payment-success` isolation) is closed
+by PR #60 itself (`tests/test_payment_success_isolation.py`, `tests/test_payment_binding.py`).
 
 CI: job `live-ambient` (`tests/test_ambient_live.py`) runs shadow and enforce against a real Ollama judge
 (llama3.2:3b, qwen3:1.7b) with a stub answerer and publishes the observed verdicts as `LIVE RESULT:` annotations.

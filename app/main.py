@@ -15,12 +15,13 @@ from .nina import NinaOrchestrator, NinaTask
 from .igor import IgorVerifier
 from .replay import build_replay, verify_replay
 from .human_gate import HumanGate, ReviewDecision
-from .nina_igor import NinaIgorChain
+from .nina_igor import NinaIgorChain, STATUS_FIELDS
 from .decision_report import build_decision_report
 from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout, payment_verified
 from .stripe_webhook import process_checkout_event
 from . import ambient, pipeline_bridge
+from .payment_binding import checkout_result_matches
 
 app = FastAPI(title="OLA Execution Gate")
 Base.metadata.create_all(bind=engine)
@@ -228,12 +229,40 @@ def payment_success(session_id: str):
         return {"status": "BLOCK", "reason": "paid session has no task", "session_id": session_id}
 
     with SessionLocal() as db:
-        completed = db.scalar(
-            select(StripeEvent).where(
-                StripeEvent.status == "COMPLETED",
-                StripeEvent.task == task,
-            )
+        completed = None
+        bound_result = None
+        evidence_rows = db.scalars(
+            select(EvidenceRecord).where(
+                EvidenceRecord.tenant_id == tenant_id,
+                EvidenceRecord.record_type == "stripe.ola_execution_completed",
+            ).order_by(EvidenceRecord.seq.desc())
         )
+        for evidence_row in evidence_rows:
+            try:
+                evidence = json.loads(evidence_row.payload_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(evidence, dict) or evidence.get("checkout_session_id") != session_id:
+                continue
+            candidate = db.scalar(
+                select(StripeEvent).where(
+                    StripeEvent.event_id == evidence.get("stripe_event_id"),
+                    StripeEvent.status == "COMPLETED",
+                    StripeEvent.task == task,
+                    StripeEvent.run_id == evidence.get("ola_run_id"),
+                )
+            )
+            if candidate is None:
+                continue
+            try:
+                result = json.loads(candidate.result_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            evidence["tenant_id"] = evidence_row.tenant_id
+            if checkout_result_matches(tenant_id, session_id, task, evidence, candidate, result):
+                completed = candidate
+                bound_result = result
+                break
 
     if completed is None:
         return {
@@ -249,7 +278,7 @@ def payment_success(session_id: str):
         "task": task,
         "execution": "STRIPE_WEBHOOK",
         "run_id": completed.run_id,
-        "result": json.loads(completed.result_json) if completed.result_json else None,
+        "result": bound_result,
     }
 
 
@@ -319,11 +348,13 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
     runtime = nina.execute(nina_task)
     run_id = runtime["runtime"]["run_id"]
     execution = runtime["runtime"].get("execution", [])
-    runtime_commit = os.getenv("OLA_RUNTIME_COMMIT")
+    replay_nonce = runtime["runtime"].get("replay_nonce")
+    runtime_commit = os.getenv("OLA_SOURCE_COMMIT") or os.getenv("OLA_RUNTIME_COMMIT")
     provider = execution[0].get("provider") if execution else None
     model = execution[0].get("model") if execution else None
     invocation_type = execution[0].get("invocation_type") if execution else None
     response_ids = [item.get("response_id") for item in execution if item.get("response_id")]
+    response_digests = [item.get("response_digest") for item in execution if item.get("response_digest")]
     append_record(
         tenant_id,
         "provenance.runtime",
@@ -337,7 +368,10 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
             "invocation_type": invocation_type,
             "llm_invocations": len(execution),
             "response_ids": response_ids,
+            "response_digests": response_digests,
+            "source_commit": runtime_commit or "UNKNOWN",
             "requester_id": requester_id,
+            "replay_nonce": replay_nonce,
         },
     )
 
@@ -380,6 +414,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         expected_provider=expected_provider,
         expected_model=expected_model,
         expected_run_id=run_id,
+        expected_nonce=replay_nonce,
     )
     replay = build_replay(record_dicts)
     replay_verification = verify_replay(
@@ -413,7 +448,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
             and invocation_type
             and (
                 invocation_type != "real_llm"
-                or len(response_ids) == len(execution)
+                or len(response_ids) + len(response_digests) >= len(execution)
             )
         ) else "BLOCK",
         "commit": runtime_commit or "UNKNOWN",
@@ -422,6 +457,9 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         "invocation_type": invocation_type,
         "llm_invocations": len(execution),
         "response_ids": response_ids,
+        "response_digests": response_digests,
+        "source_commit": runtime_commit or "UNKNOWN",
+        "replay_nonce": replay_nonce,
     }
     report = build_decision_report(
         task_id=nina_task.task_id,
@@ -526,7 +564,11 @@ def approve_nina_run(
     candidate_fields = candidate.get("status_fields")
     if not isinstance(candidate_fields, dict):
         raise HTTPException(status_code=409, detail="decision candidate status fields are invalid")
-    approved_fields = dict(candidate_fields)
+    if set(candidate_fields) != set(STATUS_FIELDS) | {"EXECUTION_ALLOWED"}:
+        raise HTTPException(status_code=409, detail="decision candidate status fields are invalid")
+    approved_fields = {field: candidate_fields[field] for field in STATUS_FIELDS}
+    if NinaIgorChain.derive_status(approved_fields) != candidate_fields["EXECUTION_ALLOWED"]:
+        raise HTTPException(status_code=409, detail="decision candidate aggregate is inconsistent")
     approved_fields["HUMAN_GATE"] = "VERIFIED"
     if NinaIgorChain.derive_status(approved_fields) != "VERIFIED":
         raise HTTPException(status_code=409, detail="candidate is not eligible for human approval")

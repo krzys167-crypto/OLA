@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   e2e:
     runs-on: ubuntu-latest
@@ -23,6 +26,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -40,11 +45,11 @@ jobs:
         run: python scripts/verify_readme_claims.py
 
       - name: Build deployment image
-        run: docker build --tag ola:${GITHUB_SHA} .
+        run: docker build --tag ola:${SOURCE_SHA} .
 
       - name: Run deployment image
         run: |
-          docker run --detach --rm --name ola-e2e --publish 8000:8000 -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola:${GITHUB_SHA}
+          docker run --detach --rm --name ola-e2e --publish 8000:8000 -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola:${SOURCE_SHA}
           for i in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
               exit 0
@@ -56,7 +61,7 @@ jobs:
 
       - name: Independent runtime E2E proof
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.SOURCE_SHA }}
         run: |
           docker exec -i -e EXPECTED_COMMIT="$EXPECTED_COMMIT" ola-e2e python - <<'PY'
           import hashlib, json, os, sqlite3, urllib.request, uuid
@@ -122,7 +127,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OLA_LLM_MODE: required
           OLA_LLM_MODEL: gpt-5.6-luna
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.SOURCE_SHA }}
           EXPECTED_TASK: Calculate 17 * 23 and return the verified result.
           EXPECTED_RESULT: "391"
         run: |
@@ -253,14 +258,14 @@ jobs:
           docker inspect ola-e2e > docker-inspect.json 2>&1 || true
           docker logs ola-e2e > docker-runtime.log 2>&1 || true
           sha256sum docker-inspect.json docker-runtime.log agent-runtime-proof.json business-invoice-proof.json > runtime-file-hashes.txt || true
-          printf '%s\n' "commit=${GITHUB_SHA}" "run=${GITHUB_RUN_ID}" > provenance.txt
+          printf '%s\n' "commit=${SOURCE_SHA}" "run=${GITHUB_RUN_ID}" > provenance.txt
           sha256sum provenance.txt >> runtime-file-hashes.txt || true
 
       - name: Upload runtime evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ola-runtime-e2e-${{ github.sha }}
+          name: ola-runtime-e2e-${{ env.SOURCE_SHA }}
           path: |
             docker-inspect.json
             docker-runtime.log

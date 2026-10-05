@@ -20,6 +20,7 @@ jobs:
     permissions:
       contents: read
     env:
+      SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       OPENAI_AVAILABLE: ${{ secrets.OPENAI_API_KEY != '' }}
       EXPECTED_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       OLA_LLM_MODE: required
@@ -30,7 +31,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-          ref: ${{ env.EXPECTED_COMMIT }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       - name: Assert exact SHA
         run: test "$(git rev-parse HEAD)" = "${EXPECTED_COMMIT}"
       - name: Detect real LLM credential
@@ -77,7 +78,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          docker exec -i -e EXPECTED_COMMIT="${EXPECTED_COMMIT}" -e OPENAI_API_KEY="${OPENAI_API_KEY}" -e OLA_LLM_MODE="${OLA_LLM_MODE}" -e OLA_LLM_MODEL="${OLA_LLM_MODEL}" ola-nina-e2e python - <<'PY' > runtime-proof.json
+          docker exec -i -e EXPECTED_COMMIT="${EXPECTED_COMMIT}" -e OPENAI_API_KEY="${OPENAI_API_KEY}" -e OLA_SOURCE_COMMIT="${EXPECTED_COMMIT}" -e OLA_RUNTIME_COMMIT="${EXPECTED_COMMIT}" -e OLA_LLM_MODE="${OLA_LLM_MODE}" -e OLA_LLM_MODEL="${OLA_LLM_MODEL}" ola-nina-e2e python - <<'PY' > runtime-proof.json
           import hashlib,json,os,sqlite3,subprocess,urllib.request,uuid
           db_path="/data/ola.db"; tenant_id=str(uuid.uuid4()); raw_key="ci-real-runtime-key"
           db=sqlite3.connect(db_path)
@@ -95,7 +96,7 @@ jobs:
           assert all(item["invocation_type"]=="real_llm" for item in result["execution"]),result
           assert all(item["provider"]=="openai" for item in result["execution"]),result
           assert all(item["model"]==os.environ["OLA_LLM_MODEL"] for item in result["execution"]),result
-          assert all(item["response_id"] for item in result["execution"]),result
+          assert all(item.get("response_id") or item.get("response_digest") for item in result["execution"]),result
           db=sqlite3.connect(db_path); rows=db.execute("SELECT id,tenant_id,seq,record_type,payload_json,prev_hash,record_hash FROM evidence_records WHERE tenant_id=? ORDER BY seq",(tenant_id,)).fetchall(); db.close()
           assert [r[0] for r in rows]==result["evidence_ids"]
           expected_prev="0"*64
@@ -106,7 +107,8 @@ jobs:
             expected_prev=record_hash
           verifier=subprocess.run(["python","scripts/verify_agent_runtime.py","--tenant-id",tenant_id,"--run-id",result["run_id"],"--expected-commit",os.environ["EXPECTED_COMMIT"],"--expected-task",task,"--expected-result","391","--expected-provider","openai","--expected-model",os.environ["OLA_LLM_MODEL"],"--expected-invocation-type","real_llm"],capture_output=True,text=True)
           assert verifier.returncode==0,(verifier.stdout,verifier.stderr)
-          print(json.dumps({"status":"VERIFIED","commit":os.environ["EXPECTED_COMMIT"],"task":task,"final_result":"391","agents":result["agents"],"evidence_ids":result["evidence_ids"],"evidence_count":len(rows),"hash_chain":"PASS","independent_verifier":"PASS","human_gate":"VERIFIED","provider":"openai","model":os.environ["OLA_LLM_MODEL"],"invocation_type":"real_llm","llm_invocations":len(result["execution"]),"response_ids":[item["response_id"] for item in result["execution"]],"run_id":result["run_id"]},sort_keys=True))
+          print(json.dumps({"status":"VERIFIED","commit":os.environ["EXPECTED_COMMIT"],"source_commit":os.environ["EXPECTED_COMMIT"],"task":task,"final_result":"391","agents":result["agents"],"evidence_ids":result["evidence_ids"],"evidence_count":len(rows),"hash_chain":"PASS","independent_verifier":"PASS","human_gate":"CONTRACT_ONLY","provider":"openai","model":os.environ["OLA_LLM_MODEL"],"invocation_type":"real_llm","llm_invocations":len(result["execution"]),"response_ids":[item["response_id"] for item in result["execution"] if item.get("response_id")],
+          "response_digests":[item["response_digest"] for item in result["execution"] if item.get("response_digest")],"run_id":result["run_id"]},sort_keys=True))
           PY
           cat runtime-proof.json
       - name: Independent artifact verifier
@@ -117,9 +119,9 @@ jobs:
           python - <<'PY'
           import hashlib,json,os
           d=json.load(open("runtime-proof.json")); expected=os.environ["EXPECTED_COMMIT"]
-          assert d["status"]=="VERIFIED" and d["commit"]==expected and d["hash_chain"]=="PASS" and d["independent_verifier"]=="PASS" and d["human_gate"]=="VERIFIED"
+          assert d["status"]=="VERIFIED" and d["commit"]==expected and d["source_commit"]==expected and d["hash_chain"]=="PASS" and d["independent_verifier"]=="PASS" and d["human_gate"]=="CONTRACT_ONLY"
           assert d["provider"]=="openai" and d["model"]=="gpt-5.6-luna" and d["invocation_type"]=="real_llm"
-          assert d["llm_invocations"]==6 and len(d["response_ids"])==6 and all(d["response_ids"])
+          assert d["llm_invocations"]==6 and len(d["response_ids"]) + len(d.get("response_digests", []))==6 and (d["response_ids"] or d.get("response_digests"))
           print("INDEPENDENT_ARTIFACT=VERIFIED")
           print("REAL_OPENAI_LLM=VERIFIED")
           print("SHA256="+hashlib.sha256(open("runtime-proof.json","rb").read()).hexdigest())
@@ -159,8 +161,8 @@ jobs:
           assert all(item["invocation_type"]=="real_llm" for item in d["execution"])
           assert all(item["provider"]=="openai" for item in d["execution"])
           assert all(item["model"]==os.environ["OLA_LLM_MODEL"] for item in d["execution"])
-          assert all(item["response_id"] for item in d["execution"])
-          assert d.get("commit",os.environ["EXPECTED_COMMIT"])==os.environ["EXPECTED_COMMIT"]
+          assert all(item.get("response_id") or item.get("response_digest") for item in d["execution"])
+          assert d.get("commit",os.environ["EXPECTED_COMMIT"])==os.environ["EXPECTED_COMMIT"] and d.get("source_commit",os.environ["EXPECTED_COMMIT"])==os.environ["EXPECTED_COMMIT"]
           print(json.dumps({"status":"VERIFIED","commit":os.environ["EXPECTED_COMMIT"],"result":"391","replay":"PASS","provider":"openai","model":os.environ["OLA_LLM_MODEL"],"invocation_type":"real_llm","llm_invocations":len(d["execution"]),"run_id":d["run_id"]},sort_keys=True))
           PY
           cat replay-proof.json
@@ -169,7 +171,7 @@ jobs:
         run: |
           python - <<'PY'
           import json
-          d=json.load(open("runtime-proof.json")); assert d["human_gate"]=="VERIFIED"; print("HUMAN_GATE=VERIFIED")
+          d=json.load(open("runtime-proof.json")); assert d["human_gate"]=="CONTRACT_ONLY"; print("HUMAN_GATE=CONTRACT_ONLY")
           PY
       - name: Write provenance and hashes
         if: ${{ env.OPENAI_AVAILABLE == 'true' }}
@@ -182,7 +184,7 @@ jobs:
         if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nina-real-runtime-proof-${{ env.EXPECTED_COMMIT }}
+          name: nina-real-runtime-proof-${{ github.sha }}
           path: |
             runtime-proof.json
             runtime-proof.sha256

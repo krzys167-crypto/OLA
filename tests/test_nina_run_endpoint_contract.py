@@ -16,6 +16,7 @@ def test_nina_run_route_exists():
 
 def test_nina_run_executes_chain_but_does_not_self_approve():
     commit = "TEST_NINA_E2E_COMMIT"
+    os.environ["OLA_SOURCE_COMMIT"] = commit
     os.environ["OLA_RUNTIME_COMMIT"] = commit
 
     tenant_id = str(uuid.uuid4())

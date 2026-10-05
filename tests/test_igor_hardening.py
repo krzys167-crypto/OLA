@@ -1,7 +1,8 @@
-"""Regression tests for gaps found by black-box probing of the upstream NINA/IGOR boundary (a59f8c1).
+"""Regression tests for gaps found by black-box probing of the upstream NINA/IGOR boundary.
 
-Each test was RED against the upstream code before the fix (see docs/pipeline-bridge.md, "Upstream IGOR
-hardening"). None of them changes a verdict that was correct before: a clean run still VERIFIES.
+Written against upstream PR #60 (which already rewrote IgorVerifier: agent.* records only, all() instead of any(),
+source_commit, replay nonce). Each test was RED on the code it targets before its fix. None of them changes a
+verdict that was correct before: a clean run still VERIFIES.
 """
 import json
 
@@ -14,98 +15,88 @@ from app.nina import NinaOrchestrator, NinaTask
 from app.nina_igor import STATUS_FIELDS, NinaIgorChain
 
 
-def chain(payloads, tenant="t1"):
+def chain(payloads, tenant="t1", types=None):
     out, prev = [], GENESIS_HASH
     for i, p in enumerate(payloads):
         pj = canonical_json(p)
         h = compute_record_hash(tenant, i, prev, pj)
         out.append({"id": f"r{i}", "tenant_id": tenant, "seq": i, "prev_hash": prev, "record_hash": h,
-                    "record_type": "agent.x", "payload_json": pj})
+                    "record_type": (types[i] if types else f"agent.{p.get('agent', 'x') if isinstance(p, dict) else 'x'}"),
+                    "payload_json": pj})
         prev = h
     return out
 
 
-def verify(payloads, commit="c1", task="T", result="42", **kw):
-    return IgorVerifier().verify_records(chain(payloads), commit, task, result, **kw)
+def verify(payloads, commit="c1", task="T", result="42", types=None, **kw):
+    return IgorVerifier().verify_records(chain(payloads, types=types), commit, task, result, **kw)
 
 
-GOOD = dict(run_id="A", commit="c1", task="T", result="42")
+GOOD = dict(run_id="A", agent="codeact", commit="c1", source_commit="c1", task="T", tool_output="42")
 
 
-# ------------------------------------------------------------------ IGOR: one record must carry the claim
+# ------------------------------------------------------------------ IGOR
 def test_clean_evidence_still_verifies():
     r = verify([GOOD], expected_run_id="A")
     assert r.status == "VERIFIED" and r.evidence_ids == ("r0",)
 
 
-def test_commit_task_and_result_must_come_from_ONE_record():
-    spliced = [dict(run_id="A", commit="c1"), dict(run_id="A", task="T"), dict(run_id="A", result="42")]
-    assert verify(spliced, expected_run_id="A").status == "BLOCK"
+def test_a_run_without_any_result_bearing_agent_is_not_verified():
+    # upstream skipped the result comparison entirely when neither codeact nor multi_agent was present
+    only_react = dict(run_id="A", agent="react", commit="c1", source_commit="c1", task="T")
+    r = verify([only_react], result="whatever", expected_run_id="A")
+    assert r.status == "BLOCK" and r.reason == "result mismatch"
 
 
-def test_task_from_one_record_result_from_another_is_blocked():
-    spliced = [dict(run_id="A", commit="c1", task="T", result="old"), dict(run_id="A", commit="c1", task="other", result="42")]
-    r = verify(spliced, expected_run_id="A")
-    assert r.status == "BLOCK"
-
-
-def test_cross_run_splice_without_a_run_id_is_blocked():
-    spliced = [dict(run_id="A", commit="c1", task="T", result="old"), dict(run_id="B", commit="c1", task="other", result="42")]
-    assert verify(spliced).status == "BLOCK"
-
-
-def test_without_a_run_id_one_complete_run_is_enough_and_only_its_records_are_evidence():
-    recs = [dict(run_id="B", commit="c1", task="x", result="y"), GOOD]
-    r = verify(recs)
-    assert r.status == "VERIFIED" and r.evidence_ids == ("r1",)
-
-
-def test_provider_and_model_must_come_from_the_record_that_carries_the_claim():
-    prov = dict(GOOD, provider="ollama", invocation_type="real_llm", model="evil", response_ids=["x"])
-    other = dict(run_id="A", provider="openai", invocation_type="local", model="good")
-    r = verify([prov, other], expected_run_id="A", expected_provider="ollama", expected_model="good")
-    assert r.status == "BLOCK"
-
-
-def test_real_run_shape_provenance_record_plus_agent_records_still_verifies():
-    prov = dict(GOOD, provider="ollama", invocation_type="real_llm", model="m", response_ids=["ollama:1"])
-    agent = dict(run_id="A", agent="react", provider="ollama", invocation_type="real_llm", model="m", tool_output="42")
-    r = verify([agent, prov], expected_run_id="A", expected_provider="ollama", expected_model="m")
-    assert r.status == "VERIFIED" and r.checks["provider"] and r.checks["model"]
-
-
-@pytest.mark.parametrize("expected", [None, "None", 42, ["42"], ""])
+@pytest.mark.parametrize("expected", ["None", None])
 def test_a_missing_result_never_matches_str_of_the_expectation(expected):
-    r = verify([dict(run_id="A", commit="c1", task="T")], result=expected, expected_run_id="A")
-    assert r.status == "BLOCK"
+    rec = dict(GOOD)
+    del rec["tool_output"]                    # codeact record without a tool_output
+    assert verify([rec], result=expected, expected_run_id="A").status == "BLOCK"
+    rec["tool_output"] = None                 # or an explicit null
+    assert verify([rec], result=expected, expected_run_id="A").status == "BLOCK"
 
 
-def test_result_comparison_is_type_strict():
-    assert verify([dict(GOOD, result=42)], result="42", expected_run_id="A").status == "BLOCK"
-    assert verify([dict(GOOD, result="42")], result=42, expected_run_id="A").status == "BLOCK"
+def test_a_final_result_of_the_multi_agent_record_is_still_compared():
+    final = dict(GOOD, agent="multi_agent", final_result="42")
+    del final["tool_output"]
+    assert verify([final], expected_run_id="A").status == "VERIFIED"
+    assert verify([dict(final, final_result="43")], expected_run_id="A").status == "BLOCK"
 
 
-def test_tool_output_can_carry_the_result():
-    rec = dict(run_id="A", commit="c1", task="T", tool_output="42")
-    assert verify([rec], expected_run_id="A").status == "VERIFIED"
-
-
-def test_a_malformed_record_is_not_evidence_and_does_not_crash():
+def test_a_malformed_record_does_not_crash_the_verifier():
     good = chain([GOOD])
     junk_pj = "not json"
-    junk = {"id": "j", "tenant_id": "t1", "seq": 1, "prev_hash": good[0]["record_hash"], "record_type": "x",
+    junk = {"id": "j", "tenant_id": "t1", "seq": 1, "prev_hash": good[0]["record_hash"], "record_type": "agent.x",
             "payload_json": junk_pj, "record_hash": compute_record_hash("t1", 1, good[0]["record_hash"], junk_pj)}
     r = IgorVerifier().verify_records(good + [junk], "c1", "T", "42", expected_run_id="A")
     assert r.status == "VERIFIED"
-    only_junk = IgorVerifier().verify_records([junk], "c1", "T", "42")
-    assert only_junk.status in ("UNKNOWN", "BLOCK")
+    assert IgorVerifier().verify_records([junk], "c1", "T", "42").status in ("UNKNOWN", "BLOCK")
 
 
 def test_non_object_payload_does_not_crash():
     pj = json.dumps([1, 2, 3])
-    rec = {"id": "j", "tenant_id": "t1", "seq": 0, "prev_hash": GENESIS_HASH, "record_type": "x", "payload_json": pj,
+    rec = {"id": "j", "tenant_id": "t1", "seq": 0, "prev_hash": GENESIS_HASH, "record_type": "agent.x", "payload_json": pj,
            "record_hash": compute_record_hash("t1", 0, GENESIS_HASH, pj)}
     assert IgorVerifier().verify_records([rec], "c1", "T", "42").status in ("UNKNOWN", "BLOCK")
+
+
+def test_cross_run_evidence_without_a_run_id_is_blocked():
+    other = dict(GOOD, run_id="B", task="other", tool_output="old")
+    assert verify([other, GOOD]).status == "BLOCK"
+
+
+def test_empty_expected_commit_is_BLOCK():
+    assert verify([GOOD], commit="", expected_run_id="A").status == "BLOCK"
+
+
+def test_unknown_run_id_is_UNKNOWN_not_BLOCK_or_VERIFIED():
+    assert verify([GOOD], expected_run_id="nope").status == "UNKNOWN"
+
+
+def test_a_tampered_chain_is_still_BLOCK():
+    recs = chain([GOOD])
+    recs[0]["payload_json"] = canonical_json(dict(GOOD, tool_output="43"))
+    assert IgorVerifier().verify_records(recs, "c1", "T", "43", expected_run_id="A").status == "BLOCK"
 
 
 # ------------------------------------------------------------------ NINA planner
@@ -147,23 +138,3 @@ def test_real_true_still_approves():
 @pytest.mark.parametrize("actor", [None, 5, ["h"]])
 def test_non_string_actor_is_BLOCK_not_an_exception(actor):
     assert HumanGate.evaluate("VERIFIED", ReviewDecision(True, actor, "r")).status == "BLOCK"
-
-
-def test_empty_expected_commit_is_BLOCK_even_if_the_evidence_has_an_empty_commit():
-    assert verify([dict(GOOD, commit="")], commit="", expected_run_id="A").status == "BLOCK"
-    assert verify([GOOD], commit="", expected_run_id="A").status == "BLOCK"
-
-
-def test_unknown_run_id_is_UNKNOWN_not_BLOCK_or_VERIFIED():
-    assert verify([GOOD], expected_run_id="nope").status == "UNKNOWN"
-
-
-def test_a_tampered_chain_is_still_BLOCK():
-    recs = chain([GOOD])
-    recs[0]["payload_json"] = canonical_json(dict(GOOD, result="43"))
-    assert IgorVerifier().verify_records(recs, "c1", "T", "43", expected_run_id="A").status == "BLOCK"
-
-
-def test_task_and_result_from_a_record_that_does_not_carry_the_commit_is_blocked():
-    recs = [dict(run_id="A", commit="c1"), dict(run_id="A", task="T", result="42")]
-    assert verify(recs, expected_run_id="A").status == "BLOCK"

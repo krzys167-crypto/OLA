@@ -22,6 +22,7 @@ def _tenant():
 
 def test_six_agents_produce_verified_final_result_with_external_verifier():
     tenant_id = _tenant()
+    os.environ["OLA_SOURCE_COMMIT"] = "TEST_COMMIT"
     result = run_agent_task(tenant_id, REAL_TASK)
 
     assert result["status"] == "VERIFIED", result

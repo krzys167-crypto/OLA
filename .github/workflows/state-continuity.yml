@@ -3,6 +3,9 @@ name: OLA State Continuity and Stability
 on:
   pull_request:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -10,10 +13,14 @@ permissions:
 jobs:
   continuity:
     runs-on: ubuntu-latest
+    env:
+      TARGET_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+          ref: ${{ env.TARGET_COMMIT }}
+          fetch-depth: 0
       - name: Build runtime image
         run: docker build -t ola-state-continuity .
       - name: Start runtime with persistent volume
@@ -82,14 +89,31 @@ jobs:
         run: |
           set -euo pipefail
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null; sleep 1; done
+      - name: Write evidence correlation context
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          context = {
+              "schema": "ola-evidence-context-v1",
+              "source_commit": os.environ["TARGET_COMMIT"],
+              "github_run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "correlation_key": os.environ["TARGET_COMMIT"],
+          }
+          json.dump(context, open("evidence-context.json", "w", encoding="utf-8"), sort_keys=True, indent=2)
+          PY
+
       - name: Upload continuity evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ola-state-continuity-${{ github.sha }}
+          name: ola-state-continuity-${{ env.TARGET_COMMIT }}
           path: |
             first.json
             second.json
             checkpoint.json
             restored-checkpoint.json
             final-checkpoint.json
+            evidence-context.json

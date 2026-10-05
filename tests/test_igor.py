@@ -4,9 +4,18 @@ from app.igor import IgorVerifier
 from app.hashchain import compute_record_hash
 
 
-def _record(commit="abc", result="391"):
-    payload = {"run_id": "r1", "commit": commit, "task": "Calculate 17 * 23", "result": result}
+def _record(commit="abc", result="391", source_commit=None):
+    source_commit = commit if source_commit is None else source_commit
+    payload = {
+        "run_id": "r1",
+        "commit": commit,
+        "source_commit": source_commit,
+        "agent": "codeact",
+        "task": "Calculate 17 * 23",
+        "tool_output": result,
+    }
     record = {
+        "record_type": "agent.codeact",
         "tenant_id": "tenant-1",
         "seq": 0,
         "prev_hash": "0" * 64,
@@ -26,7 +35,7 @@ def test_igor_clean_run_verifies():
 def test_igor_wrong_commit_blocks():
     result = IgorVerifier().verify_records([_record()], "wrong", "Calculate 17 * 23", "391")
     assert result.status == "BLOCK"
-    assert result.reason == "commit provenance mismatch"
+    assert result.reason == "commit/source_commit provenance mismatch"
 
 
 def test_igor_missing_evidence_is_not_verified():
@@ -37,8 +46,10 @@ def test_igor_verifies_real_ollama_provenance():
     payload = {
         "run_id": "r1",
         "commit": "abc",
+        "source_commit": "abc",
+        "agent": "codeact",
         "task": "Calculate 17 * 23",
-        "result": "391",
+        "tool_output": "391",
         "provider": "ollama",
         "model": "qwen2.5:0.5b-instruct",
         "invocation_type": "real_llm",
@@ -46,6 +57,8 @@ def test_igor_verifies_real_ollama_provenance():
     }
     record = {
         "id": "e1",
+        "record_type": "agent.codeact",
+        "record_type": "agent.codeact",
         "tenant_id": "tenant-1",
         "seq": 0,
         "prev_hash": "0" * 64,
@@ -62,17 +75,20 @@ def test_igor_verifies_real_ollama_provenance():
         "391",
         expected_provider="ollama",
         expected_model="qwen2.5:0.5b-instruct",
+        expected_invocation_type="real_llm",
     )
     assert result.status == "VERIFIED"
     assert result.checks["provider"] is True
 
 def test_igor_scopes_checks_to_current_run_but_verifies_full_chain():
-    first_payload = {"run_id": "old", "commit": "abc", "task": "old", "result": "old"}
+    first_payload = {"run_id": "old", "commit": "abc", "source_commit": "abc", "task": "old", "result": "old"}
     second_payload = {
         "run_id": "r2",
         "commit": "abc",
+        "source_commit": "abc",
+        "agent": "codeact",
         "task": "Calculate 17 * 23",
-        "result": "391",
+        "tool_output": "391",
         "provider": "ollama",
         "model": "qwen2.5:0.5b-instruct",
         "invocation_type": "real_llm",
@@ -81,6 +97,8 @@ def test_igor_scopes_checks_to_current_run_but_verifies_full_chain():
 
     first = {
         "id": "old",
+        "record_type": "agent.codeact",
+        "record_type": "agent.codeact",
         "tenant_id": "tenant-1",
         "seq": 0,
         "prev_hash": "0" * 64,
@@ -92,6 +110,7 @@ def test_igor_scopes_checks_to_current_run_but_verifies_full_chain():
     )
     second = {
         "id": "new",
+        "record_type": "agent.codeact",
         "tenant_id": "tenant-1",
         "seq": 1,
         "prev_hash": first["record_hash"],

@@ -7,6 +7,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   product-gate:
     runs-on: ubuntu-latest
@@ -23,6 +26,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+          ref: ${{ env.SOURCE_SHA }}
       - name: Detect OpenAI credential
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -43,20 +47,20 @@ jobs:
           python -m pip install -r requirements.txt
           OLA_LLM_MODE=deterministic python -m pytest -q
       - name: Build exact-source runtime
-        run: docker build --tag "ola-product:${GITHUB_SHA}" .
+        run: docker build --tag "ola-product:${SOURCE_SHA}" .
       - name: Start runtime
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OLA_LLM_MODE: ${{ env.OPENAI_AVAILABLE == 'true' && 'required' || 'deterministic' }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
           docker run --detach --rm --name ola-product --publish 8000:8000 \
             -e OPENAI_API_KEY="$OPENAI_API_KEY" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
             -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
-            -e OLA_RUNTIME_COMMIT="${GITHUB_SHA}" \
-            "ola-product:${GITHUB_SHA}"
+            -e OLA_SOURCE_COMMIT="${SOURCE_SHA}" -e OLA_RUNTIME_COMMIT="${SOURCE_SHA}" \
+            "ola-product:${SOURCE_SHA}"
           for i in $(seq 1 30); do curl --fail --silent http://127.0.0.1:8000/health >/dev/null && break; sleep 1; done
           curl --fail --silent http://127.0.0.1:8000/health >/dev/null
       - name: Verify product surface
@@ -121,7 +125,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ola-product-gate-${{ github.sha }}
+          name: ola-product-gate-${{ env.SOURCE_SHA }}
           path: |
             docker-inspect.json
             docker-runtime.log
