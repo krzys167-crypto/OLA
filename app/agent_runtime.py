@@ -306,15 +306,11 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
         "status": "VERIFIED",
         "llm_required": os.getenv("OLA_LLM_MODE", "deterministic") == "required",
     }
-    with SessionLocal() as db:
-        last = db.scalar(select(EvidenceRecord).where(EvidenceRecord.tenant_id == tenant_id).order_by(EvidenceRecord.seq.desc()))
-        seq = 0 if last is None else last.seq + 1
-        prev_hash = GENESIS_HASH if last is None else last.record_hash
-        payload_json = canonical_json({"run_id": run_id, **output})
-        record = EvidenceRecord(id=str(uuid.uuid4()), tenant_id=tenant_id, seq=seq, record_type=f"agent.{agent}", payload_json=payload_json, prev_hash=prev_hash, record_hash=compute_record_hash(tenant_id, seq, prev_hash, payload_json))
-        db.add(record)
-        db.commit()
-        return record.id, output
+    # same hashing as before, through the retrying append (a concurrent writer on the same (tenant, seq) hit the
+    # UNIQUE constraint as an unhandled IntegrityError). Imported here: pipeline_bridge imports nina -> agent_runtime.
+    from .pipeline_bridge import append_evidence
+    record = append_evidence(tenant_id, f"agent.{agent}", {"run_id": run_id, **output}, attempts=96)
+    return record["id"], output
 
 
 def run_agent_task(tenant_id, task):

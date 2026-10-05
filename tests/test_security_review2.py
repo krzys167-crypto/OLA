@@ -305,3 +305,24 @@ def test_point_validator_accepts_real_keys_and_refuses_the_identity_in_any_form(
     from tests.test_identity import _small_order_variants
     for raw in _small_order_variants():
         assert not ok(raw)
+
+
+# ------------------------------------------------------------------ item 7 (agent runtime): same contention, same fix
+def test_item7_agent_runtime_evidence_survives_concurrent_writers(tenant, monkeypatch):
+    from app import agent_runtime as ar
+    from app import pipeline_bridge as pb
+    from app.hashchain import verify_chain
+    errors = []
+
+    def go(i):
+        try:
+            ar._append_agent_evidence(tenant[0], f"run-{i}", ar.AGENT_ROLES[0], "task", {"task": "t"}, [], "nonce")
+        except Exception as exc:                                    # noqa: BLE001
+            errors.append(type(exc).__name__)
+
+    ths = [threading.Thread(target=go, args=(i,)) for i in range(12)]
+    [t.start() for t in ths]
+    [t.join() for t in ths]
+    assert errors == []
+    chain = pb.load_chain(tenant[0])
+    assert len(chain) == 12 and verify_chain(chain)[0]
