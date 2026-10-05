@@ -258,3 +258,48 @@ is already 18.9%), so the set, not the judge, was the limit. `tests/data/judge_e
 run `scripts/judge_eval.py --dataset tests/data/judge_eval_v2.json --out q.json` on the host that will judge, pin
 `OLA_JUDGE_QUALIFICATION_DATASET_SHA256` to the SHA-256 of the v2 file, and point `OLA_JUDGE_QUALIFICATION_FILE` at `q.json`.
 The v2 set is still arithmetic, strings and textbook facts: a bound measured there does not transfer to your domain.
+
+## Signing key and external anchor (operator runbook)
+
+### 1. Signing key (F03) - only the operator can do this
+A signing key that was generated for you by someone else (or by a CI job) proves nothing about who signed.
+Generate it on the machine that will run OLA and keep the private half off the repository and out of CI logs:
+
+```bash
+python -m ola_pipeline keygen --help          # shows the exact flags; keygen never overwrites an existing key
+python -m ola_pipeline keygen <flags>         # writes the private key with mode 0600 and a public-key file
+export OLA_SIGNING_KEY_FILE=/secure/path/ola-signing.key      # server: signs every session
+export OLA_PIPELINE_TRUSTED_KEY=/secure/path/ola-signing.pub  # verifier: 64 hex chars or a file holding them
+```
+
+With the pin set, a session that is unsigned, signed by another key or re-signed after a rewrite is BLOCK, and
+a malformed pin is HTTP 503. Without the pin the status stays `UNPINNED_VALID`: the signature is intact but
+nobody said whose it should be. Back the private key up and plan a rotation: signatures made with a retired key
+verify only while its public key is still pinned somewhere. **Status: implemented and tested; UNKNOWN for your
+deployment until you generate the key and run a session with the pin set.**
+
+### 2. External anchor (RFC 3161 time-stamp, `app/anchor_external.py`)
+The tenant chain and the vault live on one host, so whoever controls both can rewrite them consistently. A
+time-stamp token from an independent TSA over the chain tip cannot be re-created for rewritten history.
+
+| variable | meaning |
+|---|---|
+| `OLA_TSA_URL` | https URL of the TSA (plain http is accepted only for loopback) |
+| `OLA_TSA_CA_FILE` | PEM with the trust anchor(s) you chose to trust for that TSA |
+| `OLA_ANCHOR_DIR` | where `.tsq`/`.tsr` are kept (default `./ola_anchor`) |
+| `OLA_TSA_TIMEOUT_S` | request timeout, default 20 |
+
+* `POST /anchor/timestamp` - verifies the tenant chain, sends **only a SHA-256 digest** of `{tenant_id, tip_seq,
+  tip_hash}` to the TSA, checks the reply with `openssl ts -verify` against `OLA_TSA_CA_FILE`, stores the files
+  and appends an `anchor.timestamp` record. Missing/invalid configuration or no `openssl` binary -> 503. A broken
+  chain, an unreachable TSA, a reply that does not verify (wrong CA, replayed token, garbage) -> 502 and
+  **nothing is recorded**.
+* `GET /anchor/timestamp/{anchor_seq}` - re-derives everything (chain, tip hash, file hashes, the request itself,
+  the token) and trusts no stored verdict: VERIFIED / BLOCK (tampering) / UNKNOWN (files missing).
+* Schedule it (cron or a scheduled task) at the interval you can accept as the "rewrite window"; records after the
+  last stamp are covered only by the next one.
+
+Status: **VERIFIED (sandbox)** against a local TSA built with `openssl ts` (request encoding parsed by openssl,
+roundtrip, wrong CA, replayed token, garbage/empty reply, TSA down, file tampering, history rewrite with
+recomputed hashes -> BLOCK; 7 mutants of the module all detected). **UNKNOWN** for every commercial TSA (needs a
+run with that TSA's CA file), and UNKNOWN in Docker slim images until `openssl` is installed there.

@@ -20,7 +20,7 @@ from .decision_report import build_decision_report
 from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout, payment_verified
 from .stripe_webhook import process_checkout_event
-from . import ambient, pipeline_bridge
+from . import ambient, anchor_external, pipeline_bridge
 from .payment_binding import checkout_result_matches
 
 app = FastAPI(title="OLA Execution Gate")
@@ -637,6 +637,28 @@ def get_pipeline_session(session_id: str, x_api_key: str | None = Header(default
     replay = pipeline_bridge.replay_from_anchor(tenant_id, session_id)
     return {"session_id": session_id, "verification": verification, "replay": replay["events"],
             "replay_verification": replay["verification"]}
+
+
+@app.post("/anchor/timestamp")
+def create_anchor_timestamp(x_api_key: str | None = Header(default=None)):
+    """RFC 3161 time-stamp of the tenant chain tip (external anchor). 503 unless fully configured."""
+    tenant_id = tenant_from_key(x_api_key)
+    try:
+        return anchor_external.timestamp_tip(tenant_id)
+    except anchor_external.AnchorNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except anchor_external.AnchorFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/anchor/timestamp/{anchor_seq}")
+def get_anchor_timestamp(anchor_seq: int, x_api_key: str | None = Header(default=None)):
+    """Independent re-verification of one anchor.timestamp record (tenant-scoped)."""
+    tenant_id = tenant_from_key(x_api_key)
+    try:
+        return anchor_external.verify_timestamp(tenant_id, anchor_seq)
+    except anchor_external.AnchorNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/stripe/webhook")
