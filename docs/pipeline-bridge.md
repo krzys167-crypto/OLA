@@ -424,3 +424,18 @@ Reading (one run each, so differences of a few items are noise):
 * **The lift is paid for in false accepts.** Every variant that accepts many correct answers also accepts many wrong ones (`qwen2.5:7b` plain-input 31/72, combined 33/72; `llama3.2:3b` check-first 66/72). The judges do not separate right from wrong well enough on this set; the prompt only moves them along one curve.
 * The closest to qualifying is `llama3.1:8b` + `combined` (6/72 wrong accepted, upper 17.0%, just above 15%; but only 28/67 correct accepted, lower 30.7%, below 50%).
 * **No judge/variant pair qualifies.** The production prompt and thresholds are unchanged; a variant becomes the production prompt only by a separate change that moves its template into Igor and re-measures (and the measurement must then be repeated: this is one run, `--repeat` was not used).
+
+### Ablation variants (added after the 12-run measurement; not yet measured)
+
+`plain-input` changes the layout only (its system text differs from the baseline by one sentence, pinned by a test), yet it
+was the variant that lifted correct-accepted. Two variants split what the layout changes, so the next measurement can say
+which part matters instead of guessing:
+
+| variant | what it changes against the baseline | tests |
+|---|---|---|
+| `json-pretty` | same JSON fields and values, indented and not ASCII-escaped | escapes and quotes in a one-line blob |
+| `plain-nomarker` | plain-text sections without the digest marker lines | whether the marker, not the sections, moves the verdicts |
+
+Results: UNKNOWN until `judge-variants` is dispatched with these variants (6 CPU jobs, 1-1.5 h each). Repeating a run with
+the same seed at temperature 0 would not add information (the verdicts are practically deterministic); the sampling
+uncertainty of the 72/67 labelled answers is already in the Wilson bounds.

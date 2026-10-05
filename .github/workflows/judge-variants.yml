@@ -5,7 +5,7 @@ name: Judge prompt variants (measurement only)
 # different judge prompt changes that. It changes nothing in production: thresholds are untouched, Igor still sends the
 # baseline prompt, and a measurement made with a variant never qualifies a baseline judge (the qualification is bound to
 # the prompt fingerprint, see ola_pipeline.igor.judge_prompt_fingerprint).
-# Runs on a pull request only when this workflow or the harness changes (it is 12 CPU jobs of 1-1.5 h), and on demand.
+# Runs on a pull request only when this workflow or the harness changes (it is 18 CPU jobs of 1-1.5 h; dispatch one variant to run 3), and on demand.
 # Results are annotations (WOULD_QUALIFY=yes|NO per model and variant). NOT a certification: one run, one dataset.
 
 on:
@@ -36,11 +36,11 @@ jobs:
           WANT: ${{ github.event_name == 'workflow_dispatch' && inputs.variant || 'all' }}
         run: |
           set -euo pipefail
-          all='["scoped-requirements","plain-input","check-first","combined"]'
+          all='["scoped-requirements","plain-input","check-first","combined","json-pretty","plain-nomarker"]'
           if [ "$WANT" = "all" ]; then
             echo "variants=$all" >> "$GITHUB_OUTPUT"
           else
-            case "$WANT" in scoped-requirements|plain-input|check-first|combined) ;; *) echo "unknown variant: $WANT" >&2; exit 1;; esac
+            case "$WANT" in scoped-requirements|plain-input|check-first|combined|json-pretty|plain-nomarker) ;; *) echo "unknown variant: $WANT" >&2; exit 1;; esac
             echo "variants=[\"$WANT\"]" >> "$GITHUB_OUTPUT"
           fi
 

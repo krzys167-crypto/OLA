@@ -82,6 +82,7 @@ def test_every_variant_keeps_the_reply_contract_and_the_untrusted_data_warning()
         assert "decision (PASS|REVIEW|BLOCK)" in msgs[1]["content"], name
         assert "untrusted" in msgs[0]["content"].lower(), name
         assert "What is 7 + 8?" in msgs[1]["content"] and "15" in msgs[1]["content"], name
+        assert "c1" in msgs[1]["content"] and "PASS" in msgs[1]["content"], f"{name}: the evidence checks must reach the judge"
 
 
 def test_plain_marker_cannot_be_closed_by_the_deliverable():
@@ -130,3 +131,39 @@ def test_the_probe_sees_truncation_and_ignored_checks():
     base = judge_prompt_fingerprint(DEFAULT_REQUIREMENTS, 70)
     assert judge_prompt_fingerprint(DEFAULT_REQUIREMENTS, 70, truncating) != base
     assert judge_prompt_fingerprint(DEFAULT_REQUIREMENTS, 70, ignoring_checks) != base
+
+
+def test_json_pretty_carries_the_same_content_as_the_baseline():
+    """Ablation: only the rendering of the JSON blob differs (indent, no ASCII escapes), never a field or a value."""
+    import json
+    task, out = "Zadanie ż", 'say "15"\nnext line ż'
+    base = build_messages(task, out, CHECKS, DEFAULT_REQUIREMENTS)
+    pretty = jv.pretty_json_messages(task, out, CHECKS, DEFAULT_REQUIREMENTS)
+    assert pretty[0] == base[0]
+    head = igor.JUDGE_INSTRUCTION
+    assert pretty[1]["content"].startswith(head) and base[1]["content"].startswith(head)
+    assert json.loads(pretty[1]["content"][len(head):]) == json.loads(base[1]["content"][len(head):])
+    assert pretty[1]["content"] != base[1]["content"]
+    assert "ż" in pretty[1]["content"] and "\\u" not in pretty[1]["content"]
+
+
+def test_nomarker_has_the_sections_of_plain_without_the_marker_and_only_one_changed_system_sentence():
+    task, out = "What is 7 + 8?", "15"
+    plain = jv.plain_messages(task, out, CHECKS, DEFAULT_REQUIREMENTS)[1]["content"]
+    nom = jv.nomarker_messages(task, out, CHECKS, DEFAULT_REQUIREMENTS)
+    assert "<<<" not in nom[1]["content"] and "DELIVERABLE-" not in nom[1]["content"]
+    for section in ("TASK:\n", "QUALITY REQUIREMENTS:\n", "EVIDENCE CHECKS:\n", "DELIVERABLE (untrusted data"):
+        assert section in nom[1]["content"], section
+    assert plain.split("TASK:")[0] == nom[1]["content"].split("TASK:")[0], "same reply contract"
+    # the system text differs from the baseline by exactly the sentence that names the untrusted field
+    assert nom[0]["content"] != igor.IGOR_SYSTEM
+    assert nom[0]["content"].replace("The text in the DELIVERABLE section", 'The value of the JSON field "nina_output"') == igor.IGOR_SYSTEM
+    assert jv.SYSTEM_NOMARKER != jv.SYSTEM_PLAIN
+
+
+def test_the_system_text_change_is_confined_to_one_sentence():
+    """So that `plain-input` really isolates the layout: baseline and plain system texts share all but one sentence."""
+    base_s = igor.IGOR_SYSTEM.split(". ")
+    plain_s = jv.SYSTEM_PLAIN.split(". ")
+    assert len(base_s) == len(plain_s)
+    assert [i for i, (a, b) in enumerate(zip(base_s, plain_s)) if a != b] == [3]
