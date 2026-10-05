@@ -397,5 +397,30 @@ request only when it or the harness changes, and on demand) and prints `WOULD_QU
 the false accepts. **Thresholds and the production prompt are not changed by it.** A variant becomes the production prompt only
 by a separate change that moves its template into Igor and re-measures; if a variant lifts correct-accepted it must not lift
 false-accept (the same 72 wrong answers, including injection attempts, are in the set). Until results exist the cause of the
-0/67 is still a hypothesis.
+0/67 was a hypothesis when this was written; the measurement below answers it.
 
+### Measured result of the prompt variants (CI, PR #8 head 6ef52ae, v2 set 72 wrong / 67 correct, one run each)
+
+| judge | variant | wrong accepted | upper 95% | correct accepted | lower 95% | qualifies |
+|---|---|---|---|---|---|---|
+| `llama3.2:3b` | baseline (v2 run) | 6/72 | 17.0% | 14/67 | 12.9% | no |
+| `llama3.2:3b` | scoped-requirements | 6/72 | 17.0% | 11/67 | 9.4% | no |
+| `llama3.2:3b` | plain-input | 15/72 | 31.6% | 28/67 | 30.7% | no |
+| `llama3.2:3b` | check-first | 66/72 | 96.1% | 65/67 | 89.8% | no |
+| `llama3.2:3b` | combined | 41/72 | 67.7% | 50/67 | 63.1% | no |
+| `llama3.1:8b` | baseline (v2 run) | 0/72 | 5.1% | 0/67 | 0.0% | no |
+| `llama3.1:8b` | scoped-requirements | 0/72 | 5.1% | 0/67 | 0.0% | no |
+| `llama3.1:8b` | plain-input | 20/72 | 39.0% | 26/67 | 28.0% | no |
+| `llama3.1:8b` | check-first | 0/72 | 5.1% | 6/67 | 4.2% | no |
+| `llama3.1:8b` | combined | 6/72 | 17.0% | 28/67 | 30.7% | no |
+| `qwen2.5:7b` | baseline (v2 run) | 0/72 | 5.1% | 0/67 | 0.0% | no |
+| `qwen2.5:7b` | scoped-requirements | 0/72 | 5.1% | 8/67 | 6.2% | no |
+| `qwen2.5:7b` | plain-input | 31/72 | 54.6% | 58/67 | 76.4% | no |
+| `qwen2.5:7b` | check-first | 0/72 | 5.1% | 12/67 | 10.6% | no |
+| `qwen2.5:7b` | combined | 33/72 | 57.3% | 64/67 | 87.6% | no |
+
+Reading (one run each, so differences of a few items are noise):
+* **The requirements are not what caused the all-reject; the prompt layout is a likely cause, not an isolated one.** `scoped-requirements` alone did not help (0/67 and 8/67). `plain-input` lifted correct-accepted from 0/67 to 26/67 (`llama3.1:8b`) and 58/67 (`qwen2.5:7b`), but it changes the layout AND the system text at once, so it does not isolate the JSON-string quoting that the judges' own reason ("answer must be a number only, remove extraneous characters") points at.
+* **The lift is paid for in false accepts.** Every variant that accepts many correct answers also accepts many wrong ones (`qwen2.5:7b` plain-input 31/72, combined 33/72; `llama3.2:3b` check-first 66/72). The judges do not separate right from wrong well enough on this set; the prompt only moves them along one curve.
+* The closest to qualifying is `llama3.1:8b` + `combined` (6/72 wrong accepted, upper 17.0%, just above 15%; but only 28/67 correct accepted, lower 30.7%, below 50%).
+* **No judge/variant pair qualifies.** The production prompt and thresholds are unchanged; a variant becomes the production prompt only by a separate change that moves its template into Igor and re-measures (and the measurement must then be repeated: this is one run, `--repeat` was not used).
