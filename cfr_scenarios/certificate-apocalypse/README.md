@@ -10,7 +10,7 @@ other services, and keep it healthy for 10 s.
 ```
 make up          # services + monitor in the background (state/)
 make break       # inject the fault (variant from state/run.json, default expired)
-make assert      # the six assertions as JSON lines (takes ~10 s: health_stable_10s)
+make assert      # the seven assertions as JSON lines (takes ~10 s: health_stable_10s)
 make fix         # the reference fix (gen_good_cert.sh): participants find their own
 make metrics     # availability, p95, MTTR, blast radius, restarts, downtime - measured, not scored
 make down
