@@ -472,3 +472,19 @@ def test_submit_names_the_missing_environment(tmp_path, monkeypatch):
     r = subprocess.run([sys.executable, str(DIR / "witness.py"), "--state", str(tmp_path), "--range-state", str(tmp_path),
                         "submit"], capture_output=True, text=True, env=env)
     assert r.returncode == 2 and "OLA_TENANT_ID" in r.stderr and "OLA_WITNESS_SEED" in r.stderr
+
+
+@TOOLS
+def test_a_witness_refuses_to_pin_a_ca_that_was_replaced_before_it_started(wworld):
+    w = wworld
+    assert cli(w["state"], "up").returncode == 0
+    up = [e for e in rng.read_lines(w["state"] / "events.jsonl") if e.get("event") == "up"][-1]
+    assert up["ca_sha256"] == hashlib.sha256((w["state"] / "certs" / "ca.crt").read_bytes()).hexdigest()
+    host = rng.host_for(w["run"]["seed"])
+    assert cli(w["state"], "break").returncode == 0
+    (w["state"] / "certs" / "ca.key").unlink()
+    (w["state"] / "certs" / "ca.crt").unlink()
+    assert fix(w["state"], host).returncode == 0                      # the participant's "fix": a brand new CA
+    r = wcli(w, "up")
+    assert r.returncode == 2 and "replaced before the witness started" in r.stderr, (r.returncode, r.stderr)
+    assert not (w["wstate"] / "witness.pid").exists() and not (w["wstate"] / "ca.crt").exists()

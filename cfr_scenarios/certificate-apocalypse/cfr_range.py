@@ -164,7 +164,9 @@ class Range:
         (self.state / "range.pid").write_text(str(os.getpid()))
         signal.signal(signal.SIGTERM, lambda *a: self.stop.set())
         signal.signal(signal.SIGINT, lambda *a: self.stop.set())
-        _append(self.state / "events.jsonl", {"t": now(), "event": "up", "host": self.host})
+        ca = self.certs / "ca.crt"
+        _append(self.state / "events.jsonl", {"t": now(), "event": "up", "host": self.host,
+                "ca_sha256": __import__("hashlib").sha256(ca.read_bytes()).hexdigest() if ca.is_file() else None})
         (self.state / "ready").write_text("1")
         timeline = self.state / "timeline.jsonl"
         while not self.stop.is_set():

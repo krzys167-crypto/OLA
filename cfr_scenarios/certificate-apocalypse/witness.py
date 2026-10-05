@@ -114,6 +114,12 @@ def cmd_up(a) -> int:
     if not ca_src.is_file() or not (rs / "run.json").is_file():
         print("the range must be up (certs/ca.crt) and a run issued (run.json) first", file=sys.stderr)
         return 2
+    up = next((e for e in reversed(rng.read_lines(rs / "events.jsonl")) if e.get("event") == "up"), None)
+    want = up.get("ca_sha256") if up else None
+    if want and hashlib.sha256(ca_src.read_bytes()).hexdigest() != want:
+        print("the range CA is not the one the range came up with (it was replaced before the witness started); a witness "
+              "that pinned it would trust the tampered anchor. Start the witness right after `make up`.", file=sys.stderr)
+        return 2
     ws.mkdir(parents=True, exist_ok=True)
     for f in ("timeline.jsonl", "ready"):
         (ws / f).unlink(missing_ok=True)

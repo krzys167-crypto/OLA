@@ -526,8 +526,9 @@ observer kept answering `health_stable` "pass" from old data (a timeline older t
 not overlap the runner's run (refused / INSUFFICIENT). A **revoked witness** (its key may have been compromised) keeps its
 power to lower or dispute a result but can no longer confirm one: a required PASS it had confirmed becomes UNKNOWN
 (INSUFFICIENT, reason "the witness key was revoked"); its record keeps one of the 3 slots. **Known and not fixed:** a witness contradiction turns a runner
-FAIL or UNKNOWN into DISPUTED, so treat DISPUTED as at least as bad as FAIL (it never ranks and has tier none); a witness
-started after the participant already replaced the CA would pin the replaced CA, so start it together with the range; the
+FAIL or UNKNOWN into DISPUTED, so treat DISPUTED as at least as bad as FAIL (it never ranks and has tier none); the range records the SHA-256 of its CA in its `up` event and `witness up` refuses (exit 2) when the CA it would pin differs, so a witness
+started after the CA was replaced does not pin the tampered anchor (the event file is participant-writable, so this catches order
+mistakes and careless tampering, not a determined participant); the
 witness reads `ports.json`/`run.json` from the range state, which the participant can write.
 
 Tested: `tests/test_cfr_witness.py` (75 tests) and end-to-end and pure scenario tests (honest run CONFIRMED, a fix nobody made is
