@@ -44,6 +44,8 @@ from sqlalchemy.exc import IntegrityError
 
 from ola_pipeline import Pipeline, PipelineConfig, verify_session
 from ola_pipeline.errors import ConfigError, SigningError
+from ola_pipeline.hashing import canonical_bytes
+from ola_pipeline.igor import build_messages, judge_prompt_fingerprint
 from ola_pipeline.verify import inspect_session
 
 from .database import SessionLocal
@@ -272,7 +274,40 @@ def _wilson_lower(k: int, n: int, z: float = 1.96) -> float:
     return max(0.0, (p + z * z / (2 * n) - z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / d)
 
 
-def judge_qualification(judge_env: Optional[dict], policy: Optional[QualificationPolicy]) -> dict:
+def session_judge_fingerprint(session_dir: Path, judge_env: dict, final: Optional[dict]) -> tuple:
+    """(fingerprint, why_not): the identity of the judge AS IT ACTUALLY RAN in this session.
+
+    A measurement says something about a judge only if it was made with the same prompt template, the same quality
+    requirements and the same acceptance threshold. The requirements are read from the stored judge input and the
+    threshold from final.json (both sealed by the anchor). The template is proven too: the prompt rebuilt from the
+    stored input must hash to the stored prompt artifact, so a session produced by another template cannot borrow
+    the measurement of this one. Anything missing or inconsistent -> (None, reason)."""
+    try:
+        def artifact(h: Any) -> bytes:
+            if not isinstance(h, str) or not _HEX64.fullmatch(h):
+                raise ValueError("malformed artifact hash")
+            data = (Path(session_dir) / "artifacts" / h).read_bytes()
+            if hashlib.sha256(data).hexdigest() != h:
+                raise ValueError("artifact does not match its hash")
+            return data
+        inp = json.loads(artifact(judge_env.get("input_hash")).decode("utf-8"))
+        reqs = inp["quality_requirements"]
+        if not (isinstance(reqs, list) and reqs and all(isinstance(r, str) for r in reqs)):
+            return None, "stored judge input has no usable quality requirements"
+        threshold = final["policy"]["min_quality_score"]
+        if not (isinstance(threshold, int) and not isinstance(threshold, bool) and 0 <= threshold <= 100):
+            return None, "final.json has no usable min_quality_score"
+        rebuilt = canonical_bytes(build_messages(inp["task"], inp["nina_output"], inp["evidence_checks"], tuple(reqs)))
+        if hashlib.sha256(rebuilt).hexdigest() != judge_env.get("prompt_hash"):
+            return None, "the stored judge prompt is not what the current prompt template produces"
+        return judge_prompt_fingerprint(tuple(reqs), threshold), ""
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None, "the judge prompt of this session cannot be reconstructed from its stored artifacts"
+
+
+def judge_qualification(judge_env: Optional[dict], policy: Optional[QualificationPolicy],
+                        session_dir: Optional[Path] = None, final: Optional[dict] = None,
+                        prompt_fingerprint: Optional[str] = None) -> dict:
     """Is THIS judge (provider, model, model digest) measured good enough? Fail closed on every doubt."""
     if policy is None:
         return {"state": "NOT_CONFIGURED",
@@ -308,6 +343,20 @@ def judge_qualification(judge_env: Optional[dict], policy: Optional[Qualificatio
         if not digest or digest != judge_env.get("model_digest"):
             return no("model digest of the measurement is missing or differs from the judge's digest",
                       file_sha256=file_sha)
+        # prompt_fingerprint: a caller that BUILDS the judge prompt itself (ambient IGOR) states which one it used;
+        # a caller that only inspects a finished session lets the bridge reconstruct it from the stored artifacts.
+        if prompt_fingerprint is not None:
+            session_fp, why = prompt_fingerprint, ""
+        elif session_dir is not None:
+            session_fp, why = session_judge_fingerprint(session_dir, judge_env, final)
+        else:
+            session_fp, why = None, "no session directory to reconstruct the judge prompt from"
+        if session_fp is None:
+            return no(why, file_sha256=file_sha)
+        if doc.get("judge_prompt_sha256") != session_fp:
+            return no("measured with a different judge prompt, quality requirements or threshold than this session "
+                      "used (judge_prompt_sha256 is missing or differs)", file_sha256=file_sha,
+                      session_judge_prompt_sha256=session_fp)
         if not (isinstance(k, int) and isinstance(n, int) and not isinstance(k, bool) and not isinstance(n, bool)
                 and 0 <= k <= n):
             return no("malformed false-accept counts", file_sha256=file_sha)
@@ -319,6 +368,7 @@ def judge_qualification(judge_env: Optional[dict], policy: Optional[Qualificatio
     except (KeyError, TypeError, AttributeError):
         return no("qualification file is malformed (a two-sided measurement needs summary.correct_accepted)")
     evidence = {"file_sha256": file_sha, "model": doc["model"], "model_digest": digest,
+                "judge_prompt_sha256": session_fp,
                 "false_accept": {"k": k, "n": n}, "max_allowed_upper95": policy.max_false_accept,
                 "correct_accepted": {"k": ck, "n": cn}, "min_required_lower95": policy.min_correct_accept,
                 "dataset_sha256": policy.dataset_sha256}
@@ -455,7 +505,8 @@ def verify_anchor(tenant_id: str, session_id: str, *, base: Optional[Path] = Non
     # (gate_state needs no separate comparison: it is read from final.json, whose SHA-256 is anchored.)
     disk_gate = report.get("outcome")
     status, reason = map_states(disk_gate, report["overall"])
-    qualification = judge_qualification(facts.igor[-1] if facts.igor else None, qualification_policy_from_env())
+    qualification = judge_qualification(facts.igor[-1] if facts.igor else None, qualification_policy_from_env(), sd,
+                                      json.loads(final_path.read_text("utf-8")) if final_path.is_file() else None)
     if status == "VERIFIED" and qualification["state"] == "NOT_QUALIFIED":
         status, reason = "UNKNOWN", f"gate PASS but the judge is not qualified: {qualification['reason']}"
     return {"status": status, "reason": reason, "checks": checks, "verifier": verifier,

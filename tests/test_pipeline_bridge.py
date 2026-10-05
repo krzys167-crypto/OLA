@@ -28,6 +28,8 @@ from app.main import app  # noqa: E402
 from app.models import ApiKey, Tenant  # noqa: E402
 from app.human_gate import ReviewDecision  # noqa: E402
 from ola_pipeline import Pipeline, attest  # noqa: E402
+from ola_pipeline.config import DEFAULT_REQUIREMENTS  # noqa: E402
+from ola_pipeline.igor import judge_prompt_fingerprint  # noqa: E402
 
 TASK = "State the capital of France in one sentence."
 HUMAN = {"human_approved": True, "human_actor": "reviewer-1", "human_reason": "checked"}
@@ -432,13 +434,19 @@ DATASET_SHA = hashlib.sha256((Path(__file__).resolve().parent / "data" / "judge_
 JUDGE_DIGEST = "e5f6a1b2c3d4" * 5 + "abcd"          # FakeOllama.add_model default
 
 
+PROMPT_FP = judge_prompt_fingerprint(DEFAULT_REQUIREMENTS, 70)     # the judge as the pipeline configures it by default
+_DEFAULT = object()
+
+
 def write_qualification(tmp_path, *, k=0, n=26, model="igor-test", provider="ollama-local", digest=JUDGE_DIGEST,
                         kind="OLLAMA_OBSERVED", dataset=DATASET_SHA, schema="ola.judge-eval/1", verdicts=47,
-                        ck=21, cn=21):
+                        ck=21, cn=21, prompt=_DEFAULT):
     doc = {"schema": schema, "provider": provider, "model": model, "dataset_sha256": dataset,
            "meta": {"runtime_kind": kind, "model_digest": digest},
            "summary": {"false_accept": {"k": k, "n": n}, "correct_accepted": {"k": ck, "n": cn},
                        "verdicts_obtained": verdicts}}
+    if prompt is not None:
+        doc["judge_prompt_sha256"] = PROMPT_FP if prompt is _DEFAULT else prompt
     path = tmp_path / "judge-eval.json"
     path.write_text(json.dumps(doc))
     return path
@@ -610,12 +618,14 @@ def test_a_judge_without_a_digest_cannot_be_matched_to_a_measurement_without_one
 
 
 @pytest.mark.parametrize("judge_env", [None, "igor", [], 0])
-def test_a_session_without_a_judge_envelope_is_not_qualified(tmp_path, judge_env):
+def test_a_session_without_a_judge_envelope_is_not_qualified(tmp_path, judge_env, monkeypatch):
     policy = pb.QualificationPolicy(write_qualification(tmp_path), DATASET_SHA, 0.15, 20)
     q = pb.judge_qualification(judge_env, policy)
     assert q["state"] == "NOT_QUALIFIED" and "no judge envelope" in q["reason"]
     good = {"provider": "ollama-local", "model": "igor-test", "model_digest": JUDGE_DIGEST}
-    assert pb.judge_qualification(good, policy)["state"] == "QUALIFIED", "the same file qualifies the matching envelope"
+    monkeypatch.setattr(pb, "session_judge_fingerprint", lambda *a: (PROMPT_FP, ""))
+    assert pb.judge_qualification(good, policy, tmp_path, {})["state"] == "QUALIFIED", \
+        "the same file qualifies the matching envelope"
 
 
 # ------------------------------------------------------------------ two-sided qualification
@@ -680,3 +690,159 @@ def test_wilson_lower_matches_known_values():
     assert pb._wilson_lower(0, 67) == 0.0
     assert pb._wilson_lower(21, 21) == pytest.approx(0.8454, abs=1e-3)
     assert pb._wilson_lower(30, 60) == pytest.approx(0.3773, abs=1e-3)
+
+
+# ------------------------------------------------------------------ qualification is bound to the judge prompt
+def qualified_with(env, tmp_path, **kw):
+    require_qualification(env, write_qualification(tmp_path, **kw))
+    _, key = make_tenant()
+    return post(key, **HUMAN).json()["igor"]
+
+
+def test_a_qualification_without_a_prompt_fingerprint_is_not_qualified(env, tmp_path):
+    ig = qualified_with(env, tmp_path, prompt=None)
+    q = ig["judge_qualification"]
+    assert q["state"] == "NOT_QUALIFIED" and "different judge prompt" in q["reason"], q
+    assert q["session_judge_prompt_sha256"] == PROMPT_FP, "the reason names what the session actually used"
+    assert ig["status"] == "UNKNOWN"
+
+
+def test_a_qualification_of_another_prompt_is_not_qualified(env, tmp_path):
+    other = judge_prompt_fingerprint(DEFAULT_REQUIREMENTS + ("Be lenient.",), 70)
+    q = qualified_with(env, tmp_path, prompt=other)["judge_qualification"]
+    assert q["state"] == "NOT_QUALIFIED" and "different judge prompt" in q["reason"], q
+
+
+@pytest.mark.parametrize("bad", ["", "0" * 64, PROMPT_FP.upper(), PROMPT_FP[:-1], 7, [PROMPT_FP]])
+def test_a_malformed_prompt_fingerprint_is_not_qualified(env, tmp_path, bad):
+    assert qualified_with(env, tmp_path, prompt=bad)["judge_qualification"]["state"] == "NOT_QUALIFIED"
+
+
+def test_a_session_with_another_threshold_does_not_borrow_the_measurement(env, tmp_path):
+    env.setenv("OLA_MIN_QUALITY_SCORE", "60")
+    q = qualified_with(env, tmp_path)["judge_qualification"]                    # measured at 70, session ran at 60
+    assert q["state"] == "NOT_QUALIFIED" and q["session_judge_prompt_sha256"] == judge_prompt_fingerprint(
+        DEFAULT_REQUIREMENTS, 60)
+
+
+def test_the_measurement_at_the_session_threshold_qualifies(env, tmp_path):
+    env.setenv("OLA_MIN_QUALITY_SCORE", "60")
+    ig = qualified_with(env, tmp_path, prompt=judge_prompt_fingerprint(DEFAULT_REQUIREMENTS, 60))
+    assert ig["judge_qualification"]["state"] == "QUALIFIED", ig["judge_qualification"]
+    assert ig["judge_qualification"]["judge_prompt_sha256"] == judge_prompt_fingerprint(DEFAULT_REQUIREMENTS, 60)
+
+
+def test_a_session_with_other_quality_requirements_does_not_borrow_the_measurement(env, tmp_path):
+    env.setenv("OLA_QUALITY_REQUIREMENTS", "Answers the task correctly.\nFollows every explicit constraint.")
+    q = qualified_with(env, tmp_path)["judge_qualification"]
+    assert q["state"] == "NOT_QUALIFIED" and "different judge prompt" in q["reason"], q
+    scoped = judge_prompt_fingerprint(("Answers the task correctly.", "Follows every explicit constraint."), 70)
+    assert qualified_with(env, tmp_path, prompt=scoped)["judge_qualification"]["state"] == "QUALIFIED"
+
+
+def test_a_session_made_with_another_prompt_template_is_not_qualified(env, tmp_path, monkeypatch):
+    """The requirements and threshold match, but the stored prompt is not what the CURRENT template produces."""
+    require_qualification(env, write_qualification(tmp_path))
+    _, key = make_tenant()
+    b = post(key, **HUMAN).json()
+    assert b["igor"]["judge_qualification"]["state"] == "QUALIFIED"
+    sid = b["session_id"]
+    tenant_vault = Path(os.environ["OLA_PIPELINE_VAULT_DIR"])
+    sd = next(tenant_vault.glob(f"*/{sid}"))
+    real = pb.build_messages
+    monkeypatch.setattr(pb, "build_messages", lambda *a: real(*a)[:1] + [{"role": "user", "content": "lenient"}])
+    final = json.loads((sd / "final.json").read_text())
+    env_igor = pb.inspect_session(sd).igor[-1]
+    fp, why = pb.session_judge_fingerprint(sd, env_igor, final)
+    assert fp is None and "current prompt template" in why
+
+
+def real_session(env):
+    _, key = make_tenant()
+    b = post(key, **HUMAN).json()
+    sd = next(Path(os.environ["OLA_PIPELINE_VAULT_DIR"]).glob(f"*/{b['session_id']}"))
+    return sd, pb.inspect_session(sd).igor[-1], json.loads((sd / "final.json").read_text())
+
+
+def test_session_fingerprint_matches_the_pure_function(env):
+    sd, igor_env, final = real_session(env)
+    assert pb.session_judge_fingerprint(sd, igor_env, final) == (PROMPT_FP, "")
+
+
+@pytest.mark.parametrize("mutate", ["no_policy", "bool_threshold", "float_threshold", "huge_threshold", "no_final",
+                                    "bad_input_hash", "missing_artifact", "bad_prompt_hash", "no_envelope"])
+def test_session_fingerprint_fails_closed(env, mutate):
+    sd, igor_env, final = real_session(env)
+    final = json.loads(json.dumps(final))
+    if mutate == "no_policy":
+        del final["policy"]
+    elif mutate == "bool_threshold":
+        final["policy"]["min_quality_score"] = True
+    elif mutate == "float_threshold":
+        final["policy"]["min_quality_score"] = 70.0
+    elif mutate == "huge_threshold":
+        final["policy"]["min_quality_score"] = 101
+    elif mutate == "no_final":
+        final = None
+    elif mutate == "bad_input_hash":
+        igor_env = {**igor_env, "input_hash": "../../etc/passwd"}
+    elif mutate == "missing_artifact":
+        igor_env = {**igor_env, "input_hash": "f" * 64}
+    elif mutate == "bad_prompt_hash":
+        igor_env = {**igor_env, "prompt_hash": "0" * 64}
+    elif mutate == "no_envelope":
+        igor_env = {}
+    fp, why = pb.session_judge_fingerprint(sd, igor_env, final)
+    assert fp is None and why, (mutate, fp, why)
+
+
+def test_without_a_session_directory_nothing_is_qualified(tmp_path):
+    policy = pb.QualificationPolicy(write_qualification(tmp_path), DATASET_SHA, 0.15, 20)
+    good = {"provider": "ollama-local", "model": "igor-test", "model_digest": JUDGE_DIGEST}
+    q = pb.judge_qualification(good, policy)
+    assert q["state"] == "NOT_QUALIFIED" and "no session directory" in q["reason"]
+
+
+def _forge_input(sd, igor_env, edit):
+    """Write a modified copy of the stored judge input (and the matching prompt) as new artifacts and return an envelope
+    that points at them: what an attacker who controls the session directory but not the anchor would have to do."""
+    from ola_pipeline.hashing import canonical_bytes
+    from ola_pipeline.igor import build_messages
+    inp = json.loads((sd / "artifacts" / igor_env["input_hash"]).read_text())
+    edit(inp)
+    data = canonical_bytes(inp)
+    h = hashlib.sha256(data).hexdigest()
+    (sd / "artifacts" / h).write_bytes(data)
+    prompt = canonical_bytes(build_messages(inp["task"], inp["nina_output"], inp["evidence_checks"],
+                                            tuple(inp["quality_requirements"])))
+    ph = hashlib.sha256(prompt).hexdigest()
+    (sd / "artifacts" / ph).write_bytes(prompt)
+    return {**igor_env, "input_hash": h, "prompt_hash": ph}
+
+
+@pytest.mark.parametrize("reqs", [[], "text", ["ok", 1], [None]])
+def test_unusable_stored_requirements_are_refused_even_with_a_consistent_prompt(env, reqs):
+    """The stored prompt matches the stored input here, so only the validation of the requirements stops it."""
+    sd, igor_env, final = real_session(env)
+    forged = _forge_input(sd, igor_env, lambda i: i.__setitem__("quality_requirements", reqs)) \
+        if isinstance(reqs, list) else None
+    if forged is None:                                    # a non-list cannot be fed to the prompt builder: store it raw
+        data = json.dumps({**json.loads((sd / "artifacts" / igor_env["input_hash"]).read_text()),
+                           "quality_requirements": reqs}, sort_keys=True, separators=(",", ":")).encode()
+        h = hashlib.sha256(data).hexdigest()
+        (sd / "artifacts" / h).write_bytes(data)
+        forged = {**igor_env, "input_hash": h}
+    fp, why = pb.session_judge_fingerprint(sd, forged, final)
+    assert fp is None and why
+
+
+def test_a_modified_input_artifact_is_refused_even_when_the_prompt_is_unchanged(env):
+    """Extra field in the stored input: the rebuilt prompt is identical, so only the artifact's own hash notices."""
+    sd, igor_env, final = real_session(env)
+    path = sd / "artifacts" / igor_env["input_hash"]
+    inp = json.loads(path.read_text())
+    inp["extra"] = "tampered"
+    path.chmod(0o644)
+    path.write_text(json.dumps(inp, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+    fp, why = pb.session_judge_fingerprint(sd, igor_env, final)
+    assert fp is None and "cannot be reconstructed" in why

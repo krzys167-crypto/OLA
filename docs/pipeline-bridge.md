@@ -148,8 +148,25 @@ force at the time of the request, and every response carries `judge_qualificatio
   **None of them qualifies**: switching this on today means no result can reach VERIFIED with those judges, which is
   what the measurements say.
 * Off by default, so nothing changes until an operator decides. It is operator configuration, like the key pin: whoever
-  can write the file and the environment can qualify any judge. It binds provider, model and digest, **not** sampling
-  settings (`think`, temperature), and a 47-item toy set says nothing about your own task distribution.
+  can write the file and the environment can qualify any judge. It binds provider, model, digest **and the judge prompt**
+  (next section), **not** sampling settings (`think`, temperature), and a 47-item toy set says nothing about your own task
+  distribution.
+
+### The measurement is bound to the judge prompt
+
+A judge is the model **plus** its prompt, its quality requirements and its acceptance threshold. A measurement of
+`llama3.1:8b` under one prompt says nothing about the same model under another. `judge_eval.py` therefore writes
+`judge_prompt_sha256` (`ola_pipeline.igor.judge_prompt_fingerprint`: system text, instruction text, key layout, the
+requirements in order, `min_quality_score`), and the bridge recomputes the fingerprint of the session **as it actually ran**:
+requirements from the stored judge input, threshold from `final.json` (both sealed by the anchor), and the template is
+proven by rebuilding the prompt from the stored input and requiring its SHA-256 to equal the envelope's `prompt_hash`. A
+qualification file without the field, with another fingerprint, or a session whose prompt cannot be reconstructed is
+`NOT_QUALIFIED`. Consequences: changing `OLA_MIN_QUALITY_SCORE` or `OLA_QUALITY_REQUIREMENTS`, or editing the prompt, invalidates
+every existing qualification until the judge is measured again, and a measurement made with a measurement-only variant
+(`scripts/judge_variants.py`) never qualifies a judge that runs the production prompt. The refactor that made this
+possible changed no byte of the prompt (golden hashes in `tests/test_judge_prompt.py` were taken from the old code). Ambient
+`enforce` builds the prompt itself, so it passes the fingerprint of the requirements and threshold it is configured with
+(`judge_qualification(..., prompt_fingerprint=...)`); the same rules apply.
 
 ## Limits that remain
 
@@ -369,3 +386,16 @@ OLA-side `cfr.result` endpoint would only record a number the runner claims. Tha
 claim. A real integration needs the runner to sign its result with an Ed25519 key that OLA pins (the same mechanism as the
 pipeline signature) and a way to re-run the assertions. Neither the runner nor a Docker daemon is available in this
 environment, so nothing was built and nothing is claimed. Status: **UNKNOWN**.
+
+### Measured prompt variants (measurement only)
+
+`scripts/judge_eval.py --variant NAME` runs the same labelled set and the same rule with another prompt: `scoped-requirements`
+(two requirements a one-number answer can meet), `plain-input` (plain-text sections with a digest-tagged deliverable marker
+instead of a JSON blob), `check-first` (tell the judge to work out the answer and compare), `combined`. Each isolates one
+hypothesis for why correct answers are rejected. Workflow `judge-variants.yml` runs 3 judges x 4 variants (it runs on a pull
+request only when it or the harness changes, and on demand) and prints `WOULD_QUALIFY` per pair plus the rejection causes and
+the false accepts. **Thresholds and the production prompt are not changed by it.** A variant becomes the production prompt only
+by a separate change that moves its template into Igor and re-measures; if a variant lifts correct-accepted it must not lift
+false-accept (the same 72 wrong answers, including injection attempts, are in the set). Until results exist the cause of the
+0/67 is still a hypothesis.
+

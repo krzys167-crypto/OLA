@@ -1,0 +1,123 @@
+name: Judge prompt variants (measurement only)
+
+# Why: in the v2 measurement three of four judges rejected 66-67 of 67 CORRECT answers, so none qualifies (two-sided
+# rule). This workflow measures, on the SAME 72 wrong / 67 correct answers and with the SAME acceptance rule, whether a
+# different judge prompt changes that. It changes nothing in production: thresholds are untouched, Igor still sends the
+# baseline prompt, and a measurement made with a variant never qualifies a baseline judge (the qualification is bound to
+# the prompt fingerprint, see ola_pipeline.igor.judge_prompt_fingerprint).
+# Runs on a pull request only when this workflow or the harness changes (it is 12 CPU jobs of 1-1.5 h), and on demand.
+# Results are annotations (WOULD_QUALIFY=yes|NO per model and variant). NOT a certification: one run, one dataset.
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Variant to run (all = every variant)"
+        required: false
+        default: "all"
+  pull_request:
+    paths:
+      - ".github/workflows/judge-variants.yml"
+      - "scripts/judge_variants.py"
+      - "scripts/judge_eval.py"
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      variants: ${{ steps.p.outputs.variants }}
+    steps:
+      - id: p
+        shell: bash
+        env:
+          WANT: ${{ github.event_name == 'workflow_dispatch' && inputs.variant || 'all' }}
+        run: |
+          set -euo pipefail
+          all='["scoped-requirements","plain-input","check-first","combined"]'
+          if [ "$WANT" = "all" ]; then
+            echo "variants=$all" >> "$GITHUB_OUTPUT"
+          else
+            case "$WANT" in scoped-requirements|plain-input|check-first|combined) ;; *) echo "unknown variant: $WANT" >&2; exit 1;; esac
+            echo "variants=[\"$WANT\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+  judge-variants:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    strategy:
+      fail-fast: false
+      matrix:
+        judge: ["llama3.2:3b", "llama3.1:8b", "qwen2.5:7b"]
+        variant: ${{ fromJSON(needs.plan.outputs.variants) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - name: Set up Ollama and pull the judge
+        shell: bash
+        env:
+          JUDGE: ${{ matrix.judge }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve >/tmp/ollama.log 2>&1 &
+          for _ in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:11434/api/version >/dev/null && break
+            sleep 2
+          done
+          ollama pull "$JUDGE"
+      - name: Judge against the v2 labelled answers with the variant prompt
+        shell: bash
+        env:
+          JUDGE: ${{ matrix.judge }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          echo "::notice title=dataset::judge_eval_v2.json sha256=$(sha256sum tests/data/judge_eval_v2.json | cut -d' ' -f1)"
+          python scripts/judge_eval.py --model "$JUDGE" --variant "$VARIANT" --dataset tests/data/judge_eval_v2.json --out judge-variant.json | tee judge-variant.txt
+          python - <<'PY'
+          import json, math
+          d = json.load(open("judge-variant.json"))
+          fa = d["summary"]["false_accept"]; k, n = fa["k"], fa["n"]
+          ca = d["summary"]["correct_accepted"]; ck, cn = ca["k"], ca["n"]
+          z = 1.96
+          def up(a, b):
+              p = a / b; dd = 1 + z * z / b
+              return min(1.0, (p + z * z / (2 * b) + z * math.sqrt(p * (1 - p) / b + z * z / (4 * b * b))) / dd)
+          def lo(a, b):
+              p = a / b; dd = 1 + z * z / b
+              return max(0.0, (p + z * z / (2 * b) - z * math.sqrt(p * (1 - p) / b + z * z / (4 * b * b))) / dd)
+          u, l = up(k, n), lo(ck, cn)
+          ok = u <= 0.15 and l >= 0.5 and n >= 20 and cn >= 20 and d["summary"]["verdicts_obtained"] > 0
+          tag = f"{d['model']} / {d['variant']}"
+          rej = [r for r in d["runs"] if r["label"] == "correct" and r["verdict"] == "REJECT" and r.get("why")]
+          if rej:
+              not_pass = sum(1 for r in rej if r["why"]["decision"] != "PASS")
+              low = sum(1 for r in rej if r["why"]["below_min_score"])
+              corr = sum(1 for r in rej if r["why"]["corrections"] > 0)
+              print(f"::notice title=variant why correct answers were rejected::{tag} {len(rej)} rejected: "
+                    f"decision!=PASS {not_pass}, score<min {low}, with corrections {corr}")
+              for r in rej[:2]:
+                  w = r["why"]
+                  print(f"::notice title=variant sample rejection::{tag} {r['id']} decision={w['decision']} score={w['quality_score']} "
+                        f"reason={w['reason']!r} first_correction={w['first_correction']!r}")
+          bad = [r["id"] for r in d["runs"] if r["label"] == "wrong" and r["verdict"] == "ACCEPT"]
+          print(f"::notice title=variant false accepts::{tag} accepted {len(bad)} wrong answer(s): {', '.join(bad[:12]) or 'none'}")
+          print(f"::notice title=variant summary::{tag} false_accept {k}/{n} upper95={u:.3f} (<=0.150 needed); "
+                f"correct_accepted {ck}/{cn} lower95={l:.3f} (>=0.500 needed); verdicts_obtained {d['summary']['verdicts_obtained']}; "
+                f"WOULD_QUALIFY={'yes' if ok else 'NO'}; prompt={d['judge_prompt_sha256'][:12]}; model_digest={d['meta'].get('model_digest')}")
+          PY
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-variant-${{ strategy.job-index }}
+          path: |
+            judge-variant.json
+            judge-variant.txt

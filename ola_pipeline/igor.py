@@ -111,6 +111,39 @@ def parse_judge(text: str) -> Tuple[Optional[Dict[str, Any]], str]:
     return {k: obj[k] for k in ("decision", "quality_score", "findings", "required_corrections", "reason")}, ""
 
 
+JUDGE_INSTRUCTION = (
+    "Return ONLY a JSON object with keys: decision (PASS|REVIEW|BLOCK), quality_score "
+    "(integer 0-100), findings (array of strings), required_corrections (array of "
+    "strings), reason (string). PASS only if the deliverable fully satisfies the task "
+    "and every quality requirement and no problem remains unresolved. Put concrete, "
+    "actionable fixes into required_corrections.\n\nINPUT:\n"
+)
+
+
+def build_messages(task: str, output: Optional[str], checks: List[Dict[str, Any]],
+                   requirements: Tuple[str, ...]) -> List[Dict[str, str]]:
+    """The judge prompt. Pure: the same inputs give the same bytes (pinned by a golden hash in the tests)."""
+    return [
+        {"role": "system", "content": IGOR_SYSTEM},
+        {"role": "user", "content": JUDGE_INSTRUCTION
+            + canonical_bytes({"task": task, "quality_requirements": list(requirements), "nina_output": output,
+                               "evidence_checks": [{k: c[k] for k in ("name", "status", "detail")} for c in checks]}
+                              ).decode("utf-8")},
+    ]
+
+
+_PROBE_TASK, _PROBE_OUTPUT = "\x00PROBE-TASK", "\x00PROBE-OUTPUT"
+
+
+def judge_prompt_fingerprint(requirements: Tuple[str, ...], min_quality_score: int,
+                             builder=build_messages) -> str:
+    """Identity of the judge AS CONFIGURED: the prompt template (system text, instruction, key layout), the quality
+    requirements and the acceptance threshold. A judge measurement is only about the judge with this fingerprint."""
+    probe = builder(_PROBE_TASK, _PROBE_OUTPUT, [], tuple(requirements))
+    return sha256_hex(canonical_bytes({"messages": probe, "requirements": list(requirements),
+                                       "min_quality_score": min_quality_score}))
+
+
 class Igor:
     agent_id = "igor"
 
@@ -125,19 +158,7 @@ class Igor:
         return "SAME_MODEL_SEPARATE_CONTEXT" if same else "DIFFERENT_MODEL"
 
     def _messages(self, task: str, output: Optional[str], checks: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-        return [
-            {"role": "system", "content": IGOR_SYSTEM},
-            {"role": "user", "content": (
-                "Return ONLY a JSON object with keys: decision (PASS|REVIEW|BLOCK), quality_score "
-                "(integer 0-100), findings (array of strings), required_corrections (array of "
-                "strings), reason (string). PASS only if the deliverable fully satisfies the task "
-                "and every quality requirement and no problem remains unresolved. Put concrete, "
-                "actionable fixes into required_corrections.\n\nINPUT:\n"
-                + canonical_bytes({"task": task, "quality_requirements": list(self.requirements),
-                                   "nina_output": output,
-                                   "evidence_checks": [{k: c[k] for k in ("name", "status", "detail")} for c in checks]}
-                                  ).decode("utf-8"))},
-        ]
+        return build_messages(task, output, checks, self.requirements)
 
     def calibrate(self, *, vault: EvidenceVault, anchor: SourceAnchor, session_id: str, run_id: str,
                   nina_env: Dict[str, Any], iteration: int) -> Dict[str, Any]:

@@ -242,3 +242,33 @@ def test_rejection_why_is_clipped_and_empty_for_unparsable_output():
                        "reason": "x" * 1000})
     w = je.rejection_why(long, 70)
     assert len(w["reason"]) == 160 and w["below_min_score"] is True and w["corrections"] == 0
+
+
+# ---- prompt identity and variants ------------------------------------------------------------------------------
+
+def test_the_result_carries_the_fingerprint_of_the_prompt_it_was_measured_with(fake, items):
+    from ola_pipeline.config import DEFAULT_REQUIREMENTS
+    from ola_pipeline.igor import judge_prompt_fingerprint
+    r = _run(fake, items[:3], lambda label, idx: _verdict("PASS"))
+    assert r["variant"] == "baseline" and r["requirements"] == list(DEFAULT_REQUIREMENTS)
+    assert r["judge_prompt_sha256"] == judge_prompt_fingerprint(DEFAULT_REQUIREMENTS, Policy().min_quality_score)
+
+
+def test_a_variant_sends_its_own_prompt_and_gets_its_own_fingerprint(fake, items):
+    sent = []
+    fake.script("judge-test", lambda idx, msgs: (sent.append(msgs), _verdict("PASS"))[1])
+    base = je.evaluate(items[:1], _cfg(fake), Policy(allow_test_double=True))
+    plain = je.evaluate(items[:1], _cfg(fake), Policy(allow_test_double=True), variant="plain-input")
+    scoped = je.evaluate(items[:1], _cfg(fake), Policy(allow_test_double=True), variant="scoped-requirements")
+    assert len({base["judge_prompt_sha256"], plain["judge_prompt_sha256"], scoped["judge_prompt_sha256"]}) == 3
+    assert plain["variant"] == "plain-input" and scoped["requirements"] != base["requirements"]
+    assert "<<<DELIVERABLE-" in sent[1][1]["content"] and "<<<DELIVERABLE-" not in sent[0][1]["content"]
+    assert "Answers the task correctly." in sent[2][1]["content"]
+
+
+def test_an_unknown_variant_is_refused_before_any_call(fake, items):
+    seen = []
+    fake.script("judge-test", lambda idx, msgs: (seen.append(1), _verdict("PASS"))[1])
+    with pytest.raises(ValueError, match="unknown variant"):
+        je.evaluate(items[:1], _cfg(fake), Policy(allow_test_double=True), variant="lenient")
+    assert seen == []
