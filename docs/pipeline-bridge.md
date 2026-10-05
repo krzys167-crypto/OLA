@@ -499,3 +499,12 @@ an enrolled `runner`; the server computes the score. Tested end to end (`tests/t
 fixed run -> PASS and ranked, unfixed -> FAIL and not ranked, CA replaced -> FAIL with blast radius 2, one test per variant).
 **Not covered:** Docker/k3d/compose (not provided), k6 (script provided, not run), independent measurement (the runner
 attests the metrics), calibration of the weights.
+
+## Control evidence matrix (`governance/controls.json`)
+14 controls (EC-01..EC-14: chain, server-only records, fail-closed gate, anchor, signing, RFC 3161, judge qualification,
+ambient IGOR, firewall, identity, CFR, Jev, record verification, evidence graph), each with its mechanism, the tests that
+check it, the CI job that runs them and **a stated limit**. `python scripts/check_controls.py` fails when a referenced test,
+symbol or CI job does not exist, when no listed CI job runs a control's test file, or (`--run`) when a referenced test does
+not pass; the status (`VERIFIED_LOCALLY` / `FAILING` / `NOT_RUN` / `BROKEN_REFERENCE`) is computed, never stored. A skipped or
+uncollectable test is not a pass. Generated table: `docs/control-evidence-matrix.md`. Workflow: `controls.yml`. These are our
+own ids (EC-nn), not the CTRL-nn ids of the governance documents, which are not in this repository.

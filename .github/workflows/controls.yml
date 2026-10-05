@@ -1,0 +1,41 @@
+name: Control evidence matrix
+
+# Every control in governance/controls.json must point at a mechanism, tests and a CI job that exist, CI must run those
+# tests, and (--run) the referenced tests must pass. The status is computed here, never read from the file.
+
+on:
+  pull_request:
+    paths:
+      - "governance/**"
+      - "scripts/check_controls.py"
+      - "docs/control-evidence-matrix.md"
+      - ".github/workflows/**"
+      - "app/**"
+      - "tests/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  controls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - name: Check references and run the referenced tests
+        run: |
+          set -o pipefail
+          python scripts/check_controls.py --run | tee controls.txt
+          verified=$(grep -c ' VERIFIED_LOCALLY ' controls.txt || true)
+          total=$(grep -c '^EC-' controls.txt || true)
+          echo "::notice title=control evidence::${verified}/${total} controls VERIFIED (all referenced tests passed on this runner)"
+      - name: The committed matrix is current
+        run: |
+          python scripts/check_controls.py --write-md >/dev/null
+          git diff --exit-code docs/control-evidence-matrix.md

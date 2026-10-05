@@ -1,0 +1,324 @@
+{
+  "schema": "ola.controls/1",
+  "note": "Status is never stored here: it is computed by scripts/check_controls.py from what exists and (with --run) from what passes.",
+  "controls": [
+    {
+      "id": "EC-01",
+      "statement": "Tenant evidence is a hash chain: an edit, deletion or reorder is detected and every dependent decision fails closed.",
+      "mechanism": [
+        {
+          "file": "app/hashchain.py",
+          "symbol": "verify_chain"
+        }
+      ],
+      "tests": [
+        "tests/test_pipeline_bridge.py::test_broken_tenant_chain_blocks",
+        "tests/test_pipeline_bridge.py::test_concurrent_appends_keep_one_valid_chain",
+        "tests/test_firewall.py::test_broken_chain_refuses_decisions_and_state",
+        "tests/test_cfr.py::test_broken_chain_refuses_everything",
+        "tests/test_identity.py::test_broken_chain_refuses_identity_decisions"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "The chain is local to the OLA database: whoever controls the database and the code can rewrite it consistently. EC-06 is the external anchor for that."
+    },
+    {
+      "id": "EC-02",
+      "statement": "Server-only record types (identity.*, firewall.*, cfr.*, pipeline.*) cannot be written through the public evidence API.",
+      "mechanism": [
+        {
+          "file": "app/main.py",
+          "symbol": "/evidence"
+        }
+      ],
+      "tests": [
+        "tests/test_firewall.py::test_forged_decision_through_the_public_evidence_api_is_refused",
+        "tests/test_identity.py::test_forged_registry_records_cannot_be_posted",
+        "tests/test_cfr.py::test_forged_cfr_records_cannot_be_posted"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "A holder of the database or the server process is outside this control."
+    },
+    {
+      "id": "EC-03",
+      "statement": "The pipeline gate fails closed: only a fully verified chain with human approval is VERIFIED; unknown states are never upgraded.",
+      "mechanism": [
+        {
+          "file": "app/pipeline_bridge.py",
+          "symbol": "map_states"
+        }
+      ],
+      "tests": [
+        "tests/test_pipeline_bridge.py::test_state_mapping_is_fail_closed",
+        "tests/test_pipeline_bridge.py::test_review_required_maps_to_unknown_and_never_verifies",
+        "tests/test_pipeline_bridge.py::test_human_approval_is_required_even_when_everything_verifies",
+        "tests/test_pipeline_bridge.py::test_unreachable_ollama_fails_closed_but_is_still_evidence"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "A VERIFIED verdict says the process was followed and evidenced, not that the answer is correct (see EC-07)."
+    },
+    {
+      "id": "EC-04",
+      "statement": "A finished session is anchored in the tenant chain; any later change of envelopes, artifacts or final.json is detected.",
+      "mechanism": [
+        {
+          "file": "app/pipeline_bridge.py",
+          "symbol": "anchor_session"
+        }
+      ],
+      "tests": [
+        "tests/test_pipeline_bridge.py::test_consistent_rewrite_of_a_session_is_caught_by_the_anchor",
+        "tests/test_pipeline_bridge.py::test_interior_envelope_edit_is_reported_as_a_change_after_anchoring",
+        "tests/test_pipeline_bridge.py::test_tampered_artifact_blocks",
+        "tests/test_pipeline_bridge.py::test_double_anchor_is_blocked"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "The anchor proves consistency with what was sealed, not truth of the content."
+    },
+    {
+      "id": "EC-05",
+      "statement": "Sessions can be Ed25519-signed and verified against a key pinned out of band.",
+      "mechanism": [
+        {
+          "file": "app/pipeline_bridge.py",
+          "symbol": "SigningError"
+        }
+      ],
+      "tests": [
+        "tests/test_pipeline_bridge.py::test_signed_session_with_pinned_key",
+        "tests/test_pipeline_bridge.py::test_wrong_pin_blocks",
+        "tests/test_pipeline_bridge.py::test_pin_without_signature_blocks"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "The operator key (F03) is not generated in this repository's CI; sessions in CI use test keys."
+    },
+    {
+      "id": "EC-06",
+      "statement": "The chain head can be stamped by an RFC 3161 time-stamp authority and verified offline.",
+      "mechanism": [
+        {
+          "file": "app/anchor_external.py",
+          "symbol": "verify"
+        }
+      ],
+      "tests": [
+        "tests/test_anchor_external.py::test_reply_signed_by_an_untrusted_ca_is_rejected",
+        "tests/test_anchor_external.py::test_rewritten_history_is_block",
+        "tests/test_anchor_external.py::test_verification_never_trusts_a_stored_verdict",
+        "tests/test_anchor_external.py::test_modified_stored_file_is_block"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "Tested against a locally generated TSA; no production TSA was contacted. A stamp proves the head existed at the time, nothing more."
+    },
+    {
+      "id": "EC-07",
+      "statement": "A PASS becomes VERIFIED only if the judge was measured on both sides (false accepts and accepted correct answers); qualification can only downgrade.",
+      "mechanism": [
+        {
+          "file": "app/pipeline_bridge.py",
+          "symbol": "judge_qualification"
+        }
+      ],
+      "tests": [
+        "tests/test_pipeline_bridge.py::test_qualification_can_only_downgrade_never_upgrade",
+        "tests/test_pipeline_bridge.py::test_a_judge_that_rejects_everything_is_not_qualified",
+        "tests/test_pipeline_bridge.py::test_an_unqualified_judge_downgrades_verified_to_unknown_even_with_human_approval"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "MEASURED: no judge qualifies on the v2 set (llama3.2:3b 6/72 false accepts, llama3.1:8b and qwen2.5:7b 0/67 correct accepted, gemma2:9b 50/72 false accepts), so the control currently withholds VERIFIED from every judge. Off unless OLA_JUDGE_QUALIFICATION_FILE is set."
+    },
+    {
+      "id": "EC-08",
+      "statement": "Ambient IGOR never promotes a result; in enforce mode an answer is released only by an observed, qualified, different judge.",
+      "mechanism": [
+        {
+          "file": "app/ambient.py",
+          "symbol": "enforce"
+        }
+      ],
+      "tests": [
+        "tests/test_ambient.py::test_enforce_can_only_downgrade_never_promote",
+        "tests/test_ambient.py::test_enforce_without_a_qualification_is_a_503_before_any_model_is_called",
+        "tests/test_ambient.py::test_enforce_the_model_that_wrote_the_answer_cannot_judge_it",
+        "tests/test_ambient.py::test_enforce_rejects_a_test_double_runtime"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "Enforce has no judge it can accept today (see EC-07)."
+    },
+    {
+      "id": "EC-09",
+      "statement": "Agent Firewall: every decision is evidence; a permit is single-use, bound to the action and to the pinned policy; a review needs a human approval.",
+      "mechanism": [
+        {
+          "file": "app/firewall.py",
+          "symbol": "authorize"
+        }
+      ],
+      "tests": [
+        "tests/test_firewall.py::test_policy_digest_is_pinned",
+        "tests/test_firewall.py::test_allow_is_permitted_exactly_once",
+        "tests/test_firewall.py::test_approval_is_bound_to_the_action",
+        "tests/test_firewall.py::test_agent_cannot_approve_itself_and_reason_is_required",
+        "tests/test_firewall.py::test_concurrent_consumers_get_exactly_one_permit"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "The firewall decides and records; it does not sandbox the action. Enforcement depends on the caller honouring the permit."
+    },
+    {
+      "id": "EC-10",
+      "statement": "Agent and approver identity: Ed25519 principals enrolled in the chain; requests are signed, bound to purpose, tenant and subject, single-use and time-limited.",
+      "mechanism": [
+        {
+          "file": "app/identity.py",
+          "symbol": "verify"
+        }
+      ],
+      "tests": [
+        "tests/test_identity.py::test_replay_stale_future_and_nonce_rules",
+        "tests/test_identity.py::test_signature_is_bound_to_the_exact_action",
+        "tests/test_identity.py::test_one_key_one_principal_and_ids_are_never_reused",
+        "tests/test_identity.py::test_revoked_agent_is_locked_out_immediately",
+        "tests/test_identity.py::test_agent_key_cannot_be_enrolled_as_its_own_approver"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "Not an identity provider: enrolment is gated by one operator token; a stolen private key is a valid principal until revoked. Default mode is off."
+    },
+    {
+      "id": "EC-11",
+      "statement": "CFR: runner results are signed and scored by the server; the runner's own score is never read; only PASS ranks; unknown assertions never pass.",
+      "mechanism": [
+        {
+          "file": "app/cfr.py",
+          "symbol": "submit_result"
+        }
+      ],
+      "tests": [
+        "tests/test_cfr.py::test_runner_cannot_supply_its_own_score_or_tier",
+        "tests/test_cfr.py::test_judge_never_passes_on_unknown_or_missing",
+        "tests/test_cfr.py::test_leaderboard_ranks_only_pass_best_per_participant",
+        "tests/test_cfr_certificate_apocalypse.py::test_an_unfixed_run_fails_and_never_ranks",
+        "tests/test_cfr_certificate_apocalypse.py::test_a_fixed_run_is_scored_by_the_server_and_ranks"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "The runner attests the metrics; a lying runner can sign false numbers. Weights are uncalibrated. Docker/k3d modes are not provided."
+    },
+    {
+      "id": "EC-12",
+      "statement": "Jev decision fabric is advisory: off by default, never executes, size-limited, malformed answers are BLOCKED and recorded.",
+      "mechanism": [
+        {
+          "file": "app/decision_fabric.py",
+          "symbol": "DecisionFabric"
+        }
+      ],
+      "tests": [
+        "tests/test_decision_endpoint.py::test_off_by_default_and_never_calls_the_provider",
+        "tests/test_decision_endpoint.py::test_on_returns_advisory_and_records_chained_evidence",
+        "tests/test_decision_endpoint.py::test_size_limits_are_enforced_before_the_provider_is_called",
+        "tests/test_decision_endpoint.py::test_malformed_answers_are_blocked"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "UNKNOWN: the quality of Jev's decisions has not been measured (no provider key in CI; the jev-quality job reports NOT_PROVEN)."
+    },
+    {
+      "id": "EC-13",
+      "statement": "Single-record verification returns PASS/FAIL/UNKNOWN from a recomputed hash and the chain, never from a stored verdict.",
+      "mechanism": [
+        {
+          "file": "app/main.py",
+          "symbol": "verify_evidence"
+        }
+      ],
+      "tests": [
+        "tests/test_firewall.py::test_verify_evidence_pass_fail_and_isolation"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "Verifies integrity of the record, not the truth of its payload."
+    },
+    {
+      "id": "EC-14",
+      "statement": "The evidence graph gives no execution authority: it can represent a decision-to-evidence path but cannot act on it.",
+      "mechanism": [
+        {
+          "file": "evidence_graph.py",
+          "symbol": "GraphStore"
+        }
+      ],
+      "tests": [
+        "tests/test_evidence_graph.py::test_decision_to_evidence_is_representable_without_execution_authority",
+        "tests/test_evidence_graph.py::test_cross_tenant_path_and_lineage_fail_closed"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "Graph facts are only as good as what was written into them."
+    }
+  ]
+}
