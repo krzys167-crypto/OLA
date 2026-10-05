@@ -1,4 +1,5 @@
 import hashlib
+import re
 import json
 import os
 import uuid
@@ -20,7 +21,7 @@ from .decision_report import build_decision_report
 from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout, payment_verified
 from .stripe_webhook import process_checkout_event
-from . import ambient, anchor_external, pipeline_bridge
+from . import ambient, anchor_external, firewall, pipeline_bridge
 from .payment_binding import checkout_result_matches
 
 app = FastAPI(title="OLA Execution Gate")
@@ -285,9 +286,15 @@ def payment_success(session_id: str):
 @app.post("/evidence")
 def create_evidence(body: dict, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
+    record_type = body.get("record_type", "generic")
+    # Dotted types (agent.*, igor.*, pipeline.*, anchor.*, firewall.*, ...) are written by the server only:
+    # IGOR, the firewall and the anchors trust them, so a caller must not be able to forge one here.
+    if not isinstance(record_type, str) or not re.fullmatch(r"[a-z0-9_-]{1,64}", record_type):
+        raise HTTPException(status_code=400, detail="record_type must match [a-z0-9_-]{1,64} "
+                                                    "(dotted types are reserved for the server)")
     return append_record(
         tenant_id,
-        body.get("record_type", "generic"),
+        record_type,
         body.get("payload", {}),
     )
 
@@ -659,6 +666,64 @@ def get_anchor_timestamp(anchor_seq: int, x_api_key: str | None = Header(default
         return anchor_external.verify_timestamp(tenant_id, anchor_seq)
     except anchor_external.AnchorNotConfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+# ------------------------------------------------------------------ Agent Firewall + evidence verification
+def _firewall_call(fn, *args):
+    try:
+        return fn(*args)
+    except firewall.FirewallError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except firewall.FirewallNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except firewall.FirewallConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except firewall.FirewallUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/firewall/authorize")
+def firewall_authorize(body: dict, x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    return _firewall_call(firewall.authorize, tenant_id, body.get("agent_id"), body.get("action"), body.get("context"))
+
+
+@app.post("/firewall/approve")
+def firewall_approve(body: dict, x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    return _firewall_call(firewall.approve, tenant_id, body.get("request_id"), body.get("approver_id"),
+                          body.get("reason"))
+
+
+@app.post("/firewall/consume")
+def firewall_consume(body: dict, x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    return _firewall_call(firewall.consume, tenant_id, body.get("request_id"), body.get("agent_id"),
+                          body.get("action"), body.get("context"))
+
+
+@app.get("/firewall/requests/{request_id}")
+def firewall_request(request_id: str, x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    return _firewall_call(firewall.state, tenant_id, request_id)
+
+
+@app.post("/evidence/{record_id}/verify")
+def verify_evidence(record_id: str, x_api_key: str | None = Header(default=None)):
+    """PASS / FAIL / UNKNOWN for ONE record: recomputed hash, link to its predecessor, and the whole tenant
+    chain. PASS means integrity inside the tenant chain only - not authorship, not truth, not external time."""
+    tenant_id = tenant_from_key(x_api_key)
+    chain = pipeline_bridge.load_chain(tenant_id)
+    rec = next((r for r in chain if r["id"] == record_id), None)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="evidence not found")
+    own_hash = compute_record_hash(rec["tenant_id"], rec["seq"], rec["prev_hash"], rec["payload_json"])
+    ok, why = verify_chain(chain)
+    state = "PASS" if (ok and own_hash == rec["record_hash"]) else "FAIL"
+    return {"id": record_id, "seq": rec["seq"], "verification": state,
+            "checks": {"record_hash": own_hash == rec["record_hash"], "chain": ok},
+            "reason": "" if state == "PASS" else (why if not ok else "record hash mismatch"),
+            "proves": "integrity of this record inside the tenant chain; not authorship, truth or external time"}
 
 
 @app.post("/stripe/webhook")

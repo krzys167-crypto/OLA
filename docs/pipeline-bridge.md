@@ -303,3 +303,49 @@ Status: **VERIFIED (sandbox)** against a local TSA built with `openssl ts` (requ
 roundtrip, wrong CA, replayed token, garbage/empty reply, TSA down, file tampering, history rewrite with
 recomputed hashes -> BLOCK; 7 mutants of the module all detected). **UNKNOWN** for every commercial TSA (needs a
 run with that TSA's CA file), and UNKNOWN in Docker slim images until `openssl` is installed there.
+
+## Agent Firewall, Evidence verification and CFR (step 5)
+
+Source material: the `ola-agent-firewall` and `ola-evidence-gateway` repositories in the fork hold only a README
+(the product contract); the code exists in archives (Firewall v0.3 "commercial", Evidence Gateway 1.0.0). Those
+archives were **read, not imported**. The v0.3 engine is a demo: its YAML policy is never loaded, evidence lives in
+memory, it trusts a caller-supplied `contains_secret`, and an unknown action type is ALLOW. The contract's own
+"E2E Definition of Done" cannot be met that way, so the firewall was written natively on OLA's tenant chain.
+
+### Agent Firewall (`app/firewall.py`, `/firewall/*`)
+`POST /firewall/authorize` -> ALLOW / REVIEW / BLOCK with `risk_score`, `policy_id`, `policy_version`, reasons;
+`POST /firewall/approve` (REVIEW only); `POST /firewall/consume` (the executor asks for a one-time permit and must
+present the same action again); `GET /firewall/requests/{id}`. Everything is derived from `firewall.*` records
+in the tenant chain; the chain must verify before any answer is produced.
+
+| Contract item (README "Definition of Done") | Status |
+|---|---|
+| authenticated request, tenant isolation | VERIFIED (sandbox): 401 without key, other tenant -> 404 |
+| policy evaluated, risk score, decision, policy version retained | VERIFIED (sandbox): 15-row decision table; rule table digest pinned by a test |
+| REVIEW requires explicit approval; BLOCK prevents execution; ALLOW permits | VERIFIED (sandbox) |
+| approval cannot be reused, replayed, redirected to another action, or outlive its TTL (`OLA_FIREWALL_APPROVAL_TTL_S`, default 900) | VERIFIED (sandbox), incl. 6 concurrent consumers -> exactly one permit |
+| fail closed: unknown action -> REVIEW, unknown/missing environment -> production, malformed -> 400, no evidence -> no decision (503), broken chain -> 503 | VERIFIED (sandbox) |
+| secrets not written to evidence; secret detected server-side (flag can only raise) | VERIFIED (sandbox): digests only |
+| E2E in CI, runtime health, deployment | **UNKNOWN** until the CI run of this branch is read |
+| per-agent identity, approver is a person, RBAC | **NOT IMPLEMENTED**: `agent_id`/`approver_id` are strings asserted by the tenant API-key holder; only "same string cannot do both" is enforced |
+| enforcement | The firewall decides and cannot stop a caller that skips it. It is only as strong as the rule "the executor acts on a `consume` permit and on nothing else" |
+
+Policy decisions that differ from the v0.3 demo (on purpose): `shell`/`code_exec` in production are REVIEW (the
+README's own example), only `delete` in production is BLOCK; secrets are found by scanning the action, not by trusting a flag.
+
+### Evidence verification (from the Gateway contract)
+`POST /evidence/{id}/verify` -> `PASS` / `FAIL` (404 when the record is not the tenant's). PASS means integrity inside the
+tenant chain; it proves neither authorship, nor truth, nor time (use the RFC 3161 anchor for time).
+`UNKNOWN` is reserved for what cannot be checked; this endpoint always can, so it never returns it.
+
+### Closed hole: forged server records through the public API
+`POST /evidence` used to accept any `record_type`. A tenant could write `agent.codeact` records that IGOR then
+verifies, or `igor.ambient` / `firewall.decision` / `anchor.timestamp` records. Types are now limited to
+`[a-z0-9_-]{1,64}`; dotted types are written by the server only.
+
+### CFR (Code Forensics Range) - **NOT integrated, by decision**
+CFR-15/18 are scenario labs that run in Docker/k3d. Their result (score, assertions) would reach OLA from the runner, so an
+OLA-side `cfr.result` endpoint would only record a number the runner claims. That is not evidence; it would be a nicer-looking
+claim. A real integration needs the runner to sign its result with an Ed25519 key that OLA pins (the same mechanism as the
+pipeline signature) and a way to re-run the assertions. Neither the runner nor a Docker daemon is available in this
+environment, so nothing was built and nothing is claimed. Status: **UNKNOWN**.

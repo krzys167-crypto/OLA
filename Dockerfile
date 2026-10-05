@@ -2,7 +2,7 @@ FROM debian:13-slim
 
 ENV DEBIAN_FRONTEND=noninteractive     PYTHONDONTWRITEBYTECODE=1     PYTHONUNBUFFERED=1     OLA_EG_DB_PATH=/data/ola.db     OLA_PIPELINE_VAULT_DIR=/data/pipeline-evidence     PATH=/opt/venv/bin:$PATH
 
-RUN apt-get update     && apt-get upgrade -y     && apt-get install -y --no-install-recommends python3.13 python3.13-venv ca-certificates     && rm -rf /var/lib/apt/lists/*
+RUN apt-get update     && apt-get upgrade -y     && apt-get install -y --no-install-recommends python3.13 python3.13-venv ca-certificates openssl     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
