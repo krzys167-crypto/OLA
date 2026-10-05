@@ -300,7 +300,7 @@ deployment until you generate the key and run a session with the pin set.**
 
 ### 2. External anchor (RFC 3161 time-stamp, `app/anchor_external.py`)
 The tenant chain and the vault live on one host, so whoever controls both can rewrite them consistently. A
-time-stamp token from an independent TSA over the chain tip cannot be re-created for rewritten history.
+time-stamp token from an independent TSA over the chain tip proves the tip existed by genTime. It catches a rewrite only if the old token and tip hash are kept off this host: a rewriter with host access can drop the old anchor and re-stamp the new tip with the same TSA (reproduced, see the third review below).
 
 | variable | meaning |
 |---|---|
@@ -572,6 +572,32 @@ a requirement for full coverage has to re-anchor a new chain. Tail truncation st
 Heuristic limits that remain: the DLP is a regex set, so an encoded (base64, split) secret passes; `environment` is
 asserted by the caller; ALLOW decisions do not expire; every call re-hashes the whole chain (about 65 microseconds per record).
 `pipeline_bridge.run_pipeline` / `verify_anchor` were read but not exercised by this review: UNKNOWN.
+
+## Third independent review (pipeline bridge, external anchor, hash v2)
+
+Run against `pipeline_bridge` (`run_pipeline`, `verify_anchor`), `anchor_external` and the v2 hash with a fake Ollama and a
+local TSA; every item reproduced by a script. Tests: `tests/test_security_review3.py`, `tests/test_security_review3_pipeline.py`.
+
+| # | defect (reproduced) | state |
+|---|---|---|
+| 1 | judge qualification counts: `n = 10**200` crashed (500), `n = 10**20` with `k = 0` qualified; the qualification file is not bound to the measured configuration (`min_quality_score`, `think`, `seed`, temperature) | crash and absurd counts **fixed** (counts above 10 million are malformed). **Not fixed:** the file's configuration is not compared with the one in use (the eval does not record temperature); the counts are self-asserted in the file |
+| 2 | the external anchor does not catch a host-level rewriter who re-stamps; docs said a token cannot be re-created | **documented**: keep the token and tip hash off-host; the claim was corrected |
+| 3 | an honest anchor turned into BLOCK ("tampering") when the TSA certificate expired | **fixed**: `openssl ts -verify -attime <genTime>`; measured with a certificate valid for 6 s |
+| 4 | the CI workflows (`e2e.yml`, `nina-real-runtime-provenance.yml`) recomputed only the v1 hash, so hash v2 made `e2e` red | **fixed** (my regression from the v2 commit; local tests do not run workflows) |
+| 5 | `verify_anchor` ignored the anchored `signed` / `key_id`: a stripped or re-signed attestation stayed VERIFIED without a pin | **fixed**: BLOCK when the attestation differs from the anchored one |
+| 6 | `replay_from_anchor` is rebuilt from the sealed record only and said VERIFIED next to a tampered session | **fixed**: `replay_verification` carries its `scope` and is BLOCK when the session verification is BLOCK |
+| 7 | `POST /audit` on a tenant with other records returned FAILED `evidence_chain_invalid` | **fixed**: the whole tenant chain is verified |
+| 8 | two stamps of the same tip overwrote each other's files | **fixed**: file names carry the reply hash (old names still verify) |
+| 9 | a bad numeric policy value (`OLA_MAX_ITERATIONS=three`) was a client 400 | **fixed**: 503 |
+| 10 | the anchor of a finished run was appended with 8 attempts | **fixed**: 96 |
+
+**Operational warning (hash v2).** Once a tenant chain holds one v2 record, a record written by an old process that still
+writes v1 makes the whole chain fail verification, and an append-only store cannot repair it. Deploy every writer of the
+chain together; do not run old and new instances against the same database.
+
+Other limits stated by the review: hashes are unkeyed, so anyone who can recompute a whole chain (v1 or v2) is caught only
+by the external anchor; `ca_sha256` is stored in the anchor record but not compared on verification; `POST /anchor/timestamp`
+is not rate limited per tenant.
 
 ## Control evidence matrix (`governance/controls.json`)
 15 controls (EC-01..EC-15: chain, server-only records, fail-closed gate, anchor, signing, RFC 3161, judge qualification,

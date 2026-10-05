@@ -87,9 +87,10 @@ jobs:
           assert [r[0] for r in rows] == result["evidence_ids"], (rows, result)
           expected_prev = "0" * 64
           for expected_seq, row in enumerate(rows):
-              _, row_tenant, seq, _, payload_json, prev_hash, record_hash = row
+              _, row_tenant, seq, rtype, payload_json, prev_hash, record_hash = row
               assert row_tenant == tenant_id; assert seq == expected_seq; assert prev_hash == expected_prev
-              expected_hash = hashlib.sha256(f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")).hexdigest()
+              # independent recomputation of hash v2 (the record type is bound into the hash)
+              expected_hash = hashlib.sha256(f"ola.chain/2|{tenant_id}|{seq}|{prev_hash}|{len(rtype)}:{rtype}|{payload_json}".encode("utf-8")).hexdigest()
               assert record_hash == expected_hash, (seq, record_hash, expected_hash); expected_prev = record_hash
           print(json.dumps({"gate":"INDEPENDENT_RUNTIME_E2E","status":"VERIFIED","container_health":"PASS","http_audit":"PASS","evidence_count":len(rows),"hash_chain":"PASS","result_ids_match_db":True,"commit":os.environ["EXPECTED_COMMIT"]}, sort_keys=True))
           PY
@@ -163,9 +164,10 @@ jobs:
           assert payloads[-1]["final_result"] == expected_result, payloads[-1]
           expected_prev = "0" * 64
           for expected_seq, row in enumerate(rows):
-              _, row_tenant, seq, _, payload_json, prev_hash, record_hash = row
+              _, row_tenant, seq, rtype, payload_json, prev_hash, record_hash = row
               assert row_tenant == tenant_id; assert seq == expected_seq; assert prev_hash == expected_prev
-              expected_hash = hashlib.sha256(f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")).hexdigest()
+              # independent recomputation of hash v2 (the record type is bound into the hash)
+              expected_hash = hashlib.sha256(f"ola.chain/2|{tenant_id}|{seq}|{prev_hash}|{len(rtype)}:{rtype}|{payload_json}".encode("utf-8")).hexdigest()
               assert record_hash == expected_hash; expected_prev = record_hash
           verifier = subprocess.run(
               ["python", "scripts/verify_agent_runtime.py", "--tenant-id", tenant_id,

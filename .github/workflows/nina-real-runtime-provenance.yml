@@ -101,9 +101,9 @@ jobs:
           assert [r[0] for r in rows]==result["evidence_ids"]
           expected_prev="0"*64
           for expected_seq,row in enumerate(rows):
-            _,row_tenant,seq,_,payload_json,prev_hash,record_hash=row
+            _,row_tenant,seq,rtype,payload_json,prev_hash,record_hash=row
             assert row_tenant==tenant_id and seq==expected_seq and prev_hash==expected_prev
-            assert record_hash==hashlib.sha256(f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode()).hexdigest()
+            assert record_hash==hashlib.sha256(f"ola.chain/2|{tenant_id}|{seq}|{prev_hash}|{len(rtype)}:{rtype}|{payload_json}".encode()).hexdigest()
             expected_prev=record_hash
           verifier=subprocess.run(["python","scripts/verify_agent_runtime.py","--tenant-id",tenant_id,"--run-id",result["run_id"],"--expected-commit",os.environ["EXPECTED_COMMIT"],"--expected-task",task,"--expected-result","391","--expected-provider","openai","--expected-model",os.environ["OLA_LLM_MODEL"],"--expected-invocation-type","real_llm"],capture_output=True,text=True)
           assert verifier.returncode==0,(verifier.stdout,verifier.stderr)

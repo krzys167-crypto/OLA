@@ -2,8 +2,10 @@
 
 Why: the tenant chain and the pipeline vault live on the same host. Whoever can rewrite both (and recompute
 the hashes) is not detected by anything inside the system. A time-stamp token signed by an independent
-Time-Stamping Authority (TSA) proves that a given chain tip existed no later than the TSA's signing time;
-rewriting history afterwards cannot reproduce a token for the old tip.
+Time-Stamping Authority (TSA) proves that a given chain tip existed no later than the TSA's signing time.
+It detects a rewrite ONLY IF the old token (and the old tip hash) is kept somewhere the rewriter cannot reach:
+a rewriter with host access can drop the old anchor record and files and stamp the NEW tip with the same honest TSA
+(measured by the third review: the verifier then reports VERIFIED with a later genTime).
 
 What is stamped: SHA-256 of canonical_json({"schema", "tenant_id", "tip_seq", "tip_hash"}). Only a digest
 leaves the host - no payloads, no task text.
@@ -27,9 +29,14 @@ HONEST LIMITS
 * The stamp covers the chain prefix up to tip_seq. Records appended later (including the
   `anchor.timestamp` record itself) are covered only by the NEXT stamp.
 * A TSA proves time of existence, not truth of the content.
+* Keep the .tsq/.tsr files and the stamped tip hash OFF this host (and record the genTime you expect). `verify_timestamp`
+  takes no expected tip or genTime, and a deleted anchor reads as UNKNOWN, not BLOCK: it only checks what is stored here.
+* The TSA certificate is checked at the token's genTime, not at verification time (it may have expired since).
+  Revocation of a TSA key is not checked: a TSA key that was compromised later can back-date a token.
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import ipaddress
 import json
@@ -142,12 +149,34 @@ def _openssl(*args: str, timeout: float = 30) -> subprocess.CompletedProcess:
         raise AnchorNotConfigured(f"openssl could not be run ({type(exc).__name__})") from exc
 
 
+_MONTHS = {m: i for i, m in enumerate(("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1)}
+
+
+def _gen_epoch(tsr: bytes) -> Optional[int]:
+    """genTime of the token (signed inside it) as a Unix time, or None when it cannot be read."""
+    text = _token_time(tsr)
+    m = re.match(r"^([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?\s+(\d{4})\s+GMT$", text or "")
+    if not m or m.group(1) not in _MONTHS:
+        return None
+    try:
+        # datetime validates the fields (calendar.timegm would roll "Oct 40" over into November)
+        return int(datetime.datetime(int(m.group(6)), _MONTHS[m.group(1)], int(m.group(2)), int(m.group(3)),
+                                     int(m.group(4)), int(m.group(5)), tzinfo=datetime.timezone.utc).timestamp())
+    except (ValueError, OverflowError):
+        return None
+
+
 def _verify_token(tsq: bytes, tsr: bytes, ca_file: Path) -> tuple[bool, str]:
+    """The TSA certificate must have been valid when the token was issued (genTime, signed inside the token), not
+    when it is checked: otherwise every honest anchor turns into 'tampering' the day the TSA certificate expires.
+    If genTime cannot be read the check falls back to 'valid now', which is stricter."""
     with tempfile.TemporaryDirectory() as tmp:
         q, r = Path(tmp, "q.tsq"), Path(tmp, "r.tsr")
         q.write_bytes(tsq)
         r.write_bytes(tsr)
-        done = _openssl("ts", "-verify", "-queryfile", str(q), "-in", str(r), "-CAfile", str(ca_file))
+        at = _gen_epoch(tsr)
+        extra = ["-attime", str(at)] if at is not None else []
+        done = _openssl("ts", "-verify", "-queryfile", str(q), "-in", str(r), "-CAfile", str(ca_file), *extra)
         if done.returncode == 0 and b"Verification: OK" in done.stdout + done.stderr:
             return True, "ok"
         detail = (done.stderr or done.stdout).decode("utf-8", "replace").strip().splitlines()
@@ -180,8 +209,11 @@ def _post(cfg: AnchorConfig, tsq: bytes) -> bytes:
 
 
 # ------------------------------------------------------------------ stamp + verify
-def _file_stem(tip_seq: int) -> str:
-    return f"tip-{int(tip_seq):012d}"
+def _file_stem(tip_seq: int, tsr_sha256: Optional[str] = None) -> str:
+    """File name of a stored token. It includes the hash of the reply: two stamps of the same tip (a race) must not
+    overwrite each other's files. Without the hash it is the legacy name (anchors written before)."""
+    base = f"tip-{int(tip_seq):012d}"
+    return base if not tsr_sha256 else f"{base}-{tsr_sha256[:16]}"
 
 
 def _tenant_dir(cfg_dir: Path, tenant_id: str) -> Path:
@@ -207,7 +239,7 @@ def timestamp_tip(tenant_id: str) -> Dict[str, Any]:
         raise AnchorFailed(f"the TSA reply does not verify against the configured CA: {detail}")
     directory = _tenant_dir(cfg.directory, tenant_id)
     directory.mkdir(parents=True, exist_ok=True)
-    stem = _file_stem(tip["seq"])
+    stem = _file_stem(tip["seq"], hashlib.sha256(tsr).hexdigest())
     (directory / f"{stem}.tsq").write_bytes(tsq)
     (directory / f"{stem}.tsr").write_bytes(tsr)
     rec = pb.append_evidence(tenant_id, ANCHOR_TS_TYPE, {
@@ -251,11 +283,15 @@ def verify_timestamp(tenant_id: str, anchor_seq: int, *, cfg: Optional[AnchorCon
     digest = tip_digest(tenant_id, tip_seq, tip_hash)
     if digest.hex() != digest_hex:
         return _fail("the stamped digest does not match the chain tip")
-    stem = _file_stem(tip_seq)
     directory = _tenant_dir(cfg.directory, tenant_id)
-    try:
-        tsq, tsr = (directory / f"{stem}.tsq").read_bytes(), (directory / f"{stem}.tsr").read_bytes()
-    except OSError:
+    tsq = tsr = None
+    for stem in (_file_stem(tip_seq, tsr_sha), _file_stem(tip_seq)):            # current name, then the legacy one
+        try:
+            tsq, tsr = (directory / f"{stem}.tsq").read_bytes(), (directory / f"{stem}.tsr").read_bytes()
+            break
+        except OSError:
+            continue
+    if tsq is None or tsr is None:
         return {"status": "UNKNOWN", "reason": "the stored time-stamp files are missing"}
     if hashlib.sha256(tsq).hexdigest() != tsq_sha or hashlib.sha256(tsr).hexdigest() != tsr_sha:
         return _fail("the stored time-stamp files do not match the recorded hashes")

@@ -103,17 +103,9 @@ def run_controlled_audit(tenant_id, task, scenario):
             .order_by(EvidenceRecord.seq.asc())
         ).all()
 
-    chain = [
-        {
-            "tenant_id": row.tenant_id,
-            "seq": row.seq,
-            "prev_hash": row.prev_hash,
-            "record_hash": row.record_hash,
-            "record_type": row.record_type,
-            "payload_json": row.payload_json,
-        }
-        for row in rows
-    ]
+    # the WHOLE tenant chain is verified: a subset of its rows does not start at seq 0 once the tenant has any
+    # other record and would be reported as broken
+    chain = pipeline_bridge.load_chain(tenant_id)
     chain_ok, reason = verify_chain(chain)
     if not chain_ok:
         return {
@@ -638,7 +630,7 @@ def get_pipeline_session(session_id: str, x_api_key: str | None = Header(default
         raise HTTPException(status_code=404, detail="session not found")
     replay = pipeline_bridge.replay_from_anchor(tenant_id, session_id)
     return {"session_id": session_id, "verification": verification, "replay": replay["events"],
-            "replay_verification": replay["verification"]}
+            "replay_verification": pipeline_bridge.scope_replay(replay["verification"], verification)}
 
 
 @app.post("/anchor/timestamp")

@@ -258,6 +258,9 @@ def qualification_policy_from_env() -> Optional[QualificationPolicy]:
                                _int_env("OLA_JUDGE_QUALIFICATION_MIN_CORRECT", 20))
 
 
+MAX_QUALIFICATION_COUNT = 10_000_000     # a labelled set is tens or hundreds of items; more is not a measurement
+
+
 def _wilson_upper(k: int, n: int, z: float = 1.96) -> float:
     """Upper end of the Wilson score interval for k/n (recomputed here, never read from the file)."""
     p = k / n
@@ -309,10 +312,10 @@ def judge_qualification(judge_env: Optional[dict], policy: Optional[Qualificatio
             return no("model digest of the measurement is missing or differs from the judge's digest",
                       file_sha256=file_sha)
         if not (isinstance(k, int) and isinstance(n, int) and not isinstance(k, bool) and not isinstance(n, bool)
-                and 0 <= k <= n):
+                and 0 <= k <= n <= MAX_QUALIFICATION_COUNT):
             return no("malformed false-accept counts", file_sha256=file_sha)
         if not (isinstance(ck, int) and isinstance(cn, int) and not isinstance(ck, bool) and not isinstance(cn, bool)
-                and 0 <= ck <= cn):
+                and 0 <= ck <= cn <= MAX_QUALIFICATION_COUNT):
             return no("malformed correct-accepted counts", file_sha256=file_sha)
         if doc["summary"].get("verdicts_obtained", 0) <= 0:
             return no("the measurement obtained no verdict at all", file_sha256=file_sha)
@@ -383,7 +386,7 @@ def anchor_session(tenant_id: str, session_dir: Path) -> dict:
         "envelopes": [_envelope_summary(e) for e in facts.envelopes],
         "status": "ANCHORED",
     }
-    rec = append_evidence(tenant_id, ANCHOR_TYPE, payload)
+    rec = append_evidence(tenant_id, ANCHOR_TYPE, payload, attempts=96)   # after a finished, paid-for run: keep trying
     return {**rec, "payload": payload}
 
 
@@ -452,6 +455,19 @@ def verify_anchor(tenant_id: str, session_id: str, *, base: Optional[Path] = Non
             return {"status": "BLOCK", "reason": f"session was changed after anchoring: {why}",
                     "checks": checks, "verifier": verifier, "anchor_record_id": anchors[0]["id"]}
 
+    # The anchor records whether the session was signed and by which key; a stripped or re-signed attestation is a change
+    # after anchoring (without a configured pin the verifier alone would report it as a valid, merely unpinned, session).
+    att_file = sd / "attestation.json"
+    try:
+        disk_key = (json.loads(att_file.read_text("utf-8")).get("key_id") if att_file.is_file() else None)
+    except (OSError, ValueError, AttributeError):
+        disk_key = "unreadable"
+    checks["attestation_matches_anchor"] = disk_key == anchor.get("key_id") and (disk_key is not None) == bool(anchor.get("signed"))
+    if not checks["attestation_matches_anchor"]:
+        return {"status": "BLOCK", "reason": "session was changed after anchoring: the attestation (signed / key id) "
+                                               "differs from the anchored one",
+                "checks": checks, "verifier": verifier, "anchor_record_id": anchors[0]["id"]}
+
     # (gate_state needs no separate comparison: it is read from final.json, whose SHA-256 is anchored.)
     disk_gate = report.get("outcome")
     status, reason = map_states(disk_gate, report["overall"])
@@ -462,6 +478,16 @@ def verify_anchor(tenant_id: str, session_id: str, *, base: Optional[Path] = Non
             "judge_qualification": qualification,
             "anchor_record_id": anchors[0]["id"], "run_id": anchor.get("run_id"), "gate_state": disk_gate,
             "chain_head": disk_head}
+
+
+def scope_replay(replay_verification: dict, verification: dict) -> dict:
+    """The replay is rebuilt from the sealed anchor record only; it never reads the session directory. It must not
+    show VERIFIED next to a session whose own verification is BLOCK (a tampered artifact leaves the record intact)."""
+    out = {**replay_verification, "scope": "sealed anchor record only; the session directory is not read"}
+    if verification.get("status") == "BLOCK" and out.get("status") == "VERIFIED":
+        out["status"] = "BLOCK"
+        out["reason"] = f"the session verification is BLOCK ({verification.get('reason')}); the sealed record alone cannot vouch for it"
+    return out
 
 
 # ------------------------------------------------------------------ replay (descriptive, never re-executes)
@@ -505,7 +531,7 @@ def replay_from_anchor(tenant_id: str, session_id: str) -> dict:
 def build_config(tenant_id: str, base: Optional[Path] = None) -> PipelineConfig:
     try:
         cfg = PipelineConfig.from_env()
-    except ConfigError as exc:
+    except (ConfigError, ValueError) as exc:                  # a bad OLA_* policy value is a misconfiguration (503)
         raise PipelineNotConfigured(str(exc)) from exc
     root = (Path(base) if base is not None else vault_base()) / _check_tenant(tenant_id)
     return dataclasses.replace(cfg, vault_root=root)
@@ -588,7 +614,7 @@ def run_pipeline(tenant_id: str, task: Any, review: ReviewDecision, *, requested
             "authenticity": verification.get("verifier", {}).get("authenticity"),
             "verifier_overall": verification.get("verifier", {}).get("overall"),
         },
-        "replay": replay["events"], "replay_verification": replay["verification"],
+        "replay": replay["events"], "replay_verification": scope_replay(replay["verification"], verification),
         "human_gate": terminal, "policy": report["policy"], "decision_report": report,
         "status": terminal["status"],
     }
