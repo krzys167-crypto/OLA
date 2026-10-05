@@ -315,10 +315,13 @@ jobs:
           fa = d["summary"]["false_accept"]; k, n = fa["k"], fa["n"]
           z = 1.96; p = k / n; dd = 1 + z * z / n
           up = min(1.0, (p + z * z / (2 * n) + z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / dd)
-          ca = d["summary"]["correct_accepted"]
-          print(f"::notice title=judge v2 summary::{d['model']} false_accept {k}/{n} upper95={up:.3f} "
-                f"(<=0.150 would pass the default limit); correct_accepted {ca['k']}/{ca['n']}; verdicts_obtained {d['summary']['verdicts_obtained']}; "
-                f"model_digest={d['meta'].get('model_digest')}")
+          ca = d["summary"]["correct_accepted"]; ck, cn = ca["k"], ca["n"]
+          p2 = ck / cn; d2 = 1 + z * z / cn
+          lo = max(0.0, (p2 + z * z / (2 * cn) - z * math.sqrt(p2 * (1 - p2) / cn + z * z / (4 * cn * cn))) / d2)
+          ok = up <= 0.15 and lo >= 0.5 and n >= 20 and cn >= 20 and d["summary"]["verdicts_obtained"] > 0
+          print(f"::notice title=judge v2 summary::{d['model']} false_accept {k}/{n} upper95={up:.3f} (<=0.150 needed); "
+                f"correct_accepted {ck}/{cn} lower95={lo:.3f} (>=0.500 needed); verdicts_obtained {d['summary']['verdicts_obtained']}; "
+                f"WOULD_QUALIFY={'yes' if ok else 'NO'}; model_digest={d['meta'].get('model_digest')}")
           PY
       - name: Upload evidence
         if: always()

@@ -433,10 +433,12 @@ JUDGE_DIGEST = "e5f6a1b2c3d4" * 5 + "abcd"          # FakeOllama.add_model defau
 
 
 def write_qualification(tmp_path, *, k=0, n=26, model="igor-test", provider="ollama-local", digest=JUDGE_DIGEST,
-                        kind="OLLAMA_OBSERVED", dataset=DATASET_SHA, schema="ola.judge-eval/1", verdicts=47):
+                        kind="OLLAMA_OBSERVED", dataset=DATASET_SHA, schema="ola.judge-eval/1", verdicts=47,
+                        ck=21, cn=21):
     doc = {"schema": schema, "provider": provider, "model": model, "dataset_sha256": dataset,
            "meta": {"runtime_kind": kind, "model_digest": digest},
-           "summary": {"false_accept": {"k": k, "n": n}, "verdicts_obtained": verdicts}}
+           "summary": {"false_accept": {"k": k, "n": n}, "correct_accepted": {"k": ck, "n": cn},
+                       "verdicts_obtained": verdicts}}
     path = tmp_path / "judge-eval.json"
     path.write_text(json.dumps(doc))
     return path
@@ -614,3 +616,67 @@ def test_a_session_without_a_judge_envelope_is_not_qualified(tmp_path, judge_env
     assert q["state"] == "NOT_QUALIFIED" and "no judge envelope" in q["reason"]
     good = {"provider": "ollama-local", "model": "igor-test", "model_digest": JUDGE_DIGEST}
     assert pb.judge_qualification(good, policy)["state"] == "QUALIFIED", "the same file qualifies the matching envelope"
+
+
+# ------------------------------------------------------------------ two-sided qualification
+def judged(env, tmp_path, **kw):
+    require_qualification(env, write_qualification(tmp_path, **kw), **kw.pop("limits", {}))
+    _, key = make_tenant()
+    return post(key, **HUMAN).json()["igor"]
+
+
+def test_a_judge_that_rejects_everything_is_not_qualified(env, tmp_path):
+    """The measured qwen2.5:7b result on the v2 set: 0/72 false accepts, 0/67 correct answers accepted."""
+    ig = judged(env, tmp_path, k=0, n=72, ck=0, cn=67)
+    q = ig["judge_qualification"]
+    assert q["state"] == "NOT_QUALIFIED" and "rejects everything" in q["reason"], q
+    assert q["false_accept"] == {"k": 0, "n": 72} and q["correct_accepted"] == {"k": 0, "n": 67}
+    assert ig["status"] == "UNKNOWN"
+
+
+def test_a_missing_or_malformed_correct_accepted_block_is_not_qualified(env, tmp_path):
+    path = write_qualification(tmp_path)
+    doc = json.loads(path.read_text())
+    del doc["summary"]["correct_accepted"]
+    path.write_text(json.dumps(doc))
+    require_qualification(env, path)
+    _, key = make_tenant()
+    assert post(key, **HUMAN).json()["igor"]["judge_qualification"]["state"] == "NOT_QUALIFIED"
+    for bad in ({"k": 5, "n": 3}, {"k": True, "n": 21}, {"k": -1, "n": 21}, {"k": "21", "n": 21}):
+        doc["summary"]["correct_accepted"] = bad
+        path.write_text(json.dumps(doc))
+        q = post(key, **HUMAN).json()["igor"]["judge_qualification"]
+        assert q["state"] == "NOT_QUALIFIED" and "malformed" in q["reason"], (bad, q)
+
+
+def test_correct_accept_limit_uses_the_recomputed_lower_bound(env, tmp_path):
+    lower = pb._wilson_lower(15, 21)
+    path = write_qualification(tmp_path, ck=15, cn=21)
+    _, key = make_tenant()
+    require_qualification(env, path, OLA_JUDGE_MIN_CORRECT_ACCEPT=round(lower - 0.002, 4))
+    assert post(key, **HUMAN).json()["igor"]["judge_qualification"]["state"] == "QUALIFIED"
+    env.setenv("OLA_JUDGE_MIN_CORRECT_ACCEPT", str(round(lower + 0.002, 4)))
+    assert post(key, **HUMAN).json()["igor"]["judge_qualification"]["state"] == "NOT_QUALIFIED"
+
+
+def test_the_correct_item_minimum_is_configurable(env, tmp_path):
+    require_qualification(env, write_qualification(tmp_path, ck=10, cn=10), OLA_JUDGE_QUALIFICATION_MIN_CORRECT=10)
+    _, key = make_tenant()
+    assert post(key, **HUMAN).json()["igor"]["judge_qualification"]["state"] == "QUALIFIED"
+    env.setenv("OLA_JUDGE_QUALIFICATION_MIN_CORRECT", "11")
+    assert post(key, **HUMAN).json()["igor"]["judge_qualification"]["state"] == "NOT_QUALIFIED"
+
+
+@pytest.mark.parametrize("name,value", [("OLA_JUDGE_MIN_CORRECT_ACCEPT", "0"), ("OLA_JUDGE_MIN_CORRECT_ACCEPT", "abc"),
+                                        ("OLA_JUDGE_MIN_CORRECT_ACCEPT", "1.5"),
+                                        ("OLA_JUDGE_QUALIFICATION_MIN_CORRECT", "0")])
+def test_bad_two_sided_configuration_is_503(env, tmp_path, name, value):
+    require_qualification(env, write_qualification(tmp_path), **{name: value})
+    _, key = make_tenant()
+    assert post(key, **HUMAN).status_code == 503
+
+
+def test_wilson_lower_matches_known_values():
+    assert pb._wilson_lower(0, 67) == 0.0
+    assert pb._wilson_lower(21, 21) == pytest.approx(0.8454, abs=1e-3)
+    assert pb._wilson_lower(30, 60) == pytest.approx(0.3773, abs=1e-3)

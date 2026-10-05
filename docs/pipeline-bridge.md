@@ -59,6 +59,8 @@ environments without it, and each attestation records which one signed (`signer_
 | `OLA_JUDGE_QUALIFICATION_DATASET_SHA256` | required with the file: SHA-256 of the labelled set the measurement must come from. Missing or malformed → 503 before any model call |
 | `OLA_JUDGE_MAX_FALSE_ACCEPT` | largest allowed *upper 95% Wilson bound* of wrong answers accepted (default `0.15`); outside (0, 1] → 503 |
 | `OLA_JUDGE_QUALIFICATION_MIN_WRONG` | fewest wrong answers in the measurement (default 20) |
+| `OLA_JUDGE_MIN_CORRECT_ACCEPT` | smallest allowed *lower 95% Wilson bound* of correct answers accepted (default `0.5`); outside (0, 1] → 503 |
+| `OLA_JUDGE_QUALIFICATION_MIN_CORRECT` | fewest correct answers in the measurement (default 20) |
 
 ## Verification status
 
@@ -130,8 +132,11 @@ Repeatability (same set, temperature 0, seed 1; wrong answers accepted, of 26):
 Set `OLA_JUDGE_QUALIFICATION_FILE` (a `judge_eval.py --out` result) and `OLA_JUDGE_QUALIFICATION_DATASET_SHA256` to require a
 measured judge before a PASS may become VERIFIED. The bridge then checks, for the judge envelope of the session: schema,
 pinned labelled set, observed runtime (a test double can never qualify), same provider, model **and model digest**, enough
-wrong answers (`MIN_WRONG`), at least one verdict, and an upper 95% Wilson bound of "wrong answers accepted" (recomputed
-from the counts, never read from the file) not above `MAX_FALSE_ACCEPT`. Anything that cannot be confirmed is
+wrong answers (`MIN_WRONG`), at least one verdict, an upper 95% Wilson bound of "wrong answers accepted" (recomputed
+from the counts, never read from the file) not above `MAX_FALSE_ACCEPT`, **and** a lower 95% Wilson bound of "correct
+answers accepted" of at least `OLA_JUDGE_MIN_CORRECT_ACCEPT` (default 0.5) over at least
+`OLA_JUDGE_QUALIFICATION_MIN_CORRECT` (default 20) correct answers. The second side matters: a judge that rejects
+everything has 0 false accepts and would pass a one-sided test (measured: `qwen2.5:7b` on the v2 set, 0/72 and 0/67). Anything that cannot be confirmed is
 `NOT_QUALIFIED`, which turns VERIFIED into UNKNOWN (and the terminal decision into BLOCK). It can only downgrade: a
 QUALIFIED judge never upgrades a REVIEW_REQUIRED or BLOCKED result. `GET /pipeline-session/{id}` applies the policy in
 force at the time of the request, and every response carries `judge_qualification` with the state and the evidence
@@ -258,6 +263,16 @@ is already 18.9%), so the set, not the judge, was the limit. `tests/data/judge_e
 run `scripts/judge_eval.py --dataset tests/data/judge_eval_v2.json --out q.json` on the host that will judge, pin
 `OLA_JUDGE_QUALIFICATION_DATASET_SHA256` to the SHA-256 of the v2 file, and point `OLA_JUDGE_QUALIFICATION_FILE` at `q.json`.
 The v2 set is still arithmetic, strings and textbook facts: a bound measured there does not transfer to your domain.
+
+**Measured on the v2 set so far (CI, `OLLAMA_OBSERVED`, one run each)**
+
+| judge | wrong accepted | correct accepted | qualifies? |
+|---|---|---|---|
+| `llama3.2:3b` | 6/72, upper 95% = 17.0% | 14/67 (21%) | **no** (false-accept bound above 15%, and it accepts few correct answers) |
+| `qwen2.5:7b` | 0/72, upper 95% = 5.1% | **0/67** | **no** under the two-sided rule - it rejects everything. It *would* have passed the original one-sided rule, which is why the rule was changed |
+| `llama3.1:8b`, `gemma2:9b` | still running when this was written | | UNKNOWN |
+
+No judge qualifies yet, so `OLA_AMBIENT_IGOR=enforce` has no judge it can accept. That is the fail-closed outcome, not a bug.
 
 ## Signing key and external anchor (operator runbook)
 

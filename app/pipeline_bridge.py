@@ -215,6 +215,8 @@ def map_states(gate_state: Any, verifier_overall: Any) -> tuple[str, str]:
 # before a PASS may become VERIFIED. Off unless OLA_JUDGE_QUALIFICATION_FILE is set: behaviour is then unchanged
 # (and every result says so: state NOT_CONFIGURED). When on, anything that cannot be confirmed is NOT_QUALIFIED,
 # which downgrades VERIFIED to UNKNOWN (never to BLOCK, never to anything better).
+# Two-sided on purpose: a judge that rejects EVERYTHING has 0 false accepts and would pass a one-sided test
+# (measured: qwen2.5:7b, 0/72 false accepts and 0/67 correct answers accepted). It must also accept correct answers.
 QUALIFICATION_SCHEMA = "ola.judge-eval/1"
 
 
@@ -224,6 +226,8 @@ class QualificationPolicy:
     dataset_sha256: str      # the labelled set the measurement must have been made on (pinned by the operator)
     max_false_accept: float  # largest allowed UPPER 95% Wilson bound of "wrong answers accepted"
     min_wrong_items: int     # smallest allowed number of wrong answers in the measurement
+    min_correct_accept: float = 0.5   # smallest allowed LOWER 95% Wilson bound of "correct answers accepted"
+    min_correct_items: int = 20       # smallest allowed number of correct answers in the measurement
 
 
 def _float_env(name: str, default: float) -> float:
@@ -249,7 +253,9 @@ def qualification_policy_from_env() -> Optional[QualificationPolicy]:
         raise PipelineNotConfigured("OLA_JUDGE_QUALIFICATION_DATASET_SHA256 must be the 64-hex SHA-256 of the labelled set "
                                     "when OLA_JUDGE_QUALIFICATION_FILE is set")
     return QualificationPolicy(Path(raw), pin, _float_env("OLA_JUDGE_MAX_FALSE_ACCEPT", 0.15),
-                               _int_env("OLA_JUDGE_QUALIFICATION_MIN_WRONG", 20))
+                               _int_env("OLA_JUDGE_QUALIFICATION_MIN_WRONG", 20),
+                               _float_env("OLA_JUDGE_MIN_CORRECT_ACCEPT", 0.5),
+                               _int_env("OLA_JUDGE_QUALIFICATION_MIN_CORRECT", 20))
 
 
 def _wilson_upper(k: int, n: int, z: float = 1.96) -> float:
@@ -257,6 +263,13 @@ def _wilson_upper(k: int, n: int, z: float = 1.96) -> float:
     p = k / n
     d = 1 + z * z / n
     return min(1.0, (p + z * z / (2 * n) + z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / d)
+
+
+def _wilson_lower(k: int, n: int, z: float = 1.96) -> float:
+    """Lower end of the Wilson score interval for k/n (recomputed here, never read from the file)."""
+    p = k / n
+    d = 1 + z * z / n
+    return max(0.0, (p + z * z / (2 * n) - z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / d)
 
 
 def judge_qualification(judge_env: Optional[dict], policy: Optional[QualificationPolicy]) -> dict:
@@ -278,6 +291,8 @@ def judge_qualification(judge_env: Optional[dict], policy: Optional[Qualificatio
         meta = doc["meta"]
         fa = doc["summary"]["false_accept"]
         k, n = fa["k"], fa["n"]
+        ca = doc["summary"]["correct_accepted"]
+        ck, cn = ca["k"], ca["n"]
         if doc.get("schema") != QUALIFICATION_SCHEMA:
             return no("qualification file has an unknown schema", file_sha256=file_sha)
         if doc.get("dataset_sha256") != policy.dataset_sha256:
@@ -296,12 +311,16 @@ def judge_qualification(judge_env: Optional[dict], policy: Optional[Qualificatio
         if not (isinstance(k, int) and isinstance(n, int) and not isinstance(k, bool) and not isinstance(n, bool)
                 and 0 <= k <= n):
             return no("malformed false-accept counts", file_sha256=file_sha)
+        if not (isinstance(ck, int) and isinstance(cn, int) and not isinstance(ck, bool) and not isinstance(cn, bool)
+                and 0 <= ck <= cn):
+            return no("malformed correct-accepted counts", file_sha256=file_sha)
         if doc["summary"].get("verdicts_obtained", 0) <= 0:
             return no("the measurement obtained no verdict at all", file_sha256=file_sha)
     except (KeyError, TypeError, AttributeError):
-        return no("qualification file is malformed")
+        return no("qualification file is malformed (a two-sided measurement needs summary.correct_accepted)")
     evidence = {"file_sha256": file_sha, "model": doc["model"], "model_digest": digest,
                 "false_accept": {"k": k, "n": n}, "max_allowed_upper95": policy.max_false_accept,
+                "correct_accepted": {"k": ck, "n": cn}, "min_required_lower95": policy.min_correct_accept,
                 "dataset_sha256": policy.dataset_sha256}
     if n < policy.min_wrong_items:
         return no(f"too few wrong answers in the measurement ({n} < {policy.min_wrong_items})", **evidence)
@@ -310,7 +329,15 @@ def judge_qualification(judge_env: Optional[dict], policy: Optional[Qualificatio
     if upper > policy.max_false_accept:
         return no(f"judge accepted {k}/{n} wrong answers: upper 95% bound {upper:.0%} exceeds the allowed "
                   f"{policy.max_false_accept:.0%}", **evidence)
-    return {"state": "QUALIFIED", "reason": f"judge accepted {k}/{n} wrong answers (upper 95% bound {upper:.0%})",
+    if cn < policy.min_correct_items:
+        return no(f"too few correct answers in the measurement ({cn} < {policy.min_correct_items})", **evidence)
+    lower = _wilson_lower(ck, cn)
+    evidence["correct_lower95"] = round(lower, 4)
+    if lower < policy.min_correct_accept:
+        return no(f"judge accepted only {ck}/{cn} correct answers: lower 95% bound {lower:.0%} is below the required "
+                  f"{policy.min_correct_accept:.0%} (a judge that rejects everything judges nothing)", **evidence)
+    return {"state": "QUALIFIED", "reason": f"judge accepted {k}/{n} wrong answers (upper 95% bound {upper:.0%}) "
+                                            f"and {ck}/{cn} correct answers (lower 95% bound {lower:.0%})",
             **evidence}
 
 
