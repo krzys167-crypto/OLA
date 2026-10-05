@@ -529,7 +529,7 @@ FAIL or UNKNOWN into DISPUTED, so treat DISPUTED as at least as bad as FAIL (it 
 started after the participant already replaced the CA would pin the replaced CA, so start it together with the range; the
 witness reads `ports.json`/`run.json` from the range state, which the participant can write.
 
-Tested: `tests/test_cfr_witness.py` (70 tests) and four end-to-end scenario tests (honest run CONFIRMED, a fix nobody made is
+Tested: `tests/test_cfr_witness.py` (72 tests) and end-to-end and pure scenario tests (honest run CONFIRMED, a fix nobody made is
 DISPUTED, pinned CA, no incident observed = nothing to submit); 46 of 47 mutants of the witness logic are killed, the one
 survivor is an equivalent mutant (an epsilon-masked boundary). **Honest limit:** the witness is only as independent as its
 deployment. In local-process mode participant and witness share a machine, so a participant who can read the witness key or
