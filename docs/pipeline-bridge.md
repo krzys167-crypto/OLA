@@ -270,9 +270,14 @@ The v2 set is still arithmetic, strings and textbook facts: a bound measured the
 |---|---|---|---|
 | `llama3.2:3b` | 6/72, upper 95% = 17.0% | 14/67 (21%) | **no** (false-accept bound above 15%, and it accepts few correct answers) |
 | `qwen2.5:7b` | 0/72, upper 95% = 5.1% | **0/67** | **no** under the two-sided rule - it rejects everything. It *would* have passed the original one-sided rule, which is why the rule was changed |
-| `llama3.1:8b`, `gemma2:9b` | still running when this was written | | UNKNOWN |
+| `llama3.1:8b` | 0/72, upper 95% = 5.1% | **0/67** (1 no-verdict) | **no**: rejects everything, like `qwen2.5:7b` |
+| `gemma2:9b` | **50/72 (69%)**, upper 95% = 78.9% | 65/67 (97%) | **no**: a rubber stamp |
 
-No judge qualifies yet, so `OLA_AMBIENT_IGOR=enforce` has no judge it can accept. That is the fail-closed outcome, not a bug.
+No judge qualifies, so `OLA_AMBIENT_IGOR=enforce` has no judge it can accept. That is the fail-closed outcome, not a bug.
+Two different models (`qwen2.5:7b`, `llama3.1:8b`) rejecting all 67 correct answers points at the prompt or the
+requirements (e.g. "states uncertainty" -> a correction -> REJECT) as much as at the models. `judge_eval` now records why
+every REJECT happened and the v2 CI job prints the cause counts; until that is read, the cause is a hypothesis, and the
+judge prompt must not be changed to make a number pass without a new, separate measurement.
 
 ## Signing key and external anchor (operator runbook)
 
