@@ -90,14 +90,31 @@ def evidence_checks(vault: EvidenceVault, nina_env: Dict[str, Any], nina_output:
     return checks
 
 
+class _DuplicateKey(ValueError):
+    pass
+
+
+def _no_duplicate_keys(pairs):
+    """json.loads keeps the LAST of two equal keys; a judge answer with two `decision` values is ambiguous."""
+    out: Dict[str, Any] = {}
+    for k, v in pairs:
+        if k in out:
+            raise _DuplicateKey(k)
+        out[k] = v
+    return out
+
+
 def parse_judge(text: str) -> Tuple[Optional[Dict[str, Any]], str]:
     try:
-        obj = json.loads(text)
+        obj = json.loads(text, object_pairs_hook=_no_duplicate_keys)
+    except _DuplicateKey:
+        return None, "judge output has a duplicate key"
     except ValueError:
         return None, "judge output is not valid JSON"
     if not isinstance(obj, dict):
         return None, "judge output is not a JSON object"
-    if obj.get("decision") not in _ORDER:
+    decision = obj.get("decision")
+    if not isinstance(decision, str) or decision not in _ORDER:
         return None, "invalid decision"
     q = obj.get("quality_score")
     if isinstance(q, bool) or not isinstance(q, int) or not 0 <= q <= 100:

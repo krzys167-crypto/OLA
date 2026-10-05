@@ -599,6 +599,34 @@ Other limits stated by the review: hashes are unkeyed, so anyone who can recompu
 by the external anchor; `ca_sha256` is stored in the anchor record but not compared on verification; `POST /anchor/timestamp`
 is not rate limited per tenant.
 
+## Fourth independent review (input strictness, judge JSON, webhook, gate)
+
+Run against the HTTP surface (`/pipeline-run`, `/nina-run`, `/agent-run`, `/chat` ambient judge, `/stripe/webhook`) and
+`ExecutionSafetyGate`; every item below was reproduced by a script before it was changed. Tests: `tests/test_security_review4.py`.
+
+| defect (reproduced) | state |
+|---|---|
+| `/pipeline-run` took `bool(body["human_approved"])`: the string `"false"` approved; `human_actor: null` became the text `"None"`; a zero-width actor passed | **fixed**: only the JSON boolean `true` approves; actor and reason must be strings with visible characters (whitespace and zero-width removed), actor <= 200, reason <= 1000; other types are 400 |
+| judge JSON with two `decision` keys (`BLOCK` then `PASS`) was read as the last one; a non-string `decision` crashed the parser | **fixed** in `ola_pipeline/igor.py` (shared by the pipeline and the ambient judge): duplicate keys are "invalid", a non-string decision is "invalid decision". Prompts and thresholds are untouched |
+| `OLA_SOURCE_COMMIT=UNKNOWN` (or blank) was "agreed" between the record and the verifier, so a run without commit provenance verified | **fixed** in the verifier: a blank or `UNKNOWN` commit is no provenance |
+| `/agent-run` passed no producer model to the ambient judge, so the "judge is the model that wrote the answer" guard could not fire | **fixed**: the model of the last real-LLM step is passed |
+| `task` could be an int, list, dict, a lone surrogate, or megabytes | **fixed**: `/nina-run` and `/pipeline-run` take a string of <= 8000 characters that encodes as UTF-8 |
+| `Calculate 1/0` was an HTTP 500; `1e999 * 0` produced `nan`; a 3000-term sum hit the recursion limit | **fixed**: recorded as a refusal ("not computable" / "outside safe execution policy") |
+| `/stripe/webhook`: a JSON list, a non-string event id, a non-object `metadata`, `line_items` or `data.object` was a 500; an unknown tenant wrote a chain for it; a failure after the row was created left it `PROCESSING` forever | **fixed**: 400 for malformed shapes and unknown tenant; any failure after the row exists marks it `FAILED` |
+| `ExecutionSafetyGate`: `risk="HGIH"` (typo) or a zero-width risk ran as "not HIGH"; `human_approved="false"` approved a HIGH action; `ExecutionSafetyGate("read")` allowed the actions `r`, `e`, `a`, `d` | **fixed**: a risk outside LOW/MEDIUM/HIGH is BLOCK, only `True` approves, an action must be an exact `str`, `allowed_actions` must be a collection of strings |
+| the ambient judge error text could contain the judge URL (internal host, credentials in the URL) and went to the caller and the chain | **fixed**: URLs are replaced by `<url>` before clipping |
+| `/nina-run/{id}/approve` took `reason` of any type and size (3 MB stored) | **fixed**: a string of <= 1000 characters |
+
+**Reproduced, not changed (stated limits):**
+- `/pipeline-run`'s human gate is **caller-attested**: it records who the caller says approved, under the caller's own
+  tenant key. It is not a second factor; the independent approver flow is `/nina-run/{id}/approve` (a different identity).
+- In `/nina-run` the value IGOR compares the recorded result with (`expected_result`) is the first execution step's own
+  output, so IGOR checks that the record is consistent with what ran, not that the answer is correct.
+- An approval is not consumed: the same tip can be approved again by another approver identity.
+- A writer with direct database access can still insert rows; the chain detects it, it does not prevent it.
+- Jev's advisory extras are advisory by design and are not part of the gate.
+- Judge-prompt injection through `task` can only be measured with a real model: **UNKNOWN** (no Ollama here).
+
 ## Control evidence matrix (`governance/controls.json`)
 15 controls (EC-01..EC-15: chain, server-only records, fail-closed gate, anchor, signing, RFC 3161, judge qualification,
 ambient IGOR, firewall, identity, CFR, Jev, record verification, evidence graph), each with its mechanism, the tests that

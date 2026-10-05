@@ -1,4 +1,5 @@
 import ast
+import math
 import hashlib
 import json
 import operator
@@ -54,6 +55,8 @@ def _safe_expression(task):
         tree = ast.parse(expression, mode="eval")
     except SyntaxError:
         return "task accepted: no executable arithmetic expression supplied"
+    except (RecursionError, MemoryError, ValueError):       # absurdly nested input / NUL byte: refused, never a 500
+        return "task accepted: expression outside safe execution policy"
 
     def evaluate(node):
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
@@ -63,8 +66,13 @@ def _safe_expression(task):
         raise ValueError("unsafe expression")
 
     try:
-        return str(evaluate(tree.body))
-    except ValueError:
+        value = evaluate(tree.body)
+        if isinstance(value, float) and not math.isfinite(value):
+            return "task accepted: expression is not computable (non-finite result)"
+        return str(value)
+    except ArithmeticError:                                  # 1/0, float overflow: a refusal in the record, not a 500
+        return "task accepted: expression is not computable (division by zero or overflow)"
+    except (ValueError, RecursionError):
         return "task accepted: expression outside safe execution policy"
 
 

@@ -1,3 +1,4 @@
+import unicodedata
 import hashlib
 import re
 import json
@@ -150,6 +151,17 @@ def _ambient_apply(amb, background, tenant_id, surface, task, output, response, 
     except ambient.AmbientConfigError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return response if decision["allow"] else ambient.blocked_response(decision)
+
+
+def _agent_producer(result: dict):
+    """The model that actually produced an /agent-run output (last real_llm step), so the self-judge guard can fire."""
+    execution = result.get("execution")
+    if not isinstance(execution, list):
+        return None
+    for step in reversed(execution):
+        if isinstance(step, dict) and step.get("invocation_type") == "real_llm" and isinstance(step.get("model"), str):
+            return step["model"]
+    return None
 
 
 @app.get("/health")
@@ -310,16 +322,14 @@ def create_agent_run(body: dict, background: BackgroundTasks, x_api_key: str | N
     if amb != "off" and result.get("status") == "VERIFIED":
         task_text = task if isinstance(task, str) else canonical_json(task)
         return _ambient_apply(amb, background, tenant_id, "agent-run", task_text, ambient.agent_output_text(result),
-                              result, None)
+                              result, _agent_producer(result))
     return result
 
 
 @app.post("/nina-run")
 def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
     tenant_id, requester_id = identity_from_key(x_api_key)
-    task_text = body.get("task")
-    if not task_text:
-        raise HTTPException(status_code=400, detail="task is required")
+    task_text = _task_from_body(body)
     requested_tools = body.get("requested_tools", ["safe_expression"])
     if not isinstance(requested_tools, list):
         raise HTTPException(status_code=400, detail="requested_tools must be a list")
@@ -522,6 +532,7 @@ def approve_nina_run(
     tip_hash = body.get("tip_hash")
     if not isinstance(tip_hash, str) or not tip_hash:
         raise HTTPException(status_code=400, detail="tip_hash is required")
+    reason = _visible_text(body.get("reason", ""), "reason", MAX_HUMAN_REASON, required=False)
 
     with SessionLocal() as db:
         rows = db.scalars(
@@ -575,7 +586,7 @@ def approve_nina_run(
             "tip_hash": tip_hash,
             "requester_id": requester_id,
             "approver_id": approver_id,
-            "reason": str(body.get("reason", "")),
+            "reason": reason,
             "status": "VERIFIED",
         },
     )
@@ -590,21 +601,64 @@ def approve_nina_run(
     }
 
 
+MAX_TASK_CHARS = 8000
+
+
+def _task_from_body(body: dict) -> str:
+    """task must be a bounded, UTF-8-encodable string (a surrogate or a list would otherwise reach the chain)."""
+    task = body.get("task")
+    if not isinstance(task, str) or not task.strip():
+        raise HTTPException(status_code=400, detail="task is required")
+    if len(task) > MAX_TASK_CHARS:
+        raise HTTPException(status_code=400, detail=f"task is too long (max {MAX_TASK_CHARS} characters)")
+    try:
+        task.encode("utf-8")
+    except UnicodeEncodeError:
+        raise HTTPException(status_code=400, detail="task is not valid UTF-8 text") from None
+    return task
+
+
+MAX_HUMAN_ACTOR = 200
+MAX_HUMAN_REASON = 1000
+
+
+def _visible_text(value, field: str, limit: int, required: bool) -> str:
+    """A human-attested text must be a real string with visible characters (zero-width / whitespace-only is empty)."""
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"{field} must be a string")
+    if len(value) > limit:
+        raise HTTPException(status_code=400, detail=f"{field} is too long (max {limit})")
+    visible = "".join(ch for ch in value if unicodedata.category(ch)[0] not in ("Z", "C"))
+    if required and not visible:
+        raise HTTPException(status_code=400, detail=f"{field} must contain visible characters")
+    return value
+
+
+def _review_from_body(body: dict) -> ReviewDecision:
+    """Only the JSON boolean true approves. Strings such as "false" are NOT coerced (bool("false") is True).
+
+    The gate is caller-attested: it records who the caller says approved, under the caller's tenant key.
+    It is not an independent second factor (see docs/pipeline-bridge.md, fourth review).
+    """
+    approved = body.get("human_approved", False)
+    if not isinstance(approved, bool):
+        raise HTTPException(status_code=400, detail="human_approved must be a JSON boolean")
+    actor = _visible_text(body.get("human_actor", ""), "human_actor", MAX_HUMAN_ACTOR, required=approved)
+    reason = _visible_text(body.get("human_reason", ""), "human_reason", MAX_HUMAN_REASON, required=approved)
+    return ReviewDecision(approved, actor, reason)
+
+
 @app.post("/pipeline-run")
 def create_pipeline_run(body: dict, x_api_key: str | None = Header(default=None)):
     """NINA -> OLLAMA -> EVIDENCE -> IGOR -> GATE -> REPLAY, anchored in the tenant evidence chain."""
     tenant_id = tenant_from_key(x_api_key)
-    task_text = body.get("task")
-    if not isinstance(task_text, str) or not task_text.strip():
-        raise HTTPException(status_code=400, detail="task is required")
+    task_text = _task_from_body(body)
     requested_tools = body.get("requested_tools", [])
     if not isinstance(requested_tools, list):
         raise HTTPException(status_code=400, detail="requested_tools must be a list")
-    review = ReviewDecision(
-        bool(body.get("human_approved", False)),
-        str(body.get("human_actor", "")),
-        str(body.get("human_reason", "")),
-    )
+    review = _review_from_body(body)
     try:
         return pipeline_bridge.run_pipeline(tenant_id, task_text, review, requested_tools=requested_tools)
     except pipeline_bridge.PipelineBusy as exc:

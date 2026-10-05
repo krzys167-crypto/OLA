@@ -26,6 +26,11 @@ class IgorVerification:
     evidence_ids: tuple[str, ...] = ()
 
 
+def _commit_is_known(commit) -> bool:
+    """A blank or literal "UNKNOWN" commit is the absence of provenance, not a value two records can agree on."""
+    return isinstance(commit, str) and bool(commit.strip()) and commit.strip().upper() != "UNKNOWN"
+
+
 class IgorVerifier:
     """Independent verifier for NINA/OLA evidence.
 
@@ -63,7 +68,7 @@ class IgorVerifier:
             return IgorVerification("UNKNOWN", "missing current-run evidence", checks)
         source_values = {payload.get("source_commit") for payload in payloads if payload.get("source_commit") is not None}
         legacy_values = {payload.get("commit") for payload in payloads if payload.get("commit") is not None}
-        checks["source_commit"] = bool(expected_commit) and source_values == {expected_commit}
+        checks["source_commit"] = _commit_is_known(expected_commit) and source_values == {expected_commit}
         checks["commit"] = checks["source_commit"] and (not legacy_values or legacy_values == {expected_commit})
         if not checks["source_commit"] or not checks["commit"]:
             return IgorVerification("BLOCK", "commit/source_commit provenance mismatch", checks)

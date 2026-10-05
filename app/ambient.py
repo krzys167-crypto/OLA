@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 from typing import Any, Dict, Optional
 
 from ola_pipeline import PipelineConfig
@@ -104,8 +105,12 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+_URL = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
+
+
 def _clip(text: Any, n: int = 200) -> str:
-    return str(text)[:n]
+    """Error text goes to the caller and into the tenant chain: internal endpoints (judge host, creds) are removed."""
+    return _URL.sub("<url>", str(text))[:n]
 
 
 def decide(text: str, min_quality_score: int) -> tuple[str, str]:
