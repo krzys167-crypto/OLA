@@ -431,3 +431,39 @@ def test_the_acceptance_rule_equals_scripts_judge_eval_classify():
 
 def test_names_nina_and_igor_are_preserved_in_the_record_types():
     assert ambient.SHADOW_TYPE == "igor.shadow" and ambient.ENFORCE_TYPE == "igor.ambient"
+
+
+def test_enforce_a_qualification_of_another_judge_prompt_blocks_even_a_PASS(env, fake, answering, tmp_path):
+    from ola_pipeline.config import DEFAULT_REQUIREMENTS
+    from ola_pipeline.igor import judge_prompt_fingerprint
+    env.setenv("OLA_AMBIENT_IGOR", "enforce")
+    other = judge_prompt_fingerprint(DEFAULT_REQUIREMENTS + ("Be lenient.",), 70)
+    require_qualification(env, write_qualification(tmp_path, k=0, n=26, prompt=other))
+    tenant, key = make_tenant()
+    b = chat(key).json()
+    assert b["status"] == "BLOCK" and b["ambient"]["verdict"] == "UNQUALIFIED", b
+    q = payload(records(tenant)[0])["qualification"]
+    assert q["state"] == "NOT_QUALIFIED" and q["session_judge_prompt_sha256"] != other
+
+
+def test_enforce_a_qualification_without_a_prompt_fingerprint_blocks(env, fake, answering, tmp_path):
+    env.setenv("OLA_AMBIENT_IGOR", "enforce")
+    require_qualification(env, write_qualification(tmp_path, k=0, n=26, prompt=None))
+    tenant, key = make_tenant()
+    assert chat(key).json()["ambient"]["verdict"] == "UNQUALIFIED"
+
+
+def test_enforce_follows_the_configured_requirements_and_threshold(env, fake, answering, tmp_path):
+    """The measurement must be of the judge as configured NOW: other requirements or threshold -> not qualified."""
+    from ola_pipeline.igor import judge_prompt_fingerprint
+    env.setenv("OLA_AMBIENT_IGOR", "enforce")
+    env.setenv("OLA_QUALITY_REQUIREMENTS", "Answers the task correctly.")
+    env.setenv("OLA_MIN_QUALITY_SCORE", "60")
+    require_qualification(env, write_qualification(tmp_path, k=0, n=26))              # measured with the defaults
+    tenant, key = make_tenant()
+    assert chat(key).json()["ambient"]["verdict"] == "UNQUALIFIED"
+    env.setenv("OLA_JUDGE_QUALIFICATION_FILE", str(write_qualification(
+        tmp_path, k=0, n=26, prompt=judge_prompt_fingerprint(("Answers the task correctly.",), 60))))
+    _, key2 = make_tenant()
+    r2 = chat(key2)
+    assert r2.json()["status"] == "VERIFIED" and "ambient" not in r2.json(), (r2.status_code, r2.text)

@@ -2,7 +2,7 @@
 """Measure an Igor judge against a labelled answer set.
 
 The Gate trusts a PASS only if the judge rejected one known-wrong canary ("2 + 2 = 5"). That is a
-single data point. This script runs the SAME judge prompt (ola_pipeline.igor.Igor._messages) and the
+single data point. This script runs the SAME judge prompt (ola_pipeline.igor.build_messages) and the
 SAME acceptance rule as Igor.verify over a set of correct and wrong answers with known labels, and
 reports how often the judge accepts a wrong answer.
 
@@ -34,9 +34,12 @@ if str(ROOT) not in sys.path:
 
 from ola_pipeline.config import DEFAULT_REQUIREMENTS, Policy, ProviderConfig  # noqa: E402
 from ola_pipeline.errors import OlaPipelineError, ProviderTimeout  # noqa: E402
-from ola_pipeline.igor import Igor, parse_judge  # noqa: E402
+from ola_pipeline.igor import judge_prompt_fingerprint, parse_judge  # noqa: E402
 from ola_pipeline.providers import build_provider  # noqa: E402
 from ola_pipeline.verify import CANARY_TASK  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judge_variants import spec as variant_spec  # noqa: E402
 
 DEFAULT_DATASET = ROOT / "tests" / "data" / "judge_eval.json"
 ACCEPT, REJECT, NO_VERDICT = "ACCEPT", "REJECT", "NO_VERDICT"
@@ -128,14 +131,14 @@ def summarize(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
 def evaluate(items: List[Dict[str, Any]], cfg: ProviderConfig, policy: Policy, *, repeat: int = 1,
              requirements: Tuple[str, ...] = DEFAULT_REQUIREMENTS,
              provider_factory: Callable[[ProviderConfig], Any] = build_provider,
-             log: Callable[[str], None] = lambda s: None) -> Dict[str, Any]:
-    igor = Igor(cfg, cfg, policy, requirements)
+             log: Callable[[str], None] = lambda s: None, variant: str = "baseline") -> Dict[str, Any]:
+    builder, effective_requirements = variant_spec(variant, requirements)
     provider = provider_factory(cfg)
     runs: List[Dict[str, Any]] = []
     meta: Dict[str, Any] = {"runtime_kind": None, "model_digest": None, "ollama_version": None, "resolved_model": None}
     for item in items:
         for rep in range(repeat):
-            messages = igor._messages(item["task"], item["output"], [])
+            messages = builder(item["task"], item["output"], [], effective_requirements)
             t0 = time.monotonic()
             detail, text = "", None
             try:
@@ -161,7 +164,10 @@ def evaluate(items: List[Dict[str, Any]], cfg: ProviderConfig, policy: Policy, *
         for r in runs:
             by_id.setdefault(r["id"], set()).add(r["verdict"])
         flips = sum(1 for v in by_id.values() if len(v) > 1)
-    return {"meta": meta, "summary": summarize(runs), "items_with_changing_verdict": flips, "runs": runs}
+    return {"meta": meta, "summary": summarize(runs), "items_with_changing_verdict": flips, "runs": runs,
+            "variant": variant, "requirements": list(effective_requirements),
+            "judge_prompt_sha256": judge_prompt_fingerprint(effective_requirements, policy.min_quality_score,
+                                                            builder=builder)}
 
 
 def _pct(r: Dict[str, Any]) -> str:
@@ -192,6 +198,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     ap.add_argument("--limit", type=int, default=None, help="first N items only (smoke test)")
     ap.add_argument("--min-quality-score", type=int, default=70)
+    ap.add_argument("--variant", default="baseline",
+                    help="judge prompt variant (scripts/judge_variants.py); only 'baseline' can qualify the production judge")
     ap.add_argument("--out", type=Path, default=None)
     a = ap.parse_args(argv)
 
@@ -202,10 +210,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     cfg = ProviderConfig(a.provider, a.model, base_url=a.base_url, timeout_s=a.timeout, temperature=0.0,
                          seed=a.seed, max_tokens=a.max_tokens, think=think)
     result = evaluate(items, cfg, Policy(min_quality_score=a.min_quality_score), repeat=a.repeat,
-                      log=lambda s: print(s, flush=True))
+                      log=lambda s: print(s, flush=True), variant=a.variant)
     result.update(schema="ola.judge-eval/1", model=a.model, provider=a.provider, think=think, repeat=a.repeat,
                   dataset_sha256=dataset_sha, items=len(items), min_quality_score=a.min_quality_score)
-    line = summary_line(result, a.model, think)
+    line = summary_line(result, a.model, think) + f" | variant={result['variant']} prompt={result['judge_prompt_sha256'][:12]}"
     print(line)
     print(f"items with a changing verdict across {a.repeat} repeat(s): {result['items_with_changing_verdict']}")
     if a.out:
