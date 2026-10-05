@@ -279,3 +279,156 @@ def test_each_variant_breaks_its_own_assertion_and_only_that_one(world, variant,
     got = {a["id"]: a["result"] for a in sc.collect_assertions(w["state"], rng.host_for(w["run"]["seed"]), 3)}
     assert {k for k, v in got.items() if v == "fail"} == failing | {"health_stable_10s"}, got
     assert got["tls_handshake_ok"] == "pass" and got["ca_untouched"] == "pass"
+
+
+# ------------------------------------------------------------------ independent measurement (witness)
+_wspec = importlib.util.spec_from_file_location("ca_witness", DIR / "witness.py")
+wit = importlib.util.module_from_spec(_wspec)
+_wspec.loader.exec_module(wit)
+
+
+def test_the_manifest_asks_to_confirm_exactly_what_a_witness_can_check():
+    im = cfr.validate_manifest(MANIFEST)["independent_measurement"]
+    assert set(im["confirm_assertions"]) <= set(MANIFEST["required_assertions"])
+    assert "ca_untouched" not in im["confirm_assertions"], "hidden assertions are not part of the public confirm list"
+    assert im["required"] is False, "local-process mode cannot isolate the witness from the participant: not required here"
+
+
+def test_witness_metrics_start_at_the_first_failure_it_saw_and_ignore_the_range_log():
+    tl = rounds([set()] * 5 + [{"api", "billing"}] * 10 + [set()] * 30)
+    m = wit.compute_witness_metrics(tl, stable_s=5)
+    assert set(m) == set(wit.WITNESS_METRICS) and m["mttr_s"] == pytest.approx(10 * 0.2, abs=0.01)
+    assert m["availability"] == pytest.approx(1 - (10 * 2) / (45 * 4), abs=1e-6)
+    assert wit.compute_witness_metrics(rounds([set()] * 20), stable_s=5) is None, "no failure seen, nothing to measure"
+    assert wit.compute_witness_metrics(rounds([{"api"}]), stable_s=5) is None, "one round is not a measurement"
+    never = wit.compute_witness_metrics(rounds([set()] * 3 + [{"api"}] * 20), stable_s=5)
+    assert never["mttr_s"] is None
+
+
+def test_stable_now_needs_a_covered_window_and_only_healthy_rounds():
+    assert wit.stable_now(rounds([set()] * 100), 10) == "pass"
+    assert wit.stable_now(rounds([set()] * 20), 10) == "unknown", "4 s of observation do not cover a 10 s window"
+    assert wit.stable_now(rounds([set()] * 99 + [{"admin"}]), 10) == "fail"
+    assert wit.stable_now(rounds([{"admin"}] + [set()] * 99), 10) == "pass", "a failure before the window does not count"
+    assert wit.stable_now([], 10) == "unknown"
+
+
+@pytest.fixture
+def wworld(world, tmp_path):
+    w = dict(world)
+    w["wstate"] = tmp_path / "state-witness"
+    w["wseed"], wpub = idn.generate_keypair()
+    r = C.post("/identity/enroll", headers={"X-API-Key": w["key"], "X-Enroll-Token": TOKEN},
+               json={"principal_id": "witness-1", "role": "witness", "public_key": wpub})
+    assert r.status_code == 200, r.text
+    yield w
+    subprocess.run([sys.executable, str(DIR / "witness.py"), "--state", str(w["wstate"]), "--range-state", str(w["state"]),
+                    "down"], capture_output=True)
+
+
+def wcli(w, *args):
+    return subprocess.run([sys.executable, str(DIR / "witness.py"), "--state", str(w["wstate"]), "--range-state",
+                           str(w["state"]), *args], capture_output=True, text=True)
+
+
+def begin_witnessed(w, variant=None):
+    assert cli(w["state"], "up").returncode == 0
+    r = wcli(w, "up")
+    assert r.returncode == 0, r.stderr
+    host = rng.host_for(w["run"]["seed"])
+    time.sleep(1.5)
+    extra = ["--variant", variant] if variant else []
+    assert cli(w["state"], "break", *extra).returncode == 0
+    time.sleep(2.0)
+    return host
+
+
+def witness_posts(w, stable_s):
+    obs = wit.build_observation(w["wstate"], w["state"], stable_s)
+    assert obs is not None
+    return obs, wit.sign_and_post(w["api"], w["tid"], "witness-1", w["wseed"], obs)
+
+
+@TOOLS
+def test_an_honest_run_is_confirmed_by_an_independent_observer(wworld):
+    w = wworld
+    host = begin_witnessed(w)
+    assert fix(w["state"], host).returncode == 0
+    time.sleep(5.5)
+    sub, r = finish(w, 3)
+    assert r.status_code == 200 and r.json()["state"] == "PASS" and r.json()["measurement"]["status"] == "UNWITNESSED", r.text
+    obs, wr = witness_posts(w, 3)
+    assert wr.status_code == 200, wr.text
+    assert wr.json()["measurement"] == "CONFIRMED", wr.text
+    res = C.get(f"/cfr/results/{w['run']['run_id']}", headers={"X-API-Key": w["key"]}).json()
+    assert res["state"] == "PASS" and res["measurement"]["witnesses"] == ["witness-1"], res
+    assert res["score"] <= res["runner_claim"]["score"], "a witness never raises the score"
+    assert {a["id"]: a["result"] for a in obs["assertions"]}["health_stable_10s"] in ("pass", "unknown")
+    lb = C.get(f"/cfr/leaderboard/{MANIFEST['scenario_id']}", headers={"X-API-Key": w["key"]}).json()
+    assert [(x["participant_id"], x["measurement"]) for x in lb["ranking"]] == [("alice", "CONFIRMED")]
+
+
+@TOOLS
+def test_a_runner_that_claims_a_fix_nobody_made_is_disputed_by_the_witness(wworld):
+    """The participant never fixed the certificate; the (lying) runner signs a perfect result. The witness saw failures."""
+    w = wworld
+    begin_witnessed(w)
+    time.sleep(3.0)
+    now = time.time()
+    claim = {"run_id": w["run"]["run_id"], "manifest_sha256": w["run"]["manifest_sha256"], "started_at": now - 20,
+             "ended_at": now - 1,
+             "metrics": {"availability": 1.0, "latency_p95_ms": 10, "mttr_s": 2.0, "blast_radius": 0, "restarts": 0,
+                         "downtime_s": 0},
+             "assertions": [{"id": i, "result": "pass"} for i in (
+                 "tls_handshake_ok", "x509_not_expired", "x509_chain_ok", "health_stable_10s", "san_matches_host",
+                 "ca_untouched")],
+             "artifacts": {}}
+    r = sc.submit(w["api"], w["tid"], "runner-1", w["seed"], claim)
+    assert r.status_code == 200 and r.json()["state"] == "PASS", "on the runner's word alone it passes"
+    obs, wr = witness_posts(w, 3)
+    assert wr.status_code == 200 and wr.json()["measurement"] == "CONTRADICTED", wr.text
+    res = C.get(f"/cfr/results/{w['run']['run_id']}", headers={"X-API-Key": w["key"]}).json()
+    assert res["state"] == "DISPUTED" and res["tier"] == "none" and res["runner_claim"]["state"] == "PASS", res
+    assert res["score"] < res["runner_claim"]["score"]
+    assert any("availability" in x or "mttr_s" in x for x in res["measurement"]["reasons"]), res["measurement"]
+    seen = {a["id"]: a["result"] for a in obs["assertions"]}
+    # which verification assertion trips depends on the per-run variant (expired / SAN / chain); some one always does
+    assert "fail" in (seen["x509_not_expired"], seen["x509_chain_ok"], seen["san_matches_host"]), seen
+    assert seen["health_stable_10s"] == "fail", seen
+    lb = C.get(f"/cfr/leaderboard/{MANIFEST['scenario_id']}", headers={"X-API-Key": w["key"]}).json()
+    assert lb["ranking"] == []
+
+
+@TOOLS
+def test_the_witness_pins_the_ca_when_it_starts_and_observes_nothing_before_an_incident(wworld):
+    w = wworld
+    assert cli(w["state"], "up").returncode == 0
+    assert wcli(w, "up").returncode == 0
+    pinned = hashlib.sha256((w["wstate"] / "ca.crt").read_bytes()).hexdigest()
+    assert pinned == hashlib.sha256((w["state"] / "certs" / "ca.crt").read_bytes()).hexdigest()
+    time.sleep(2.0)
+    r = wcli(w, "observe")
+    assert r.returncode == 3 and "UNKNOWN" in r.stdout, "healthy so far: nothing to observe"
+    assert wcli(w, "up").returncode == 1, "a second witness daemon is refused"
+    host = rng.host_for(w["run"]["seed"])
+    assert cli(w["state"], "break").returncode == 0
+    time.sleep(1.5)
+    (w["state"] / "certs" / "ca.key").unlink()
+    (w["state"] / "certs" / "ca.crt").unlink()
+    assert fix(w["state"], host).returncode == 0                      # a NEW CA now sits in the range's state
+    assert hashlib.sha256((w["wstate"] / "ca.crt").read_bytes()).hexdigest() == pinned, "the witness trust anchor is its own"
+    time.sleep(2.0)
+    obs = wit.build_observation(w["wstate"], w["state"], 3)
+    assert obs is not None
+    got = {a["id"]: a["result"] for a in obs["assertions"]}
+    # The witness trusts the OLD CA. static/admin were never re-signed, so they still verify (the unaffected control);
+    # the regenerated api/billing certificates chain to a CA the witness never pinned, so it sees them as untrusted.
+    assert got["x509_chain_ok"] == "fail", "a replaced CA must not make the broken services look healthy: " + str(got)
+    assert got["ca_untouched"] == "pass", got
+    assert obs["artifacts"]["pinned_ca"] == pinned
+
+
+def test_the_witness_needs_a_running_range_and_an_issued_run(tmp_path):
+    r = subprocess.run([sys.executable, str(DIR / "witness.py"), "--state", str(tmp_path / "w"), "--range-state",
+                        str(tmp_path / "nothing"), "up"], capture_output=True, text=True)
+    assert r.returncode == 2 and "must be up" in r.stderr

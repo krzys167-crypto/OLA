@@ -45,3 +45,17 @@ hidden assertion passed; FAIL if any failed; otherwise UNKNOWN. Only PASS ranks.
 * The runner attests the metrics; the participant shares the machine with the range. Isolating the measurement from the
   participant is the runner operator's job (the server-side limits are in `app/cfr.py`).
 * Weights, limits and tiers are a transparent heuristic, not calibrated against human results.
+
+## Independent witness (optional)
+`witness.py` is a second observer with its own key (role `witness`). It pins the range CA when it starts, probes the services
+itself and signs its own metrics and assertions; the server marks the run `DISPUTED` when they disagree with the runner's.
+```
+make up                      # range
+make witness-up              # needs the range up and a run issued (state/run.json)
+... participant works ...
+make witness-submit          # OLA_URL OLA_API_KEY OLA_TENANT_ID OLA_WITNESS_ID OLA_WITNESS_SEED
+make witness-down
+```
+Exit code 3 / `UNKNOWN`: the witness saw no failed probe, so there is nothing it can attest. In local-process mode the
+witness runs on the participant's machine and is NOT isolated from them: run it on a host they cannot reach, or keep
+`independent_measurement.required` false (as shipped).

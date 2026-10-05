@@ -497,11 +497,33 @@ MTTR (start of the first 10 s window in which every service was healthy), collat
 services that failed after the injection, e.g. after replacing the CA), restarts and downtime. `score.py` signs the result as
 an enrolled `runner`; the server computes the score. Tested end to end (`tests/test_cfr_certificate_apocalypse.py`, 16 tests:
 fixed run -> PASS and ranked, unfixed -> FAIL and not ranked, CA replaced -> FAIL with blast radius 2, one test per variant).
-**Not covered:** Docker/k3d/compose (not provided), k6 (script provided, not run), independent measurement (the runner
-attests the metrics), calibration of the weights.
+**Not covered:** Docker/k3d/compose (not provided), k6 (script provided, not run), calibration of the weights. Independent
+measurement exists as an opt-in second observer, see the next section; the shipped manifest does not require it.
+
+### Independent measurement: the witness (`POST /cfr/witness`)
+The runner attests its own numbers. A **witness** is a second principal (role `witness`, its own Ed25519 key; one key is one
+principal, so a runner key is refused as a witness key and the reverse) that observes the same services itself and signs what
+IT saw. The server never trusts either side more than the other; it reconciles when the result is READ, from the chain:
+
+* statuses: `UNWITNESSED` (no witness), `INSUFFICIENT` (the witness does not cover the manifest's `confirm_assertions`),
+  `CONTRADICTED`, `CONFIRMED`. The effective metrics are the pessimistic merge (min availability, max latency/downtime, an
+  unknown MTTR dominates). A witness can only LOWER a result, never raise it, and never supplies a score, state or tier.
+* a disagreement beyond the manifest tolerance (availability 0.05, latency 50 % with a 1 ms floor, MTTR 10 s, downtime 10 s,
+  any pass/fail difference on a confirmed assertion) gives `DISPUTED`; a disputed run never ranks.
+* `independent_measurement.required: true` in a manifest: PASS without a CONFIRMED witness is shown as `UNKNOWN`.
+* at most 3 witnesses per run, the first record per witness id wins, so a witness cannot vote twice to outvote a dissenter.
+* scenario side: `cfr_scenarios/certificate-apocalypse/witness.py` (own probe loop, its own timeline, the range CA pinned when
+  it starts so replacing the CA does not hide the outage, MTTR from the first failure IT observed). `make witness-up|witness-submit`.
+
+Tested: `tests/test_cfr_witness.py` (62 tests) and four end-to-end scenario tests (honest run CONFIRMED, a fix nobody made is
+DISPUTED, pinned CA, no incident observed = nothing to submit); 37 of 38 mutants of the reconcile logic are killed, the one
+survivor is an equivalent mutant (an epsilon-masked boundary). **Honest limit:** the witness is only as independent as its
+deployment. In local-process mode participant and witness share a machine, so a participant who can read the witness key or
+stop its process defeats it; that is why the shipped manifest has `required: false`. Restarts and blast radius stay
+runner-attested. Control EC-15.
 
 ## Control evidence matrix (`governance/controls.json`)
-14 controls (EC-01..EC-14: chain, server-only records, fail-closed gate, anchor, signing, RFC 3161, judge qualification,
+15 controls (EC-01..EC-15: chain, server-only records, fail-closed gate, anchor, signing, RFC 3161, judge qualification,
 ambient IGOR, firewall, identity, CFR, Jev, record verification, evidence graph), each with its mechanism, the tests that
 check it, the CI job that runs them and **a stated limit**. `python scripts/check_controls.py` fails when a referenced test,
 symbol or CI job does not exist, when no listed CI job runs a control's test file, or (`--run`) when a referenced test does

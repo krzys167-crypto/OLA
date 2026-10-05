@@ -760,6 +760,13 @@ def cfr_submit(body: dict, x_api_key: str | None = Header(default=None)):
     return _firewall_call(cfr.submit_result, tenant_id, submission, body.get("auth"))
 
 
+@app.post("/cfr/witness")
+def cfr_witness(body: dict, x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    observation = {k: v for k, v in body.items() if k != "auth"}
+    return _firewall_call(cfr.submit_witness, tenant_id, observation, body.get("auth"))
+
+
 @app.get("/cfr/results/{run_id}")
 def cfr_result(run_id: str, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)

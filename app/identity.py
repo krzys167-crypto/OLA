@@ -6,7 +6,7 @@ Why: before this, `agent_id` and `approver_id` were strings asserted by whoever 
 KEY enrolled in the chain; a request counts as coming from it only if it carries a valid signature.
 
 Model (all state is derived from the tenant chain; nothing is cached)
-    identity.enroll   principal_id, role (agent | approver | runner), public_key (Ed25519, 32 bytes hex)
+    identity.enroll   principal_id, role (agent | approver | runner | witness), public_key (Ed25519, 32 bytes hex)
     identity.revoke   principal_id, reason_sha256
     signed request    {schema, tenant_id, purpose, principal_id, subject_sha256, ts, nonce} signed over its canonical
                       JSON. `subject_sha256` binds the signature to the exact thing being authorised (the action
@@ -57,8 +57,8 @@ from .hashchain import canonical_json, verify_chain
 SCHEMA = "ola.identity/1"
 REQUEST_SCHEMA = "ola.identity.request/1"
 ENROLL_TYPE, REVOKE_TYPE = "identity.enroll", "identity.revoke"
-ROLES = ("agent", "approver", "runner")
-PURPOSES = ("firewall.authorize", "firewall.approve", "firewall.consume", "cfr.result")
+ROLES = ("agent", "approver", "runner", "witness")
+PURPOSES = ("firewall.authorize", "firewall.approve", "firewall.consume", "cfr.result", "cfr.witness")
 MAX_PRINCIPALS = 256
 DEFAULT_SKEW_S = 300
 
@@ -233,7 +233,7 @@ def enroll(tenant_id: str, principal_id: Any, role: Any, public_key: Any, token:
     if not isinstance(principal_id, str) or not _ID.match(principal_id):
         raise IdentityError("principal_id must match [A-Za-z0-9_.:@-]{1,64}")
     if role not in ROLES:
-        raise IdentityError("role must be 'agent', 'approver' or 'runner'")
+        raise IdentityError("role must be 'agent', 'approver', 'runner' or 'witness'")
     raw = _public_key_bytes(public_key)
     pub = raw.hex()
     reg, keys = registry(_chain(tenant_id))
@@ -278,7 +278,7 @@ def _num(v: Any) -> bool:
 
 
 def nonce_used(chain: List[dict], principal_id: str, nonce: str) -> bool:
-    for _, p in _payloads(chain, ("firewall.decision", "firewall.approval", "firewall.execution", "cfr.result")):
+    for _, p in _payloads(chain, ("firewall.decision", "firewall.approval", "firewall.execution", "cfr.result", "cfr.witness")):
         a = p.get("auth")
         if isinstance(a, dict) and a.get("principal_id") == principal_id and a.get("nonce") == nonce:
             return True

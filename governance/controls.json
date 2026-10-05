@@ -319,6 +319,36 @@
         }
       ],
       "limits": "Graph facts are only as good as what was written into them."
+    },
+    {
+      "id": "EC-15",
+      "statement": "A CFR result can be cross-checked by an independent witness principal; a witness can only lower the result, and a required manifest without a confirming witness never passes.",
+      "mechanism": [
+        {
+          "file": "app/cfr.py",
+          "symbol": "reconcile"
+        },
+        {
+          "file": "cfr_scenarios/certificate-apocalypse/witness.py",
+          "symbol": "build_observation"
+        }
+      ],
+      "tests": [
+        "tests/test_cfr_witness.py::test_a_better_looking_witness_cannot_raise_the_score",
+        "tests/test_cfr_witness.py::test_a_required_manifest_never_passes_without_a_confirmed_witness",
+        "tests/test_cfr_witness.py::test_lying_inside_the_tolerance_gains_nothing",
+        "tests/test_cfr_witness.py::test_a_witness_cannot_vote_twice_to_outweigh_a_dissenter",
+        "tests/test_cfr_witness.py::test_the_runner_cannot_be_its_own_witness",
+        "tests/test_cfr_witness.py::test_a_witness_key_cannot_submit_a_runner_result",
+        "tests/test_cfr_certificate_apocalypse.py::test_a_runner_that_claims_a_fix_nobody_made_is_disputed_by_the_witness"
+      ],
+      "ci": [
+        {
+          "workflow": "pipeline-bridge.yml",
+          "job": "offline"
+        }
+      ],
+      "limits": "The witness is only as independent as its deployment: in local-process mode participant and witness share a machine, so the manifest of the shipped scenario keeps `required` false. Restarts and blast radius stay runner-attested."
     }
   ]
 }
