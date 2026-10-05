@@ -34,14 +34,26 @@ class GenerationResult:
     resolved_model: str
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 30x would re-send the Authorization header and the prompt body to wherever it points."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _http(method: str, url: str, body: Optional[dict], headers: Dict[str, str],
           timeout: float, secrets=()) -> Dict[str, Any]:
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise ConfigError(f"unsupported URL scheme {parts.scheme!r} (only http and https)")
+    if "Authorization" in headers and parts.scheme != "https" and (parts.hostname or "") not in _LOOPBACK:
+        raise ConfigError("refusing to send credentials over plain http to a non-loopback host")
     data = None if body is None else json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method=method,
                                  headers={"Content-Type": "application/json", **headers})
-    host = urlsplit(url).hostname or ""
-    opener = (urllib.request.build_opener(urllib.request.ProxyHandler({}))
-              if host in _LOOPBACK else urllib.request.build_opener())
+    host = parts.hostname or ""
+    opener = (urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+              if host in _LOOPBACK else urllib.request.build_opener(_NoRedirect))
     path = urlsplit(url).path
     try:
         with opener.open(req, timeout=timeout) as r:
@@ -137,8 +149,8 @@ class OllamaProvider(LLMProvider):
             raise ProviderError("missing message.content in /api/chat response")
         if resp.get("done") is not True:
             raise ProviderError("generation not marked done")
-        accepted = cands | {resolved, match.get("model")}
-        if resp.get("model") not in accepted:
+        accepted = cands | {x for x in (resolved, match.get("model")) if isinstance(x, str)}
+        if not isinstance(resp.get("model"), str) or resp.get("model") not in accepted:
             raise ProviderError("response model does not match requested model")
         kind = "TEST_DOUBLE" if "test-double" in (version or "").lower() else "OLLAMA_OBSERVED"
         proof = {

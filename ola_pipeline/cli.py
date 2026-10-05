@@ -16,12 +16,21 @@ from .pipeline import Pipeline
 
 def _report(sd: Path) -> int:
     """Prints what the task asks to show before finishing. Reads artifacts only (no pipeline state)."""
-    facts = _verify.inspect_session(sd)
+    rep = _verify.verify_session(sd)
+    try:
+        facts = _verify.inspect_session(sd)
+    except Exception as e:                       # a session the verifier cannot even read: nothing to tabulate
+        print(f"session        : {sd.name}")
+        print(f"verifier       : {rep['overall']}  (unreadable session: {type(e).__name__})")
+        return 1
     final = {}
     fp = sd / "final.json"
     if fp.is_file():
-        final = json.loads(fp.read_text("utf-8"))
-    rep = _verify.verify_session(sd)
+        try:
+            loaded = json.loads(fp.read_text("utf-8"))
+            final = loaded if isinstance(loaded, dict) else {}
+        except (ValueError, OSError):
+            final = {}
     print(f"session        : {sd.name}")
     print(f"verifier       : {rep['overall']}  (runtime={rep['runtime_kind']}, failures={len(rep['failures'])})")
     kid = (rep["attestation"] or {}).get("key_id")
@@ -37,7 +46,7 @@ def _report(sd: Path) -> int:
         if refs.get("evaluation_hash"):
             print(f"     {'evaluation_hash':<19}: {refs['evaluation_hash']}")
         print(f"     envelope_hash      : {e['envelope_hash']}")
-    print("\nFINAL")
+    print("\nFINAL" + ("" if rep["overall"] == "VERIFIED" else "  (CLAIMED by final.json, NOT verified)"))
     for k in ("run_id", "source_sha", "provider", "model", "iterations", "nina_status", "igor_status",
               "gate_state", "evidence_class", "chain_head"):
         print(f"  {k:<15}: {final.get(k)}")
@@ -45,7 +54,7 @@ def _report(sd: Path) -> int:
         print(f"  reason         : {r}")
     for w in rep["warnings"]:
         print(f"  warning        : {w}")
-    return 0
+    return 1 if rep["overall"] == "FAILED" else 0     # a table is not a verdict, but FAILED must not exit 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -83,11 +92,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if a.cmd == "verify":
         args = [a.session_dir]
-        if a.expected_source_sha:
+        # `is not None`, not truthiness: an empty pin (an unset $PUBKEY) must reach the verifier and be refused,
+        # not silently turn the check off.
+        if a.expected_source_sha is not None:
             args += ["--expected-source-sha", a.expected_source_sha]
-        if a.scan_root:
+        if a.scan_root is not None:
             args += ["--scan-root", a.scan_root]
-        if a.trusted_key:
+        if a.trusted_key is not None:
             args += ["--trusted-key", a.trusted_key]
         if a.json:
             args.append("--json")

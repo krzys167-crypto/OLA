@@ -141,6 +141,11 @@ def _read_artifact(sd: Path, h: Any, label: str, failures: List[str]) -> Optiona
     return data
 
 
+def _sname(sd: Path) -> str:
+    """Directory name even when the session was given as `.` or `..`."""
+    return sd.name or sd.resolve().name
+
+
 def inspect_session(session_dir: Any) -> Facts:
     sd = Path(session_dir)
     facts = Facts(session_dir=str(sd))
@@ -184,8 +189,8 @@ def inspect_session(session_dir: Any) -> Facts:
         if e.get("binding") in seen_bind:
             f_.append(f"{n}: duplicate binding (replay)")
         seen_bind.add(e.get("binding"))
-        if e.get("session_id") != sd.name:
-            f_.append(f"{n}: session_id {e.get('session_id')!r} != directory name {sd.name!r}")
+        if e.get("session_id") != _sname(sd):
+            f_.append(f"{n}: session_id {e.get('session_id')!r} != directory name {_sname(sd)!r}")
         for key, label in (("prompt_hash", "prompt"), ("input_hash", "input"), ("output_hash", "output")):
             _read_artifact(sd, e.get(key), f"{n}:{label}", f_)
         refs = e.get("refs") if isinstance(e.get("refs"), dict) else {}
@@ -199,6 +204,17 @@ def inspect_session(session_dir: Any) -> Facts:
     facts.nina = [e for e in envs if e.get("agent_id") == "nina"]
     facts.igor = [e for e in envs if e.get("agent_id") == "igor"]
     facts.canary = [e for e in envs if e.get("agent_id") == "igor-canary"]
+    for e in envs:
+        if e.get("agent_id") not in ("nina", "igor", "igor-canary"):
+            f_.append(f"envelope {e.get('seq')!r}: unknown agent_id {e.get('agent_id')!r}")
+    for label, group in (("igor", facts.igor), ("igor-canary", facts.canary)):
+        seen_targets: set = set()
+        for g in group:
+            t = (g.get("refs") or {}).get("verifies_run_id") if isinstance(g.get("refs"), dict) else None
+            key = t if isinstance(t, str) else repr(t)
+            if key in seen_targets:
+                f_.append(f"more than one {label} verdict for nina run {key} (verdict shopping)")
+            seen_targets.add(key)
     for k, e in enumerate(facts.nina, start=1):
         if e.get("iteration") != k:
             f_.append(f"nina run {e.get('run_id')}: iteration {e.get('iteration')!r} != {k}")
@@ -290,6 +306,12 @@ def derive_gate(facts: Facts, policy: Dict[str, Any], end_source_sha: Optional[s
 
     if facts.failures:
         blocked.append("evidence inconsistent: " + "; ".join(facts.failures[:5]))
+    max_it = policy.get("max_iterations")
+    if isinstance(max_it, int) and not isinstance(max_it, bool) and len(facts.nina) > max_it:
+        blocked.append(f"{len(facts.nina)} Nina iterations exceed the policy maximum of {max_it}")
+    if (policy.get("require_igor_calibration") is False or policy.get("require_model_digest") is False
+            or (isinstance(policy.get("min_quality_score"), int) and policy["min_quality_score"] < 70)):
+        warnings.append("policy snapshot is weaker than the defaults (calibration, model digest or minimum score relaxed)")
 
     n = facts.last_nina
     if n is None:
@@ -331,11 +353,25 @@ def derive_gate(facts: Facts, policy: Dict[str, Any], end_source_sha: Optional[s
             meta = ev.get("meta") if isinstance(ev.get("meta"), dict) else {}
             js = meta.get("judge_status")
             reason = ev.get("reason", "")
+            # independence is recomputed from the envelopes, never taken from the stored label
+            same = (g.get("provider"), g.get("model"), g.get("endpoint")) == \
+                   (n.get("provider"), n.get("model"), n.get("endpoint"))
+            if same:
+                meta = dict(meta, independence="SAME_MODEL_SEPARATE_CONTEXT")
             if meta.get("independence") == "SAME_MODEL_SEPARATE_CONTEXT":
                 warnings.append("Igor uses the same provider/model as Nina (separate context, weak independence)")
             if dec == "PASS":
+                q = ev.get("quality_score")
+                min_q = policy.get("min_quality_score", 70)
+                crit_fail = [c for c in (ev.get("evidence_checks") or [])
+                             if isinstance(c, dict) and c.get("status") == "FAIL" and c.get("critical")]
                 if js != "OK" or g.get("execution_status") != "EXECUTED":
                     blocked.append("Igor PASS without an executed judge")
+                    igor_status = "UNAVAILABLE"
+                elif (not isinstance(q, int) or isinstance(q, bool) or not isinstance(min_q, int) or q < min_q
+                      or ev.get("required_corrections") or crit_fail):
+                    blocked.append("Igor PASS is inconsistent with its own evaluation "
+                                   "(score below the policy minimum, open corrections, or a failed critical check)")
                     igor_status = "UNAVAILABLE"
                 else:
                     igor_status = "VERIFIED"
@@ -388,7 +424,8 @@ def _canary_problem(facts: Facts, igor_env: Dict[str, Any], policy: Dict[str, An
     if c.get("execution_status") != "EXECUTED" or ev.get("judge_status") != "OK":
         return "Igor calibration unavailable: canary judge did not return a usable verdict"
     q = ev.get("quality_score")
-    accepted = ev.get("decision") == "PASS" and isinstance(q, int) and q >= policy.get("min_quality_score", 70)
+    accepted = ev.get("decision") == "PASS" and (
+        not isinstance(q, int) or isinstance(q, bool) or q >= policy.get("min_quality_score", 70))
     if accepted:
         return ("Igor failed calibration: it PASSed a known-wrong answer (2 + 2 = 5); "
                 "its PASS is not evidence of correctness")
@@ -549,7 +586,7 @@ def check_attestation(sd: Path, facts: "Facts", final: Optional[Dict[str, Any]],
         return bad("key_id does not match public_key")
     final_bytes = (sd / "final.json").read_bytes()
     chain_head = facts.envelopes[-1].get("envelope_hash") if facts.envelopes else None
-    expected = attestation_payload(sd.name, chain_head, final_bytes, final, pk_hex, payload["signed_at"])
+    expected = attestation_payload(_sname(sd), chain_head, final_bytes, final, pk_hex, payload["signed_at"])
     if canonical_bytes(payload) != canonical_bytes(expected):
         diff = sorted(k for k in set(payload) | set(expected) if payload.get(k) != expected.get(k))
         return bad("signed payload does not match the session on disk (differs: " + ", ".join(diff) + ")")
@@ -572,6 +609,18 @@ def verify_session(session_dir: Any, *, expected_source_sha: Optional[str] = Non
     if trusted_key is not None and (not isinstance(trusted_key, (bytes, bytearray)) or len(trusted_key) != 32):
         raise ValueError("trusted_key must be exactly 32 bytes (raw Ed25519 public key)")
     trusted_key = bytes(trusted_key) if trusted_key is not None else None
+    try:
+        return _verify_session(session_dir, expected_source_sha=expected_source_sha, scan_root=scan_root,
+                               trusted_key=trusted_key)
+    except Exception as e:     # malformed-but-parseable evidence is a verdict (FAILED), never an exception
+        sd = Path(session_dir)
+        return {"overall": "FAILED", "outcome": None, "runtime_kind": None, "recomputed": None,
+                "failures": [f"verifier could not process the session: {type(e).__name__}"],
+                "warnings": [], "session": _sname(sd), "authenticity": "NONE", "attestation": None}
+
+
+def _verify_session(session_dir: Any, *, expected_source_sha: Optional[str] = None,
+                    scan_root: Optional[Any] = None, trusted_key: Optional[bytes] = None) -> Dict[str, Any]:
     sd = Path(session_dir)
     facts = inspect_session(sd)
     failures = list(facts.failures)
@@ -585,6 +634,9 @@ def verify_session(session_dir: Any, *, expected_source_sha: Optional[str] = Non
     else:
         try:
             final = json.loads(fp.read_text("utf-8"))
+            if not isinstance(final, dict):
+                failures.append("final.json is not a JSON object")
+                final = None
         except Exception:
             failures.append("final.json unreadable or invalid JSON")
     if final is not None:
@@ -628,9 +680,13 @@ def verify_session(session_dir: Any, *, expected_source_sha: Optional[str] = Non
 
     if scan_root is not None:
         root = Path(scan_root)
+        if not root.is_dir():
+            failures.append("scan root is not a directory")
         mine_runs = {e.get("run_id") for e in facts.envelopes}
         mine_bind = {e.get("binding") for e in facts.envelopes}
-        for other in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith("_")):
+        others = sorted(p for p in root.iterdir() if p.is_dir() and p.name not in ("_run_index", "_binding_index")) \
+            if root.is_dir() else []
+        for other in others:
             if other.resolve() == sd.resolve():
                 continue
             other_envs = other / "envelopes"
@@ -656,7 +712,7 @@ def verify_session(session_dir: Any, *, expected_source_sha: Optional[str] = Non
     return {
         "overall": overall, "outcome": outcome, "runtime_kind": runtime_kind,
         "recomputed": recomputed, "failures": failures, "warnings": warnings,
-        "session": sd.name, "authenticity": att["authenticity"], "attestation": att["info"],
+        "session": _sname(sd), "authenticity": att["authenticity"], "attestation": att["info"],
     }
 
 

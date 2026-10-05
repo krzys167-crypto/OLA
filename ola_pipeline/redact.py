@@ -12,6 +12,13 @@ _PATTERNS = [
         r"github_pat_[A-Za-z0-9_]{30,}",
         r"xox[abprs]-[A-Za-z0-9\-]{10,}",
         r"(?i)bearer\s+[A-Za-z0-9._\-]{20,}",
+        r"(?:sk|rk|pk)_live_[A-Za-z0-9]{10,}",                    # Stripe live keys
+        r"whsec_[A-Za-z0-9]{10,}",                               # Stripe webhook secret
+        r"AIza[0-9A-Za-z_\-]{30,}",                              # Google API key
+        r"eyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}",   # JWT
+        r"hooks\.slack\.com/services/[A-Za-z0-9/]{20,}",
+        r"(?i)authorization:\s*basic\s+[A-Za-z0-9+/=]{8,}",
+        r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s/:@]+:[^\s/@]+@",         # scheme://user:password@host
     )
 ]
 

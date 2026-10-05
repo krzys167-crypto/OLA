@@ -10,7 +10,7 @@ from .errors import (ConfigError, ModelUnresolved, ProviderError, ProviderTimeou
                      ProviderUnavailable, SecretDetected, UnknownProviderError)
 from .hashing import canonical_bytes
 from .providers import build_provider
-from .redact import scrub
+from .redact import contains_secret, scrub
 from .source import SourceAnchor
 from .vault import EvidenceVault
 
@@ -45,10 +45,17 @@ def run_stage(*, vault: EvidenceVault, anchor: SourceAnchor, session_id: str, ru
     else:
         try:
             gen = build_provider(cfg).execute(messages, json_mode=json_mode)
-            if any(len(k) >= 8 and k in gen.text for k in known):
-                raise SecretDetected("output contained a configured secret; not persisted")
+            if contains_secret(gen.text, known):
+                raise SecretDetected("output contained a configured or probable secret; not persisted")
             if not gen.text.strip():
                 raise ProviderError("empty output")
+            # provider-controlled content must be persistable HERE, inside the fail-closed handler: a lone
+            # surrogate or a NaN in the proof would otherwise raise out of Pipeline.run with no envelope
+            try:
+                gen.text.encode("utf-8")
+                canonical_bytes(gen.runtime_proof)
+            except (UnicodeError, ValueError, TypeError) as pe:
+                raise ProviderError(f"output not persistable: {type(pe).__name__}") from None
             text, proof, digest = gen.text, gen.runtime_proof, gen.model_digest
         except UnknownProviderError as e:
             status, detail = "PROVIDER_UNKNOWN", str(e)
@@ -73,7 +80,12 @@ def run_stage(*, vault: EvidenceVault, anchor: SourceAnchor, session_id: str, ru
     gate_state = "PENDING" if status == "EXECUTED" else "BLOCKED"
     all_refs: Dict[str, Any] = dict(refs or {})
     if finalize is not None:
-        extra = finalize(status, text, detail) or {}
+        try:
+            extra = finalize(status, text, detail) or {}
+        except Exception as e:                   # the judge's own artifacts failed to persist: blocked, recorded
+            extra = {}
+            gate_state = "BLOCKED"
+            detail = f"{detail}; finalize failed: {type(e).__name__}".lstrip("; ")
         all_refs.update(extra.get("refs", {}))
         gate_state = extra.get("gate_state", gate_state)
 

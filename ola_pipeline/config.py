@@ -138,8 +138,8 @@ class PipelineConfig:
             think=b("OLA_IGOR_THINK"),
         )
         policy = Policy(
-            max_iterations=int(env.get("OLA_MAX_ITERATIONS", "3")),
-            min_quality_score=int(env.get("OLA_MIN_QUALITY_SCORE", "70")),
+            max_iterations=3 if i("OLA_MAX_ITERATIONS") is None else i("OLA_MAX_ITERATIONS"),
+            min_quality_score=70 if i("OLA_MIN_QUALITY_SCORE") is None else i("OLA_MIN_QUALITY_SCORE"),
             require_model_digest=env.get("OLA_REQUIRE_MODEL_DIGEST", "1") != "0",
             require_igor_calibration=env.get("OLA_REQUIRE_IGOR_CALIBRATION", "1") != "0",
             allow_same_model_igor=env.get("OLA_ALLOW_SAME_MODEL_IGOR", "0") == "1",

@@ -275,5 +275,10 @@ class Igor:
             skip_reason=("critical evidence checks failed: " + ", ".join(c["name"] for c in crit_fail)) if crit_fail else None,
             finalize=finalize,
         )
+        if "decision" not in state:             # finalize failed inside the stage (artifact could not be persisted)
+            result = {"decision": "BLOCK", "quality_score": 0, "findings": [], "required_corrections": [],
+                      "evidence_checks": checks, "reason": "Igor evaluation could not be persisted (fail closed)."}
+            meta = {"judge_status": "INVALID_OUTPUT", "correctable": False, "independence": self.independence}
+            return IgorOutcome("BLOCK", result, meta, False, "", run_id, res.envelope)
         return IgorOutcome(state["decision"], state["result"], state["meta"], state["correctable"],
                            state["ev_hash"], run_id, res.envelope)
