@@ -451,7 +451,7 @@ def verify_agent_run(tenant_id, run_id):
     replay_nonces = {json.loads(row.payload_json).get("replay_nonce") for row in run_rows}
     if len(replay_nonces) != 1:
         return {"status": "BLOCK", "reason": "replay nonce mismatch across evidence", "evidence_count": len(run_rows)}
-    chain = [{"tenant_id": row.tenant_id, "seq": row.seq, "prev_hash": row.prev_hash, "record_hash": row.record_hash, "payload_json": row.payload_json} for row in rows]
+    chain = [{"tenant_id": row.tenant_id, "seq": row.seq, "prev_hash": row.prev_hash, "record_hash": row.record_hash, "record_type": row.record_type, "payload_json": row.payload_json} for row in rows]
     chain_ok, reason = verify_chain(chain)
     if not chain_ok:
         return {"status": "BLOCK", "reason": reason, "evidence_count": len(run_rows)}

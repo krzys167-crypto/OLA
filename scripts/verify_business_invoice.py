@@ -57,6 +57,7 @@ def main():
         fail("agent evidence order/type mismatch")
 
     expected_prev = GENESIS
+    seen_v2 = False
     instances = set()
     contexts = set()
     payloads = []
@@ -66,10 +67,12 @@ def main():
             fail("tenant or sequence mismatch")
         if prev_hash != expected_prev:
             fail("hash-chain predecessor mismatch")
-        expected_hash = hashlib.sha256(
-            f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")
-        ).hexdigest()
-        if record_hash != expected_hash:
+        v1 = hashlib.sha256(f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")).hexdigest()
+        v2 = hashlib.sha256(
+            f"ola.chain/2|{tenant_id}|{seq}|{prev_hash}|{len(record_type)}:{record_type}|{payload_json}".encode("utf-8")).hexdigest()
+        if record_hash == v2:
+            seen_v2 = True
+        elif seen_v2 or record_hash != v1:      # legacy v1 only before the first type-bound (v2) record
             fail("hash-chain record hash mismatch")
         expected_prev = record_hash
         payload = json.loads(payload_json)

@@ -45,27 +45,9 @@ def verify_stripe_signature(payload: bytes, signature_header: str, secret: str, 
 
 
 def _append_evidence(tenant_id: str, record_type: str, payload: dict) -> str:
-    payload_json = canonical_json(payload)
-    with SessionLocal() as db:
-        last = db.scalar(
-            select(EvidenceRecord)
-            .where(EvidenceRecord.tenant_id == tenant_id)
-            .order_by(EvidenceRecord.seq.desc())
-        )
-        seq = 0 if last is None else last.seq + 1
-        prev_hash = GENESIS_HASH if last is None else last.record_hash
-        record = EvidenceRecord(
-            id=str(uuid.uuid4()),
-            tenant_id=tenant_id,
-            seq=seq,
-            record_type=record_type,
-            payload_json=payload_json,
-            prev_hash=prev_hash,
-            record_hash=compute_record_hash(tenant_id, seq, prev_hash, payload_json),
-        )
-        db.add(record)
-        db.commit()
-        return record.id
+    # same chain and hashing (v2, type-bound), through the retrying append (lazy import: see business_runtime)
+    from .pipeline_bridge import append_evidence
+    return append_evidence(tenant_id, record_type, payload, attempts=96)["id"]
 
 
 def _metadata_task(session: dict) -> str | None:

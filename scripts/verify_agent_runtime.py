@@ -24,20 +24,23 @@ EXPECTED_INVOCATION = {
 GENESIS_HASH = "0" * 64
 
 
-def compute_record_hash(tenant_id, seq, prev_hash, payload_json):
-    return hashlib.sha256(
-        f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")
-    ).hexdigest()
+def compute_record_hash(tenant_id, seq, prev_hash, payload_json, record_type=None):
+    """v1 (no type) or v2 (type-bound, 'ola.chain/2'); same rule as app/hashchain.py."""
+    material = (f"{tenant_id}|{seq}|{prev_hash}|{payload_json}" if record_type is None else
+                f"ola.chain/2|{tenant_id}|{seq}|{prev_hash}|{len(record_type)}:{record_type}|{payload_json}")
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def verify_hash_chain(rows):
     expected_prev = GENESIS_HASH
+    seen_v2 = False
     for expected_seq, row in enumerate(rows):
-        tenant_id, seq, _, payload_json, prev_hash, record_hash = row
+        tenant_id, seq, record_type, payload_json, prev_hash, record_hash = row
         if seq != expected_seq or prev_hash != expected_prev:
             return False, "sequence or predecessor mismatch"
-        expected = compute_record_hash(tenant_id, seq, prev_hash, payload_json)
-        if record_hash != expected:
+        if record_hash == compute_record_hash(tenant_id, seq, prev_hash, payload_json, record_type):
+            seen_v2 = True
+        elif seen_v2 or record_hash != compute_record_hash(tenant_id, seq, prev_hash, payload_json):
             return False, "record hash mismatch"
         expected_prev = record_hash
     return True, "ok"

@@ -180,7 +180,7 @@ def append_evidence(tenant_id: str, record_type: str, payload: dict, *, attempts
             record = EvidenceRecord(
                 id=str(uuid.uuid4()), tenant_id=tenant_id, seq=seq, record_type=record_type,
                 payload_json=payload_json, prev_hash=prev_hash,
-                record_hash=compute_record_hash(tenant_id, seq, prev_hash, payload_json),
+                record_hash=compute_record_hash(tenant_id, seq, prev_hash, payload_json, record_type),
             )
             db.add(record)
             try:

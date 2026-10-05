@@ -22,27 +22,10 @@ CONTROLLED_VAT_RATE = 0.21
 
 
 def _append(tenant_id, run_id, record_type, payload):
-    payload_json = canonical_json({"run_id": run_id, **payload})
-    with SessionLocal() as db:
-        last = db.scalar(
-            select(EvidenceRecord)
-            .where(EvidenceRecord.tenant_id == tenant_id)
-            .order_by(EvidenceRecord.seq.desc())
-        )
-        seq = 0 if last is None else last.seq + 1
-        prev_hash = GENESIS_HASH if last is None else last.record_hash
-        record = EvidenceRecord(
-            id=str(uuid.uuid4()),
-            tenant_id=tenant_id,
-            seq=seq,
-            record_type=record_type,
-            payload_json=payload_json,
-            prev_hash=prev_hash,
-            record_hash=compute_record_hash(tenant_id, seq, prev_hash, payload_json),
-        )
-        db.add(record)
-        db.commit()
-        return record.id
+    # same chain, same hashing (v2, type-bound), through the retrying append; imported here because pipeline_bridge
+    # imports modules that import this one
+    from .pipeline_bridge import append_evidence
+    return append_evidence(tenant_id, record_type, {"run_id": run_id, **payload}, attempts=96)["id"]
 
 
 def _invoice_from_task(task):
@@ -142,7 +125,7 @@ def run_invoice_task(tenant_id, task):
             .where(EvidenceRecord.tenant_id == tenant_id)
             .order_by(EvidenceRecord.seq.asc())
         ).all()
-    chain = [{"tenant_id": r.tenant_id, "seq": r.seq, "prev_hash": r.prev_hash, "record_hash": r.record_hash, "payload_json": r.payload_json} for r in rows]
+    chain = [{"tenant_id": r.tenant_id, "seq": r.seq, "prev_hash": r.prev_hash, "record_hash": r.record_hash, "record_type": r.record_type, "payload_json": r.payload_json} for r in rows]
     chain_ok, reason = verify_chain(chain)
     final_result = execution[-1]["final_result"]
     status = "VERIFIED" if chain_ok else "BLOCK"

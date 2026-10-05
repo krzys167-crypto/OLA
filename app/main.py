@@ -109,6 +109,7 @@ def run_controlled_audit(tenant_id, task, scenario):
             "seq": row.seq,
             "prev_hash": row.prev_hash,
             "record_hash": row.record_hash,
+            "record_type": row.record_type,
             "payload_json": row.payload_json,
         }
         for row in rows
@@ -787,11 +788,13 @@ def verify_evidence(record_id: str, x_api_key: str | None = Header(default=None)
     rec = next((r for r in chain if r["id"] == record_id), None)
     if rec is None:
         raise HTTPException(status_code=404, detail="evidence not found")
-    own_hash = compute_record_hash(rec["tenant_id"], rec["seq"], rec["prev_hash"], rec["payload_json"])
+    own = {compute_record_hash(rec["tenant_id"], rec["seq"], rec["prev_hash"], rec["payload_json"], rec["record_type"]),
+           compute_record_hash(rec["tenant_id"], rec["seq"], rec["prev_hash"], rec["payload_json"])}   # v2 or legacy v1
+    own_ok = rec["record_hash"] in own
     ok, why = verify_chain(chain)
-    state = "PASS" if (ok and own_hash == rec["record_hash"]) else "FAIL"
+    state = "PASS" if (ok and own_ok) else "FAIL"
     return {"id": record_id, "seq": rec["seq"], "verification": state,
-            "checks": {"record_hash": own_hash == rec["record_hash"], "chain": ok},
+            "checks": {"record_hash": own_ok, "chain": ok},
             "reason": "" if state == "PASS" else (why if not ok else "record hash mismatch"),
             "proves": "integrity of this record inside the tenant chain; not authorship, truth or external time"}
 

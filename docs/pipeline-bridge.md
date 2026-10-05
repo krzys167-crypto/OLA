@@ -551,7 +551,7 @@ anything was changed. Regression tests: `tests/test_security_review2.py` (+ addi
 | 3 | high | the authorize digest left out `contains_secret`, `external_side_effect` and every unlisted field: a relay could strip flags under a valid signature (BLOCK became ALLOW), and an approval/permit held for a changed `destination_iban` | **fixed**: the digest covers the whole action and context; policy 1.0 -> 1.1 (pinned digest updated) |
 | 4 | high | DLP scanned 7 keys to depth 6: the same AWS key was BLOCK in `body`, ALLOW in `message`, `target` or nested deeper | **fixed**: every string (keys included) is scanned; nesting beyond 12 levels and bodies over 64 KiB are refused with 400 instead of silently skipped |
 | 5 | high | a nonce was single-use only sequentially: 12 concurrent identical signed authorizes gave 5 x 200 and 5 consumable permits | **fixed**: the first chain record owns a (principal, nonce); later records are void when state is read and the late caller gets 401. Measured: 12 concurrent -> exactly 1 x 200 / 11 x 401 / 1 permit, 15 of 15 repetitions |
-| 6 | medium | `record_type` is not part of the record hash, so a retyped record is not detected by the chain or by an anchored tip | **NOT fixed** (see below) |
+| 6 | medium | `record_type` is not part of the record hash, so a retyped record is not detected by the chain or by an anchored tip | **fixed for new records** (hash v2, see below); records written before v2 stay type-unbound |
 | 7 | medium | concurrent `POST /evidence`: 19 of 24 returned 500 | **fixed**: shared retrying append; 24 of 24 succeed, chain verifies. `agent_runtime._append_agent_evidence` had the same pattern (8 of 12 concurrent writes failed) and uses it now |
 | 8 | medium | `NaN` / `1e400` accepted into a record, after which `GET /evidence/{id}` was a permanent 500 | **fixed**: `canonical_json` is strict, the route returns 400, payload must be an object of at most 256 KiB |
 | 9 | low-medium | lone surrogate or a non-string `request_id` gave 500 | **fixed** (400) |
@@ -559,10 +559,15 @@ anything was changed. Regression tests: `tests/test_security_review2.py` (+ addi
 | 11 | low | `$` accepted a trailing newline in ids, keys, nonces, digests | **fixed**: `fullmatch` in identity, firewall and cfr |
 | 12 | config | with `OLA_IDENTITY_ENROLL_TOKEN_SHA256` unset and mode `off` (the default) any tenant-key holder can register scenarios, enrol a runner and submit its own elite result; runs are not bound to a runner | **not changed**: documented default; the operator must set the enrolment token. Binding a run to a runner is a design decision |
 
-**Item 6 is open on purpose.** Putting `record_type` into the hash changes the hash of every record, which is replicated in
-`scripts/verify_*.py`, several independent writers and every existing database. It needs a versioned hash format and the owner's decision.
-Until then the tamper evidence covers payloads, order and deletions in the middle (all give 503), but not a retyped
-record; it needs write access to the database. Tail truncation stays a documented limit.
+**Hash v2 (item 6).** A record hash is `sha256("ola.chain/2|tenant|seq|prev|<len>:<record_type>|payload")`; the type is
+length-prefixed, so no (type, payload) pair can be re-split into another. Every writer (`pipeline_bridge.append_evidence`,
+which `/evidence`, firewall, identity, cfr, agent runtime, business runtime and the Stripe webhook now share) writes v2.
+`verify_chain` accepts a legacy v1 hash only **before the first v2 record**; after that every record must be v2, and a
+record without `record_type` can only be v1. Retyping a v2 record, or swapping it for a v1 one, gives 503 in firewall,
+identity and cfr and FAIL in `POST /evidence/{id}/verify`. The standalone `scripts/verify_agent_runtime.py` and
+`verify_business_invoice.py` follow the same rule. **Limit that remains:** a record written before v2 is still
+type-unbound, so a legacy record can be retyped undetected (database write access needed). A deployment with old data and
+a requirement for full coverage has to re-anchor a new chain. Tail truncation stays a documented limit.
 
 Heuristic limits that remain: the DLP is a regex set, so an encoded (base64, split) secret passes; `environment` is
 asserted by the caller; ALLOW decisions do not expire; every call re-hashes the whole chain (about 65 microseconds per record).

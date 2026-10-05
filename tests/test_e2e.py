@@ -74,6 +74,7 @@ def test_ola_e2e_closed_environment():
             "seq": row.seq,
             "prev_hash": row.prev_hash,
             "record_hash": row.record_hash,
+            "record_type": row.record_type,
             "payload_json": row.payload_json,
         }
     ]
@@ -163,6 +164,7 @@ def test_product_e2e_customer_audit():
                 "seq": row.seq,
                 "prev_hash": row.prev_hash,
                 "record_hash": row.record_hash,
+                "record_type": row.record_type,
                 "payload_json": row.payload_json,
             }
             for row in rows
