@@ -453,3 +453,38 @@ of trust; whoever holds both can enrol any key. In `required` mode without `OLA_
 enrolment is disabled (503), because otherwise an agent with the API key could enrol itself as its own approver. The
 nonce check is a scan before the write, so two simultaneous identical requests can both pass it; the single permit and
 the single approval per decision still hold. Private keys are never stored by OLA.
+
+## Code Forensics Range integration (`app/cfr.py`)
+
+A CFR scenario run becomes tenant evidence the participant cannot write, scored by the server.
+
+```
+POST /cfr/scenarios   (X-Enroll-Token)   register a manifest: SLO-style scoring weights, limits, penalties, tiers,
+                                         required + hidden assertions, fault variants     -> cfr.scenario
+POST /cfr/runs                           per-run fault variant + seed from HMAC(OLA_CFR_SEED_SECRET); chain keeps digests only -> cfr.run
+POST /cfr/results                        a RUNNER (role `runner`, Ed25519) signs metrics + assertion results -> cfr.result
+GET  /cfr/results/{run_id}               PENDING | EXPIRED | the scored result
+GET  /cfr/leaderboard/{scenario_id}      PASS results only, best per participant
+```
+
+* The score, components and tier are computed from the **registered** manifest; a submission that contains `score`,
+  `tier` or `state` is rejected (400). First registration of a scenario id wins; a record whose manifest digest does
+  not match is ignored when reading.
+* **No silent pass.** A required or hidden assertion that is missing or `unknown` makes the state `UNKNOWN`; any `fail`
+  makes it `FAIL`; only all-`pass` is `PASS`, and a tier is given only on `PASS`. `UNKNOWN` never ranks.
+* One result per run (lowest chain seq wins a race), runs expire (`OLA_CFR_RUN_TTL_S`, default 7200), the submission
+  must reference the manifest digest the run was issued under, times must be consistent, metrics in range, unknown or
+  duplicate assertion ids rejected, NaN/inf refused by type (they pass every `<`/`>` comparison).
+* Signed with the same registry as the firewall (`app/identity.py`): enrolled, active, role `runner`, single-use nonce,
+  the signature covers the whole submission (any changed metric or assertion is a 401).
+
+Setup: `OLA_CFR_SEED_SECRET` (>= 16 characters, server only), `OLA_IDENTITY_ENROLL_TOKEN_SHA256` for registering
+scenarios / enrolling the runner key. Scoring follows the shape of the CFR DSL v0 (availability, latency p95,
+time-to-recover, blast radius, restart and downtime penalties, pass/merit/elite thresholds); the numbers are a
+transparent pinned heuristic from the manifest, not calibrated.
+
+What this does **not** prove: the runner ATTESTS the metrics. A compromised or lying runner can sign false numbers; the
+chain proves which runner key signed what and that the server scored it consistently, not that the measurements are
+true. The per-run seed is returned to the caller of `POST /cfr/runs`; call it from the runner, not from the participant,
+or the per-user mutation stops being a secret. Hidden assertion ids are kept out of the participant-facing view only by
+convention: every holder of the tenant key can read the manifest and the chain.

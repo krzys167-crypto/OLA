@@ -22,7 +22,7 @@ from .decision_fabric import DecisionFabric
 from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout, payment_verified
 from .stripe_webhook import process_checkout_event
-from . import ambient, anchor_external, firewall, identity, pipeline_bridge
+from . import ambient, anchor_external, cfr, firewall, identity, pipeline_bridge
 from .payment_binding import checkout_result_matches
 
 app = FastAPI(title="OLA Execution Gate")
@@ -681,8 +681,14 @@ def _firewall_call(fn, *args):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except firewall.FirewallUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except (identity.IdentityError,) as exc:
+    except (identity.IdentityError, cfr.CfrError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except cfr.CfrNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except cfr.CfrConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except cfr.CfrUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except identity.IdentityDenied as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except identity.IdentityConflict as exc:
@@ -731,6 +737,39 @@ def identity_revoke(body: dict, x_api_key: str | None = Header(default=None),
 def identity_principals(x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
     return {"mode": _firewall_call(identity.auth_mode), "principals": _firewall_call(identity.principals, tenant_id)}
+
+
+# ------------------------------------------------------------------ Code Forensics Range (CFR)
+@app.post("/cfr/scenarios")
+def cfr_register(body: dict, x_api_key: str | None = Header(default=None),
+                 x_enroll_token: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    return _firewall_call(cfr.register_scenario, tenant_id, body.get("manifest"), x_enroll_token)
+
+
+@app.post("/cfr/runs")
+def cfr_issue(body: dict, x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    return _firewall_call(cfr.issue_run, tenant_id, body.get("scenario_id"), body.get("participant_id"))
+
+
+@app.post("/cfr/results")
+def cfr_submit(body: dict, x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    submission = {k: v for k, v in body.items() if k != "auth"}
+    return _firewall_call(cfr.submit_result, tenant_id, submission, body.get("auth"))
+
+
+@app.get("/cfr/results/{run_id}")
+def cfr_result(run_id: str, x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    return _firewall_call(cfr.result, tenant_id, run_id)
+
+
+@app.get("/cfr/leaderboard/{scenario_id}")
+def cfr_leaderboard(scenario_id: str, limit: int = 20, x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    return _firewall_call(cfr.leaderboard, tenant_id, scenario_id, limit)
 
 
 @app.get("/firewall/requests/{request_id}")
