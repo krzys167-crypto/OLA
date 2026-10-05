@@ -36,6 +36,7 @@ hidden assertion passed; FAIL if any failed; otherwise UNKNOWN. Only PASS ranks.
 | `health_stable_10s` | required | all four services answer a verified `/health` for 10 s |
 | `san_matches_host` | hidden | the certificate names this run's host |
 | `ca_untouched` | hidden | static and admin still verify against the CA (it was not replaced) |
+| `san_exact` | hidden | the certificate names the host and nothing else (no wildcard, no second name); a fix that adds `*.<parent domain>` passes every visible assertion and fails here (`GOOD_WILDCARD=1 scripts/gen_good_cert.sh` models it) |
 
 ## What is and is not proven
 * Real: local TLS servers that re-read the certificate on every handshake; openssl / `ssl` / curl verification; the
@@ -59,3 +60,9 @@ make witness-down
 Exit code 3 / `UNKNOWN`: the witness saw no failed probe, so there is nothing it can attest. In local-process mode the
 witness runs on the participant's machine and is NOT isolated from them: run it on a host they cannot reach, or keep
 `independent_measurement.required` false (as shipped).
+
+## Source of truth
+This directory is the reference implementation of Certificate Apocalypse for OLA: the server scores the runner's result
+(`app/cfr.py`), a witness can cross-check it, and 800+ tests cover it. A separately developed `cfr-kit` (Docker/nginx front,
+its own matrix) exists outside this repository; nothing from it was imported unseen. Its idea of a hidden exact-SAN assertion
+is implemented here as `san_exact`; its Docker mode is NOT implemented here and stays UNKNOWN until its files are provided.

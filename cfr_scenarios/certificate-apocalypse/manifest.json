@@ -9,7 +9,8 @@
   ],
   "hidden_assertions": [
     "san_matches_host",
-    "ca_untouched"
+    "ca_untouched",
+    "san_exact"
   ],
   "variants": [
     "expired",

@@ -198,9 +198,11 @@ def cli(state, *args):
                           capture_output=True, text=True)
 
 
-def fix(state, host):
-    return subprocess.run([str(DIR / "scripts" / "gen_good_cert.sh")], capture_output=True, text=True,
-                          env={"PATH": "/usr/bin:/bin", "CERT_DIR": str(state / "certs"), "HOST": host})
+def fix(state, host, wildcard=False):
+    env = {"PATH": "/usr/bin:/bin", "CERT_DIR": str(state / "certs"), "HOST": host}
+    if wildcard:
+        env["GOOD_WILDCARD"] = "1"                                    # a "fix" that also adds *.<parent domain>
+    return subprocess.run([str(DIR / "scripts" / "gen_good_cert.sh")], capture_output=True, text=True, env=env)
 
 
 def begin(w, variant=None):
@@ -229,7 +231,8 @@ def test_a_fixed_run_is_scored_by_the_server_and_ranks(world):
     assert r.status_code == 200, r.text
     res = r.json()
     assert {a["id"]: a["result"] for a in sub["assertions"]} == {i: "pass" for i in (
-        "tls_handshake_ok", "x509_not_expired", "x509_chain_ok", "health_stable_10s", "san_matches_host", "ca_untouched")}
+        "tls_handshake_ok", "x509_not_expired", "x509_chain_ok", "health_stable_10s", "san_matches_host", "ca_untouched",
+        "san_exact")}
     assert res["state"] == "PASS" and res["tier"] in ("pass", "merit", "elite") and res["score"] > 0.5, res
     assert res["components"]["blast_radius"] == 1.0, "nothing outside the broken certificate was touched"
     assert sub["metrics"]["mttr_s"] is not None and sub["metrics"]["blast_radius"] == 0
@@ -268,6 +271,24 @@ def test_replacing_the_ca_is_collateral_damage_and_caught_by_the_hidden_assertio
     assert got["ca_untouched"] == "fail", got
     assert sub["metrics"]["blast_radius"] == 2, sub["metrics"]
     assert r.json()["state"] == "FAIL" and r.json()["tier"] == "none", r.text
+
+
+@TOOLS
+def test_a_wildcard_san_fix_passes_every_visible_assertion_and_fails_the_hidden_one(world):
+    """The tempting fix: add *.<parent domain> to the SAN so the handshake verifies. Visible assertions pass; san_exact does not."""
+    w = world
+    host = begin(w)
+    assert fix(w["state"], host, wildcard=True).returncode == 0
+    time.sleep(11.5)
+    sub, r = finish(w, rng.STABLE_S)
+    assert r.status_code == 200, r.text
+    got = {a["id"]: a["result"] for a in sub["assertions"]}
+    assert all(got[i] == "pass" for i in ("tls_handshake_ok", "x509_not_expired", "x509_chain_ok", "health_stable_10s",
+                                           "san_matches_host", "ca_untouched")), got
+    assert got["san_exact"] == "fail", got
+    assert r.json()["state"] == "FAIL" and r.json()["tier"] == "none", r.text
+    lb = C.get(f"/cfr/leaderboard/{MANIFEST['scenario_id']}", headers={"X-API-Key": w["key"]}).json()
+    assert lb["ranking"] == [], "a wildcard certificate never ranks"
 
 
 @TOOLS
@@ -381,7 +402,7 @@ def test_a_runner_that_claims_a_fix_nobody_made_is_disputed_by_the_witness(wworl
                          "downtime_s": 0},
              "assertions": [{"id": i, "result": "pass"} for i in (
                  "tls_handshake_ok", "x509_not_expired", "x509_chain_ok", "health_stable_10s", "san_matches_host",
-                 "ca_untouched")],
+                 "ca_untouched", "san_exact")],
              "artifacts": {}}
     r = sc.submit(w["api"], w["tid"], "runner-1", w["seed"], claim)
     assert r.status_code == 200 and r.json()["state"] == "PASS", "on the runner's word alone it passes"

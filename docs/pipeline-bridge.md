@@ -492,7 +492,7 @@ convention: every holder of the tenant key can read the manifest and the chain.
 ### First CFR scenario: Certificate Apocalypse (`cfr_scenarios/certificate-apocalypse/`)
 A runnable scenario for the CFR integration above: four local TLS services (two share the broken certificate), three fault
 variants (`expired`, `untrusted-chain`, `wrong-san`) chosen per run by the server, a host name that derives from the per-run
-seed, six assertions (two hidden: `san_matches_host`, `ca_untouched`), a probe loop that measures availability, p95 latency,
+seed, seven assertions (three hidden: `san_matches_host`, `ca_untouched`, `san_exact`; the last catches a wildcard-SAN "fix" that passes every visible assertion), a probe loop that measures availability, p95 latency,
 MTTR (start of the first 10 s window in which every service was healthy), collateral damage (blast radius = unaffected
 services that failed after the injection, e.g. after replacing the CA), restarts and downtime. `score.py` signs the result as
 an enrolled `runner`; the server computes the score. Tested end to end (`tests/test_cfr_certificate_apocalypse.py`, 16 tests:

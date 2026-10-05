@@ -12,8 +12,12 @@ if [ ! -f ca.key ] || [ ! -f ca.crt ]; then
 fi
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 openssl req -newkey rsa:2048 -nodes -keyout "$tmp/key.pem" -out "$tmp/req.csr" -subj "/CN=$HOST" >/dev/null 2>&1
-printf 'subjectAltName=DNS:%s\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n' \
-  "$HOST" > "$tmp/ext.cnf"
+SAN="DNS:$HOST"
+# GOOD_WILDCARD=1 models a participant who "fixes" the outage by adding *.<parent domain> as well: it verifies, but it is
+# not what was asked (hidden assertion san_exact).
+[ "${GOOD_WILDCARD:-0}" = 1 ] && SAN="$SAN,DNS:*.${HOST#*.}"
+printf 'subjectAltName=%s\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n' \
+  "$SAN" > "$tmp/ext.cnf"
 openssl x509 -req -in "$tmp/req.csr" -CA ca.crt -CAkey ca.key -CAcreateserial -out "$tmp/crt.pem" -days "$DAYS" \
   -extfile "$tmp/ext.cnf" >/dev/null 2>&1
 cat "$tmp/key.pem" "$tmp/crt.pem" > "$NAME.pem.new"
