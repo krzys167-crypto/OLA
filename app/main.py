@@ -18,6 +18,7 @@ from .replay import build_replay, verify_replay
 from .human_gate import HumanGate, ReviewDecision
 from .nina_igor import NinaIgorChain, STATUS_FIELDS
 from .decision_report import build_decision_report
+from .decision_fabric import DecisionFabric
 from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout, payment_verified
 from .stripe_webhook import process_checkout_event
@@ -724,6 +725,25 @@ def verify_evidence(record_id: str, x_api_key: str | None = Header(default=None)
             "checks": {"record_hash": own_hash == rec["record_hash"], "chain": ok},
             "reason": "" if state == "PASS" else (why if not ok else "record hash mismatch"),
             "proves": "integrity of this record inside the tenant chain; not authorship, truth or external time"}
+
+
+@app.post("/decision-evaluate")
+def decision_evaluate(body: dict, x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    state = body.get("state")
+    questions = body.get("questions")
+    if state is None:
+        raise HTTPException(status_code=400, detail="state is required")
+    if not isinstance(questions, dict) or not questions:
+        raise HTTPException(status_code=400, detail="questions object is required")
+
+    fabric = DecisionFabric()
+    result = fabric.evaluate(state=state, questions=questions)
+    evidence = fabric.evidence(result)
+    evidence["tenant_id"] = tenant_id
+    record_type = "decision.fabric" if result.status == "READY" else "decision.fabric_blocked"
+    append_record(tenant_id, record_type, evidence)
+    return evidence
 
 
 @app.post("/stripe/webhook")
