@@ -22,7 +22,7 @@ from .decision_fabric import DecisionFabric
 from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout, payment_verified
 from .stripe_webhook import process_checkout_event
-from . import ambient, anchor_external, firewall, pipeline_bridge
+from . import ambient, anchor_external, firewall, identity, pipeline_bridge
 from .payment_binding import checkout_result_matches
 
 app = FastAPI(title="OLA Execution Gate")
@@ -681,26 +681,56 @@ def _firewall_call(fn, *args):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except firewall.FirewallUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (identity.IdentityError,) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except identity.IdentityDenied as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except identity.IdentityConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except identity.IdentityUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/firewall/authorize")
 def firewall_authorize(body: dict, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
-    return _firewall_call(firewall.authorize, tenant_id, body.get("agent_id"), body.get("action"), body.get("context"))
+    return _firewall_call(firewall.authorize, tenant_id, body.get("agent_id"), body.get("action"), body.get("context"),
+                          body.get("auth"))
 
 
 @app.post("/firewall/approve")
 def firewall_approve(body: dict, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
     return _firewall_call(firewall.approve, tenant_id, body.get("request_id"), body.get("approver_id"),
-                          body.get("reason"))
+                          body.get("reason"), body.get("auth"))
 
 
 @app.post("/firewall/consume")
 def firewall_consume(body: dict, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
     return _firewall_call(firewall.consume, tenant_id, body.get("request_id"), body.get("agent_id"),
-                          body.get("action"), body.get("context"))
+                          body.get("action"), body.get("context"), body.get("auth"))
+
+
+@app.post("/identity/enroll")
+def identity_enroll(body: dict, x_api_key: str | None = Header(default=None),
+                    x_enroll_token: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    return _firewall_call(identity.enroll, tenant_id, body.get("principal_id"), body.get("role"),
+                          body.get("public_key"), x_enroll_token)
+
+
+@app.post("/identity/revoke")
+def identity_revoke(body: dict, x_api_key: str | None = Header(default=None),
+                    x_enroll_token: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    return _firewall_call(identity.revoke, tenant_id, body.get("principal_id"), body.get("reason"), x_enroll_token)
+
+
+@app.get("/identity/principals")
+def identity_principals(x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    return {"mode": _firewall_call(identity.auth_mode), "principals": _firewall_call(identity.principals, tenant_id)}
 
 
 @app.get("/firewall/requests/{request_id}")

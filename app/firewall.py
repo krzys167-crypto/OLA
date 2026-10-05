@@ -27,9 +27,12 @@ Fail-closed rules (each has a test)
 * Evidence stores SHA-256 digests of the action and of the command/payload, never their text.
 
 HONEST LIMITS
-* `agent_id` and `approver_id` are asserted by the holder of the tenant API key; there is no per-agent
-  credential and no check that the approver is a person. Separating them needs an identity provider (OIDC/RBAC),
-  which this repository does not have. The approver != agent rule only stops the same string from doing both.
+* Identity. By default (`OLA_FIREWALL_AGENT_AUTH` off) `agent_id` and `approver_id` are asserted by the holder of
+  the tenant API key and the approver != agent rule only stops the same string doing both. With signed requests
+  (app/identity.py: Ed25519 keys enrolled in the chain, `OLA_FIREWALL_AGENT_AUTH=required`) a principal is a key, an
+  approver key can never be an agent key, and a decision that was not made by a verified agent can be neither
+  approved nor consumed. That is still not an identity provider: it does not prove an approver is a person, and the
+  enrolment token / tenant API key remain the root of trust (see app/identity.py).
 * The firewall decides; it does not execute and cannot stop a caller that skips it. Enforcement requires that
   the executor only acts on a `consume` permit.
 * The risk model is a transparent additive heuristic, not a measured one. The rule table is versioned and
@@ -45,6 +48,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import identity
 from . import pipeline_bridge as pb
 from .hashchain import canonical_json, verify_chain
 
@@ -228,6 +232,35 @@ def _append(tenant_id: str, rtype: str, payload: dict) -> dict:
         raise FirewallUnavailable(f"the decision could not be recorded ({type(exc).__name__})") from exc
 
 
+def _authenticate(chain: List[dict], tenant_id: str, purpose: str, principal_id: str, role: str, subject: str,
+                  auth: Any) -> Optional[Dict[str, Any]]:
+    """None only when the request is unsigned AND signatures are not required. A signature that is supplied is
+    always verified: a bad one is denied, never ignored."""
+    if auth is None and identity.auth_mode() == "off":
+        return None
+    return identity.verify(chain, tenant_id, purpose, principal_id, role, subject, auth)
+
+
+def _auth_fields(proof: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if proof is None:
+        return {"identity": "asserted", "auth": None}
+    return {"identity": "verified", "auth": {k: proof[k] for k in ("principal_id", "role", "key_sha256", "nonce", "ts",
+                                                                   "signature_sha256")}}
+
+
+def authorize_subject(agent_id: Any, action: Any, context: Any = None) -> str:
+    """What an agent signs for authorize(): the digest of the action it wants to take."""
+    return action_digest(normalize(agent_id, action, context))
+
+
+def consume_subject(request_id: str, agent_id: Any, action: Any, context: Any = None) -> str:
+    return _sha({"request_id": request_id, "action_digest": action_digest(normalize(agent_id, action, context))})
+
+
+def approve_subject(request_id: str, reason: str) -> str:
+    return _sha({"request_id": request_id, "reason_sha256": hashlib.sha256(reason.encode("utf-8")).hexdigest()})
+
+
 def _ttl() -> int:
     try:
         return pb._int_env("OLA_FIREWALL_APPROVAL_TTL_S", 900)
@@ -263,27 +296,32 @@ def _view(request_id: str, events: List[Tuple[dict, dict]], now: float, ttl: int
             "policy_id": d["policy_id"], "policy_version": d["policy_version"], "policy_sha256": d["policy_sha256"],
             "reasons": d["reasons"], "agent_id": d["agent_id"], "environment": d["environment"],
             "action_digest": d["action_digest"], "decision_seq": drec["seq"], "phase": phase,
+            "identity": d.get("identity", "asserted"),
+            "agent_key_sha256": (d.get("auth") or {}).get("key_sha256"),
             "approval": None if approval is None else {"approver_id": approval["approver_id"],
+                                                       "identity": approval.get("identity", "asserted"),
                                                        "reason_sha256": approval["reason_sha256"],
                                                        "approved_at": approval["approved_at"], "live": live},
             "executions": len(executions)}
 
 
-def authorize(tenant_id: str, agent_id: Any, action: Any, context: Any = None) -> Dict[str, Any]:
+def authorize(tenant_id: str, agent_id: Any, action: Any, context: Any = None, auth: Any = None) -> Dict[str, Any]:
     n = normalize(agent_id, action, context)
     ev = evaluate(n)
-    _events(tenant_id)                           # refuses (503) when the tenant chain is unreadable or broken
+    chain, _ = _events(tenant_id)                # refuses (503) when the tenant chain is unreadable or broken
+    proof = _authenticate(chain, tenant_id, "firewall.authorize", n["agent_id"], "agent", action_digest(n), auth)
     request_id = "req_" + uuid.uuid4().hex[:20]
     payload = {"schema": SCHEMA, "request_id": request_id, "agent_id": n["agent_id"], "action_type": n["type"],
                "family": n["family"], "target": n["target"], "value": n["value"], "environment": n["environment"],
                "environment_assumed": n["environment_assumed"], "action_digest": action_digest(n),
                "decision": ev["decision"], "risk_score": ev["risk_score"], "policy_id": ev["policy_id"],
                "policy_version": POLICY_VERSION, "policy_sha256": policy_digest(), "reasons": ev["reasons"],
-               "secret_detected": ev["secret_detected"], "created_at": _now()}
+               "secret_detected": ev["secret_detected"], "created_at": _now(), **_auth_fields(proof)}
     rec = _append(tenant_id, DECISION_TYPE, payload)
     return {"request_id": request_id, "decision": ev["decision"], "risk_score": ev["risk_score"],
             "policy_id": ev["policy_id"], "policy_version": POLICY_VERSION, "reasons": ev["reasons"],
             "approval_required": ev["decision"] == REVIEW, "evidence_seq": rec["seq"],
+            "action_digest": payload["action_digest"], "identity": payload["identity"],
             "permit": False}                                    # a permit exists only after consume()
 
 
@@ -294,12 +332,14 @@ def state(tenant_id: str, request_id: str) -> Dict[str, Any]:
     return _view(request_id, by_req[request_id], _now(), _ttl())
 
 
-def approve(tenant_id: str, request_id: str, approver_id: Any, reason: Any) -> Dict[str, Any]:
+def approve(tenant_id: str, request_id: str, approver_id: Any, reason: Any, auth: Any = None) -> Dict[str, Any]:
     if not isinstance(approver_id, str) or not _ID.match(approver_id):
         raise FirewallError("approver_id must match [A-Za-z0-9_.:@-]{1,64}")
     if not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
         raise FirewallError("reason is required (1-1000 characters)")
-    _, by_req = _events(tenant_id)
+    chain, by_req = _events(tenant_id)
+    proof = _authenticate(chain, tenant_id, "firewall.approve", approver_id, "approver",
+                          approve_subject(str(request_id), reason), auth)
     if request_id not in by_req:
         raise FirewallNotFound("no such request")
     v = _view(request_id, by_req[request_id], _now(), _ttl())
@@ -309,10 +349,15 @@ def approve(tenant_id: str, request_id: str, approver_id: Any, reason: Any) -> D
         raise FirewallConflict("this request already has an approval")
     if approver_id == v["agent_id"]:
         raise FirewallConflict("an agent cannot approve its own action")
+    if identity.auth_mode() == "required" and v["identity"] != "verified":
+        raise FirewallConflict("this decision was not made by a verified agent, so it cannot be approved")
+    if proof is not None and v["agent_key_sha256"] and proof["key_sha256"] == v["agent_key_sha256"]:
+        raise FirewallConflict("an agent cannot approve its own action (same key)")
     rec = _append(tenant_id, APPROVAL_TYPE, {
         "schema": SCHEMA, "request_id": request_id, "decision_seq": v["decision_seq"],
         "action_digest": v["action_digest"], "approver_id": approver_id,
-        "reason_sha256": hashlib.sha256(reason.encode("utf-8")).hexdigest(), "approved_at": _now()})
+        "reason_sha256": hashlib.sha256(reason.encode("utf-8")).hexdigest(), "approved_at": _now(),
+        **_auth_fields(proof)})
     # one approval per decision: the lowest seq wins a race
     _, again = _events(tenant_id)
     mine = [r["seq"] for r, p in again[request_id] if r["record_type"] == APPROVAL_TYPE
@@ -323,16 +368,21 @@ def approve(tenant_id: str, request_id: str, approver_id: Any, reason: Any) -> D
             "expires_in_s": _ttl()}
 
 
-def consume(tenant_id: str, request_id: str, agent_id: Any, action: Any, context: Any = None) -> Dict[str, Any]:
+def consume(tenant_id: str, request_id: str, agent_id: Any, action: Any, context: Any = None,
+            auth: Any = None) -> Dict[str, Any]:
     """The executor calls this immediately before acting. permit=True at most once per request."""
     n = normalize(agent_id, action, context)
-    _, by_req = _events(tenant_id)
+    chain, by_req = _events(tenant_id)
+    proof = _authenticate(chain, tenant_id, "firewall.consume", n["agent_id"], "agent",
+                          _sha({"request_id": request_id, "action_digest": action_digest(n)}), auth)
     if request_id not in by_req:
         raise FirewallNotFound("no such request")
     v = _view(request_id, by_req[request_id], _now(), _ttl())
     reason = ""
     if action_digest(n) != v["action_digest"]:
         reason = "the action differs from the one that was decided"
+    elif identity.auth_mode() == "required" and v["identity"] != "verified":
+        reason = "the decision was not made by a verified agent"
     elif v["phase"] != "PERMITTED":
         reason = {"BLOCKED": "the action was blocked", "AWAITING_APPROVAL": "human approval is still required",
                   "APPROVAL_EXPIRED": "the approval has expired", "EXECUTED": "the permit was already used"
@@ -340,7 +390,8 @@ def consume(tenant_id: str, request_id: str, agent_id: Any, action: Any, context
     permitted = reason == ""
     rec = _append(tenant_id, EXECUTION_TYPE, {
         "schema": SCHEMA, "request_id": request_id, "decision_seq": v["decision_seq"],
-        "action_digest": action_digest(n), "permitted": permitted, "reason": reason, "at": _now()})
+        "action_digest": action_digest(n), "permitted": permitted, "reason": reason, "at": _now(),
+        **_auth_fields(proof)})
     if permitted:                                                     # the lowest-seq permitted record wins a race
         _, again = _events(tenant_id)
         winners = sorted(r["seq"] for r, p in again[request_id]

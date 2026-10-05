@@ -347,7 +347,8 @@ in the tenant chain; the chain must verify before any answer is produced.
 | fail closed: unknown action -> REVIEW, unknown/missing environment -> production, malformed -> 400, no evidence -> no decision (503), broken chain -> 503 | VERIFIED (sandbox) |
 | secrets not written to evidence; secret detected server-side (flag can only raise) | VERIFIED (sandbox): digests only |
 | E2E in CI, runtime health, deployment | **UNKNOWN** until the CI run of this branch is read |
-| per-agent identity, approver is a person, RBAC | **NOT IMPLEMENTED**: `agent_id`/`approver_id` are strings asserted by the tenant API-key holder; only "same string cannot do both" is enforced |
+| per-agent identity | **IMPLEMENTED, opt-in** (`OLA_FIREWALL_AGENT_AUTH=required`, see "Agent and approver identity" below). Default (`off`) is unchanged: `agent_id`/`approver_id` are strings asserted by the tenant API-key holder |
+| approver is a person, RBAC, identity provider | **NOT IMPLEMENTED**: a signing key proves possession of a key, not that its holder is a person |
 | enforcement | The firewall decides and cannot stop a caller that skips it. It is only as strong as the rule "the executor acts on a `consume` permit and on nothing else" |
 
 Policy decisions that differ from the v0.3 demo (on purpose): `shell`/`code_exec` in production are REVIEW (the
@@ -408,3 +409,47 @@ Without the key the verdict is `UNKNOWN` and nothing is measured; there is no of
 secret exists and prints `JEV_QUALITY=PASS|FAIL|UNKNOWN|NOT_PROVEN`. **As of this commit the real Jev quality is UNKNOWN**: the
 harness is tested against scripted models (perfect, rubber-stamp, always-block, injection-following, low-confidence,
 unstable, malformed), not against Jev.
+
+
+## Agent and approver identity (`app/identity.py`)
+
+A principal is an Ed25519 **public key enrolled in the tenant chain** (`identity.enroll`, role `agent` or `approver`;
+`identity.revoke` ends it). A request is "from" a principal only if it carries a signature over
+`{tenant_id, purpose, principal_id, subject_sha256, ts, nonce}`; the subject binds the signature to the exact action
+digest (authorize), to the request and action (consume) or to the request and reason (approve), so a signature for one
+action cannot be reused for another, nor in another tenant or for another purpose.
+
+| rule | enforced by |
+|---|---|
+| one key = one principal, ever; an id is never reused, not after revocation | `enroll` 409 + `registry()` first-wins when reading |
+| an agent key can never be an approver key | the same rule (+ `approve()` compares key digests as a second line) |
+| small-order public keys refused | `SMALL_ORDER_KEYS`, checked against the standalone Ed25519 in the tests |
+| unknown / revoked / wrong role / bad signature / stale or future `ts` / reused nonce | 401, nothing is recorded |
+| `ts` NaN, bool, non-numeric; nonce not 16-64 `[A-Za-z0-9_-]` | 401 (a NaN `ts` would otherwise pass the skew comparison) |
+| a signature that IS supplied is always verified, in every mode | a bad one is 401, never ignored |
+| `required`: every authorize / approve / consume is signed; a decision not made by a verified agent can be neither approved nor consumed | `firewall.approve` 409, `firewall.consume` permit=false |
+| invalid `OLA_FIREWALL_AGENT_AUTH` | 503, not "off" |
+
+Operator setup (nothing is enabled by default):
+
+```
+# agent / approver side: generate a key, keep the seed, hand over only the public key
+python - <<'PY'
+from app.identity import generate_keypair; print(generate_keypair())   # (seed_hex, public_key_hex)
+PY
+# operator side
+export OLA_IDENTITY_ENROLL_TOKEN_SHA256=$(printf %s "$OPERATOR_TOKEN" | sha256sum | cut -d' ' -f1)
+export OLA_FIREWALL_AGENT_AUTH=required
+curl -H "X-API-Key: $KEY" -H "X-Enroll-Token: $OPERATOR_TOKEN" -d '{"principal_id":"agent-1","role":"agent","public_key":"<hex>"}' /identity/enroll
+```
+
+`GET /identity/principals` lists principals and the mode. Signed requests add `auth: {ts, nonce, signature}` to the
+body of `/firewall/authorize|approve|consume`; `app.firewall.authorize_subject / approve_subject / consume_subject` and
+`app.identity.sign_request` compute what is signed. Decisions, approvals and executions then record
+`identity: verified` and `auth` (principal, key digest, nonce, ts, a digest of the signature, never the signature).
+
+What this does **not** do: it is not an identity provider. The enrolment token and the tenant API key are still the root
+of trust; whoever holds both can enrol any key. In `required` mode without `OLA_IDENTITY_ENROLL_TOKEN_SHA256`
+enrolment is disabled (503), because otherwise an agent with the API key could enrol itself as its own approver. The
+nonce check is a scan before the write, so two simultaneous identical requests can both pass it; the single permit and
+the single approval per decision still hold. Private keys are never stored by OLA.
