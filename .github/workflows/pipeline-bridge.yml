@@ -68,7 +68,8 @@ jobs:
         run: |
           set -euo pipefail
           python -m pytest -p no:cacheprovider -o addopts="" -q -s -rs \
-            tests/pipeline_suite/test_real_ollama.py tests/test_pipeline_bridge_live.py | tee live-result.txt
+            tests/pipeline_suite/test_real_ollama.py tests/test_pipeline_bridge_live.py | tee live-result.txt \
+            || { bash scripts/ci_annotate_failure.sh live-result.txt "live pipeline tests failed"; exit 1; }
           # pytest exits 0 when every test is skipped. A green live job must never mean "nothing ran".
           if grep -Eq '[0-9]+ skipped' live-result.txt || ! grep -Eq '[0-9]+ passed' live-result.txt; then
             echo "::error title=live tests did not run::real-runtime result is UNKNOWN"
@@ -130,7 +131,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pytest -p no:cacheprovider -o addopts="" -q -s -rs tests/test_pipeline_bridge_live.py | tee live-result.txt
+          python -m pytest -p no:cacheprovider -o addopts="" -q -s -rs tests/test_pipeline_bridge_live.py | tee live-result.txt \
+            || { bash scripts/ci_annotate_failure.sh live-result.txt "live bridge test failed"; exit 1; }
           if grep -Eq '[0-9]+ skipped' live-result.txt || ! grep -Eq '[0-9]+ passed' live-result.txt; then
             echo "::error title=live tests did not run::real-runtime result is UNKNOWN"
             exit 1
@@ -186,7 +188,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pytest -p no:cacheprovider -o addopts="" -q -s -rs tests/test_ambient_live.py | tee live-result.txt
+          python -m pytest -p no:cacheprovider -o addopts="" -q -s -rs tests/test_ambient_live.py | tee live-result.txt \
+            || { bash scripts/ci_annotate_failure.sh live-result.txt "live ambient test failed"; exit 1; }
           if grep -Eq '[0-9]+ skipped' live-result.txt || ! grep -Eq '[0-9]+ passed' live-result.txt; then
             echo "::error title=live ambient tests did not run::real-runtime result is UNKNOWN"
             exit 1

@@ -302,6 +302,18 @@ def test_every_workflow_declares_least_privilege_permissions():
     assert missing == [], f"workflows without a top-level `permissions:` block: {missing}"
 
 
+def test_ci_failure_annotation_helper_encodes_the_log_tail(tmp_path):
+    import subprocess
+    log = tmp_path / "live-result.txt"
+    log.write_text("line one 100%\n" + "x" * 900 + "\nE   assert 'a' == 'b'\n")
+    out = subprocess.run(["bash", "scripts/ci_annotate_failure.sh", str(log), "live bridge test failed"],
+                         capture_output=True, text=True).stdout
+    assert out.startswith("::error title=live bridge test failed::") and out.count("\n") == 1, out
+    assert "100%25" in out and "%0A" in out and "assert 'a' == 'b'" in out
+    assert "x" * 401 not in out, "each line is cut to 400 characters"
+    assert subprocess.run(["bash", "scripts/ci_annotate_failure.sh"], capture_output=True).returncode != 0
+
+
 # ------------------------------------------------------------------ /chat honesty
 def test_chat_rejects_malformed_messages_with_400(monkeypatch):
     _, key = make_tenant()
