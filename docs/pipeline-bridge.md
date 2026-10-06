@@ -651,9 +651,15 @@ it was changed. Tests: `tests/pipeline_suite/test_review5_lib.py`, `tests/test_s
 **Considered and rejected:** SQLite WAL mode. It made a plain file copy of the database (what the standalone verifiers and the
 CI do) miss committed data, which the existing tamper test caught. It stays **opt-in** (`OLA_DB_WAL=1`).
 
-**Not done in this change (still open, reproduced by the reviewers):** `scripts/forensic_gate`, contradiction and replay
-scripts still accept `UNKNOWN` commits in places; `decision_report` wording; workflow hardening (pinned actions, minimal
-`permissions`); the Stripe `payment-success` page and `async` payment events. **UNKNOWN (cannot be measured here):**
+Scripts (second push of the same review): `scripts/verify_agent_runtime.py` and `forensic_gate` source binding no longer treat a
+blank or `UNKNOWN` expected commit as matching records written without provenance (BLOCK); `verify_decision_report.py` turns
+garbage input (non-object, NaN, duplicate keys, non-string hash, unreadable file) into `DECISION_REPORT=BLOCK` instead of a
+traceback and says its `VERIFIED` is artifact integrity only; `decision-fabric.yml` gets `permissions: contents: read`, and a
+test requires a top-level `permissions:` in every workflow.
+
+**Not done in this change (still open, reproduced by the reviewers):** other scripts (contradiction / replay helpers) that
+were not re-read after the reviewers' notes; GitHub Actions still referenced by tag (`@v4`, `@v5`) in several workflows
+instead of a commit SHA; the Stripe `payment-success` page and async payment events. **UNKNOWN (cannot be measured here):**
 behaviour under real load, a real Ollama judge, live Stripe (500-character metadata limit, async payment methods), CI result
 for this commit until the runners pick it up.
 

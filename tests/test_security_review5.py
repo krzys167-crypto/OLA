@@ -263,6 +263,45 @@ def test_only_one_concurrent_redelivery_may_claim_a_failed_event(stripe_env):
     assert client.post("/stripe/webhook", content=body, headers=headers).status_code == 409   # in flight, not FAILED
 
 
+# ------------------------------------------------------------------ standalone verifier provenance
+@pytest.mark.parametrize("commit", ["", "UNKNOWN", "unknown", "  ", None])
+def test_standalone_agent_verifier_refuses_a_blank_or_UNKNOWN_commit(commit):
+    from scripts.verify_agent_runtime import verify
+    out = verify("t", "r", commit, db_path="/nonexistent/never-opened.db")
+    assert out["status"] == "BLOCK" and "provenance" in out["reason"], out
+
+
+@pytest.mark.parametrize("sha", ["", "UNKNOWN", " unknown ", None])
+def test_forensic_gate_does_not_bind_to_a_blank_or_UNKNOWN_source_sha(tmp_path, sha):
+    from scripts.forensic_gate import _verify_source_binding
+    for name, body in (("source.txt", "commit=UNKNOWN\n"), ("MANIFEST.json", '{"source_commit": "UNKNOWN"}'),
+                       ("agent-run.json", '{"source_commit": "UNKNOWN"}'),
+                       ("independent-verifier.json", '{"source_commit": "UNKNOWN"}')):
+        (tmp_path / name).write_text(body)
+    assert _verify_source_binding(tmp_path, sha)["status"] == "BLOCKED"
+
+
+@pytest.mark.parametrize("content", [b"[]", b"null", b"not json", b'{"report_sha256": 5}', b'{"report_sha256": ["x"]}',
+                                     b'{"report_sha256": "a", "report_sha256": "b"}', b'{"x": NaN, "report_sha256": "a"}',
+                                     b"\xff\xfe", b""])
+def test_decision_report_verifier_blocks_garbage_without_a_traceback(tmp_path, content):
+    import subprocess, sys
+    path = tmp_path / "r.json"
+    path.write_bytes(content)
+    r = subprocess.run([sys.executable, "scripts/verify_decision_report.py", str(path)], capture_output=True, text=True)
+    assert r.returncode == 1 and "DECISION_REPORT=BLOCK" in r.stdout and "Traceback" not in r.stderr, (r.stdout, r.stderr[-200:])
+    missing = subprocess.run([sys.executable, "scripts/verify_decision_report.py", str(tmp_path / "nope.json")],
+                             capture_output=True, text=True)
+    assert missing.returncode == 1 and "Traceback" not in missing.stderr
+
+
+def test_every_workflow_declares_least_privilege_permissions():
+    import pathlib
+    missing = [p.name for p in sorted(pathlib.Path(".github/workflows").glob("*.yml"))
+               if not any(line.startswith("permissions:") for line in p.read_text().splitlines())]
+    assert missing == [], f"workflows without a top-level `permissions:` block: {missing}"
+
+
 # ------------------------------------------------------------------ /chat honesty
 def test_chat_rejects_malformed_messages_with_400(monkeypatch):
     _, key = make_tenant()

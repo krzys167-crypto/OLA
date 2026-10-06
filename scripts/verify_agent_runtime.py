@@ -51,6 +51,10 @@ def fail(reason, **extra):
 
 
 def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_result=None, db_path=None, expected_provider="local", expected_model="deterministic-runtime-v1", expected_invocation_type="local_deterministic_model", expected_nonce=None):
+    # A blank or "UNKNOWN" expected commit would "agree" with a record written without commit provenance
+    # (OLA_SOURCE_COMMIT unset -> "UNKNOWN") and report source_commit_verified: True. That is no provenance.
+    if not isinstance(expected_commit, str) or expected_commit.strip().upper() in {"", "UNKNOWN"}:
+        return fail("expected commit is blank or UNKNOWN: there is no source provenance to verify")
     db_path = db_path or os.getenv("OLA_EG_DB_PATH", "/data/ola.db")
     expected_invocation = {
         "provider": expected_provider,

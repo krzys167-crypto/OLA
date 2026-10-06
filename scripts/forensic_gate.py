@@ -91,6 +91,9 @@ def _verify_manifest_hashes(bundle: Path) -> dict:
 
 
 def _verify_source_binding(bundle: Path, expected_source_sha: str) -> dict:
+    # a blank / "UNKNOWN" expected SHA would "match" files that were themselves written without provenance
+    if not isinstance(expected_source_sha, str) or expected_source_sha.strip().upper() in {"", "UNKNOWN"}:
+        return _gate("BLOCKED", "expected SOURCE_SHA is blank or UNKNOWN: no source provenance to bind")
     required = ["source.txt", "MANIFEST.json", "agent-run.json", "independent-verifier.json"]
     missing = [name for name in required if not (bundle / name).exists()]
     if missing:
