@@ -109,9 +109,13 @@ def _validate_checkout(session: dict, *, allow_unpaid: bool = False) -> str:
     status = session.get("status")
     payment_status = session.get("payment_status")
     paid_enough = payment_status == "paid" or (allow_unpaid and payment_status == "unpaid")
-    if not paid_enough or (status is not None and status != "complete"):
+    # "complete" has to be SAID: Stripe always sends a status, so a session without one is not confirmed (it used to pass
+    # because only a value other than "complete" was refused)
+    if not paid_enough or status != "complete":
         raise HTTPException(status_code=400, detail="payment is not confirmed")
-    if session.get("currency") != "eur" or session.get("amount_total") != 9900:
+    # Stripe's amount_total is an integer number of cents; 9900.0 == 9900 in Python, so the type is checked too
+    amount = session.get("amount_total")
+    if session.get("currency") != "eur" or type(amount) is not int or amount != 9900:
         raise HTTPException(status_code=400, detail="unexpected payment amount or currency")
     line_items = session.get("line_items") or {}
     if not isinstance(line_items, dict):

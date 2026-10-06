@@ -27,7 +27,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - run: pip install -r requirements.txt
+      # PyYAML is not a runtime dependency (it is not in requirements.txt); EC-16's compose.yaml structure tests need it and
+      # SKIP without it, and a skipped test makes a control FAILING. cfr-docker.yml installs the same pin.
+      - run: pip install -r requirements.txt PyYAML==6.0.2
       - name: Check references and run the referenced tests
         run: |
           set -o pipefail

@@ -39,6 +39,7 @@ from ola_pipeline import PipelineConfig
 from ola_pipeline.errors import ConfigError, OlaPipelineError
 from ola_pipeline.igor import Igor, parse_judge
 from ola_pipeline.providers import build_provider
+from ola_pipeline.verify import same_model_name
 
 from . import pipeline_bridge as pb
 from .hashchain import canonical_json
@@ -128,7 +129,7 @@ def _judge(task: str, output: str, cfg, produced_by: Optional[str]) -> Dict[str,
     j: Dict[str, Any] = {"verdict": NO_VERDICT, "detail": "", "quality_score": None,
                          "judge": {"provider": cfg.igor.provider, "model": cfg.igor.model, "model_digest": None,
                                    "runtime_kind": None,
-                                   "same_model_as_producer": bool(produced_by) and produced_by == cfg.igor.model}}
+                                   "same_model_as_producer": same_model_name(produced_by, cfg.igor.model)}}
     try:
         with pb._run_slot():
             gen = build_provider(cfg.igor).execute(

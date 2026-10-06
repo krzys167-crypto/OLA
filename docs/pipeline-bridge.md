@@ -743,7 +743,7 @@ sessions here, so the effect on real ones is **UNKNOWN**): a policy snapshot wit
 iteration chain without verdicts/references is a failure; an envelope with a `gate_state` its content does not derive is a
 failure; a session with `min_quality_score` < 70 is `CONSISTENT`, never `VERIFIED`. `require_igor_calibration=False` and
 `require_model_digest=False` still only warn (they are deliberate operator choices, not thresholds): **owner decision** whether
-they should cap as well. `app/ambient.py` still compares judge model names as plain strings (not through `same_model`).
+they should cap as well. `app/ambient.py` now compares the judge's and the producer's model NAMES after the normalisation `same_model` uses (`same_model_name`: case, surrounding whitespace, the default `:latest` tag; an empty name matches nothing), so `IGOR-TEST` and `igor-test:latest` are one model there too (`tests/test_ambient.py`); two names for the same weights (an alias) cannot be detected from a name.
 
 ### Money flow: Stripe state machine and invoice maths
 
@@ -761,12 +761,21 @@ they should cap as well. `app/ambient.py` still compares judge model names as pl
 | `scripts/verify_business_invoice.py` was weaker than the app (forged evidence with net -5000, 0, 1e300, currency `eur` or an empty id was `VERIFIED`) and needed exactly six records per tenant (two approved runs: BLOCK) | **fixed**: same validation; the whole tenant chain is verified, then the run's rows are selected by `run_id`; a malformed command line is a JSON BLOCK, not a traceback; the database is opened read-only and never created. A test runs app and script on 1,500 random invoices |
 | a chain failure after the evidence was written returned `status: BLOCK` with `final_result` `APPROVE_FOR_TEST_TRANSFER` | **fixed**: the response says `NOT_APPROVED` / `NOT_SENT` / 0 (the append-only evidence still says what it said) |
 
+**Fixed afterwards (`tests/test_stripe_strict.py`, 36 tests, red before the change; 12 mutations of the change, all killed):**
+`amount_total` has to be the integer 9900 (`9900.0` equals 9900 in Python and was accepted; Stripe sends integer cents), a
+paid session has to SAY `status: "complete"` (a session without a status passed, only another value was refused), and
+`/payment-success` writes at most one `revenue.payment_blocked` row per distinct state of a session in a tenant's chain (the
+endpoint needs no secret, only a session id, so every poll of a session that is *paid* but not for this offer used to
+grow the chain; a state Stripe reports later is a new fact and is recorded; two polls racing on the very first one can both
+write).
+
 **Not fixed (stated limits):** real Stripe events carry no `line_items`, so the price check is skipped for them (amount and
 currency are still checked); a paid event answered 400 (unknown tenant, no task, foreign offer) leaves no row, so nothing
-reconciles it; two invoices with the same `invoice_id` are both accepted; `/payment-success` still writes one
-`revenue.payment_blocked` row per poll for a session that is *paid* but not for this offer; a run that outlives its lease is
-paid for twice (the second result wins); `amount_total: 9900.0` and a missing session `status` are still accepted (a valid
-signature is required).
+reconciles it (with an unknown tenant there is no chain to write to; with a known one it is a product decision what a
+refund workflow records); two invoices with the same `invoice_id` are both accepted (what counts as a duplicate, whether a
+rejected invoice may be sent again, and the race between two simultaneous submissions need an owner decision and a unique
+index; the standalone verifier would have to know the new decision too); a run that outlives its lease (900 s by default) is
+paid for twice, the second result wins (a heartbeat needs a column and a migration).
 
 ### A live test that asserted one outcome (CI, `live-independent-judge`, judge `qwen3:1.7b`)
 

@@ -545,6 +545,35 @@ def test_the_workflow_is_unprivileged_pinned_and_has_no_secrets():
     assert re.search(r"K6_IMAGE: grafana/k6:\d+\.\d+\.\d+\b", text) and ":latest" not in text
 
 
+def test_the_controls_workflow_installs_the_pyyaml_that_ec16_needs():
+    """EC-16 lists compose.yaml structure tests. They SKIP without PyYAML (it is not a runtime dependency), and a skipped
+    test makes a control FAILING: that is how the `controls` check went red on a9dd657 and b237089 while cfr-docker was
+    green. The two workflows must install the same pin."""
+    controls = (ROOT / ".github" / "workflows" / "controls.yml").read_text(encoding="utf-8")
+    installs = [line for line in controls.splitlines() if "pip install" in line and not line.strip().startswith("#")]
+    pin = re.search(r"PyYAML==\d+(?:\.\d+)+", WORKFLOW.read_text(encoding="utf-8"))
+    assert pin, "cfr-docker.yml pins PyYAML"
+    assert any("requirements.txt" in line and pin.group(0) in line for line in installs), installs
+
+
+def test_the_workflow_runs_every_variant_of_the_manifest_and_expects_exactly_its_own_assertion_to_fail():
+    job = _workflow()["jobs"]["cfr-docker"]
+    include = job["strategy"]["matrix"]["include"]
+    assert job["strategy"]["fail-fast"] is False                                         # one variant's red must not hide the others
+    assert [i["variant"] for i in include] == list(MANIFEST["variants"]) and len(set(i["variant"] for i in include)) == 3
+    own = {"expired": "x509_not_expired", "untrusted-chain": "x509_chain_ok", "wrong-san": "san_matches_host"}   # as in the offline test
+    visible = {"x509_not_expired", "x509_chain_ok", "san_matches_host"}
+    for i in include:
+        pairs = dict(p.split("=") for p in i["expect"].split())
+        assert set(pairs) == visible, (i["variant"], pairs)
+        assert {k for k, v in pairs.items() if v == "fail"} == {own[i["variant"]]}, (i["variant"], pairs)
+        assert {v for k, v in pairs.items() if k != own[i["variant"]]} == {"pass"}
+    assert job["env"] == {"VARIANT": "${{ matrix.variant }}", "EXPECT": "${{ matrix.expect }}"}
+    assert "matrix.variant" in _workflow()["jobs"]["cfr-docker"]["steps"][-2]["with"]["name"]     # artifacts of the 3 jobs do not collide
+    run_json = next(s for s in job["steps"] if s.get("name", "").startswith("Issue a local run"))["run"]
+    assert 'os.environ["VARIANT"]' in run_json and '"expired"' not in run_json
+
+
 def test_the_workflow_asserts_each_stage_of_the_incident_not_just_that_it_ran():
     steps = _steps()
     run = {name: s["run"] for name, s in steps.items() if "run" in s}
@@ -555,7 +584,7 @@ def test_the_workflow_asserts_each_stage_of_the_incident_not_just_that_it_ran():
     baseline = next(v for k, v in run.items() if k.startswith("Baseline"))
     assert "ci_check.py" in baseline and "all-pass" in baseline
     broken = next(v for k, v in run.items() if k.startswith("The fault is visible"))
-    for want in ("x509_not_expired=fail", "health_stable_10s=fail", "ca_untouched=pass", "tls_handshake_ok=pass"):
+    for want in ("health_stable_10s=fail", "ca_untouched=pass", "tls_handshake_ok=pass", "san_exact=pass", '"${want[@]}"', "$EXPECT"):
         assert want in broken, want
     fixed = next(v for k, v in run.items() if k.startswith("Fix without touching the CA"))
     assert " fix" in fixed and "all-pass" in fixed and "STABLE_S" not in fixed          # the full 10 s window
@@ -565,7 +594,11 @@ def test_the_workflow_asserts_each_stage_of_the_incident_not_just_that_it_ran():
     assert "witness" in next(v for k, v in run.items() if "independent witness" in k and "agrees" in k)
     restart = next(v for k, v in run.items() if k.startswith("A restart is OBSERVED"))
     assert "docker-restart" in restart and "--min-restarts 1" in restart
+    caswap = next(v for k, v in run.items() if k.startswith('A "fix" that replaces the CA'))
+    for want in ("ca.key", "ca.crt", " fix", "ca_untouched=fail", "--blast-radius 2"):
+        assert want in caswap, want
     k6 = next(v for k, v in run.items() if k.startswith("k6 load"))
+    assert "paste -sd" in k6 and "read -r l; do" not in k6          # ONE notice with the summary (GitHub shows 10 per step)
     assert "SSL_CERT_FILE" in k6 and "--network host" in k6 and "--insecure" not in k6 and "insecure-skip" not in k6.lower()
     # a positive run proves nothing about verification unless a wrong host name is REFUSED under the same setup
     assert "svc-other.range.test" in k6 and 'grep -q "x509"' in k6 and '"$neg" -eq 0' in k6 and "exit 1" in k6

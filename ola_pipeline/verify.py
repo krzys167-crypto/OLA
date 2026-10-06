@@ -182,6 +182,15 @@ def _norm_model(m: Any) -> str:
     return s[: -len(":latest")] if s.endswith(":latest") else s       # "llama3" and "llama3:latest" are one model
 
 
+def same_model_name(a: Any, b: Any) -> bool:
+    """Two model NAMES (provider and endpoint unknown) denote one model when they are equal after the normalisation
+    same_model uses: case, surrounding whitespace, the default ':latest' tag. An empty name is never the same as
+    anything. Names are all the ambient surface knows about the model that wrote an answer; two names for the same
+    weights (an alias) cannot be detected from a name."""
+    na, nb = _norm_model(a), _norm_model(b)
+    return bool(na) and na == nb
+
+
 def _norm_host(h: str) -> str:
     h = h.rstrip(".")
     if h == "localhost":

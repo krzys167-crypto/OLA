@@ -353,6 +353,28 @@ def test_enforce_the_model_that_wrote_the_answer_cannot_judge_it(env, fake, answ
     assert chat(key).json()["status"] == "VERIFIED"
 
 
+@pytest.mark.parametrize("spelling", ["IGOR-TEST", "  igor-test  ", "igor-test:latest", "Igor-Test:LATEST"])
+def test_enforce_the_same_model_under_another_spelling_is_still_the_same_model(env, fake, answering, tmp_path, spelling):
+    """The producer name arrives as the model reported by the answering service. A plain string comparison made
+    "IGOR-TEST" or "igor-test:latest" an independent judge of "igor-test" - which the verifier (one definition of the same
+    model) does not accept."""
+    env.setenv("OLA_AMBIENT_IGOR", "enforce")
+    qualified(env, tmp_path)
+    answering["response"]["model"] = spelling
+    _, key = make_tenant()
+    assert chat(key).json()["ambient"]["verdict"] == "SELF_JUDGE"
+
+
+@pytest.mark.parametrize("other", ["igor-test:2b", "igor-test-2", "igor", "", None])
+def test_enforce_a_differently_named_model_is_not_a_self_judge(env, fake, answering, tmp_path, other):
+    env.setenv("OLA_AMBIENT_IGOR", "enforce")
+    qualified(env, tmp_path)
+    answering["response"]["model"] = other
+    _, key = make_tenant()
+    b = chat(key).json()
+    assert b["status"] == "VERIFIED" and "ambient" not in b, b                 # an accepted answer carries no ambient block
+
+
 def test_enforce_too_long_is_BLOCK_without_calling_the_judge(env, fake, answering, tmp_path):
     env.setenv("OLA_AMBIENT_IGOR", "enforce")
     env.setenv("OLA_AMBIENT_MAX_CHARS", "20")

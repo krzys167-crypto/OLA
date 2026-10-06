@@ -313,6 +313,25 @@ def create_checkout_session(body: dict, x_api_key: str | None = Header(default=N
     return response
 
 
+def _block_recorded(tenant_id: str, session_id: str, payment_status, status) -> bool:
+    """True when this tenant's chain already says that THIS session was blocked in THIS state. The endpoint needs no
+    secret (the session id is enough), so a poll must not be able to grow the chain: one row per distinct state of a
+    session, and a state Stripe reports later is a new fact. (Two polls racing on the very first one can both write.)"""
+    with SessionLocal() as db:
+        rows = db.scalars(select(EvidenceRecord).where(
+            EvidenceRecord.tenant_id == tenant_id, EvidenceRecord.record_type == "revenue.payment_blocked",
+            EvidenceRecord.payload_json.contains(session_id, autoescape=True)))
+        for row in rows:
+            try:
+                payload = json.loads(row.payload_json)
+            except (TypeError, ValueError):
+                continue
+            if (isinstance(payload, dict) and payload.get("session_id") == session_id
+                    and payload.get("payment_status") == payment_status and payload.get("status") == status):
+                return True
+    return False
+
+
 @app.get("/payment-success")
 def payment_success(session_id: str):
     try:
@@ -334,7 +353,8 @@ def payment_success(session_id: str):
             # not an anomaly, so nothing is written (a GET that appended evidence on every poll let anyone holding a
             # session id grow the tenant's chain). The webhook starts the run when Stripe confirms the money.
             return {"status": "AWAITING_PAYMENT", "reason": "payment is not confirmed yet", "session_id": session_id}
-        append_record(tenant_id, "revenue.payment_blocked", {"session_id": session_id, "payment_status": payment_status, "status": status})
+        if not _block_recorded(tenant_id, session_id, payment_status, status):
+            append_record(tenant_id, "revenue.payment_blocked", {"session_id": session_id, "payment_status": payment_status, "status": status})
         return {"status": "BLOCK", "reason": "payment not verified", "session_id": session_id}
     task = checkout_task(session)        # the task exactly as the webhook read (and stored) it: stripped, or the custom field
     if not task:
