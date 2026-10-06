@@ -738,6 +738,31 @@ reconciles it; two invoices with the same `invoice_id` are both accepted; `/paym
 paid for twice (the second result wins); `amount_total: 9900.0` and a missing session `status` are still accepted (a valid
 signature is required).
 
+### A live test that asserted one outcome (CI, `live-independent-judge`, judge `qwen3:1.7b`)
+
+`tests/test_pipeline_bridge_live.py` is meant to hold for ANY real outcome, but its last line required
+`replay_verification == VERIFIED`. The replay is rebuilt from the sealed record alone and is scoped to the session's own
+verification (`pipeline_bridge.scope_replay`): it can never vouch for a session whose verification is `BLOCK`. A judge that
+fails to answer within `OLA_IGOR_TIMEOUT_S` is exactly that (Igor `BLOCK`, gate `BLOCKED`, fail-closed, evidence still
+consistent). **Measured:** on `23d0aa4` that job failed on this assertion (`'BLOCK' == 'VERIFIED'`, from the failure annotation)
+after `1 failed in 602.80s`, while the `llama3.2:3b` independent-judge job of the same commit was `VERIFIED` and the same
+`qwen3:1.7b` job was green on `22edab3` (about 2 min 40 s in total, i.e. a judge that answered at once). **Inferred, not
+measured** (job logs are not readable from the authoring sandbox): that the 600 s judge timeout ended the red run (a test
+time of 602.8 s is 600 s plus the few seconds Nina needs for a one-sentence answer; the text of the judge's reply is not
+available). The same job had failed twice on `045de2d` with a job duration of the same order (about 11 minutes). So it is
+intermittent (red on `045de2d` and `23d0aa4`, green on `22edab3`) and predates the sixth review; the verifier runs after the
+judge's call and cannot delay it. **UNKNOWN:** why the judge stalled on those runs.
+
+**Fixed (test, not product):** the live test now asserts what is true for every outcome: the evidence is never `FAILED`
+(`verifier_overall != "FAILED"`), and the replay is `BLOCK` exactly when the session verification is `BLOCK`, `VERIFIED`
+otherwise. The `LIVE RESULT` line also prints the verifier and the replay. The workflow publishes a `::warning` annotation for
+every independent-judge result that is not `igor VERIFIED`, so a judge that did not verify cannot hide behind a green job.
+Offline coverage of the same behaviour (no Ollama needed): `test_a_judge_that_times_out_is_a_consistent_block_and_the_replay_is_scoped_to_it`
+(a judge that is slower than `OLA_IGOR_TIMEOUT_S`; measured there: Igor `BLOCK`, reason "Igor timed out; verification
+unavailable (fail closed)", `verifier_overall: CONSISTENT`, replay `BLOCK` with its `scope`) and the strengthened
+`test_review_required_maps_to_unknown_and_never_verifies` (UNKNOWN is not BLOCK: its replay is `VERIFIED`). Thresholds, judge
+prompts and the verifier were not touched.
+
 ## Control evidence matrix (`governance/controls.json`)
 15 controls (EC-01..EC-15: chain, server-only records, fail-closed gate, anchor, signing, RFC 3161, judge qualification,
 ambient IGOR, firewall, identity, CFR, Jev, record verification, evidence graph), each with its mechanism, the tests that

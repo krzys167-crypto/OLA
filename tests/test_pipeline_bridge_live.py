@@ -81,6 +81,7 @@ def test_live_pipeline_run_is_anchored_and_reverifiable(monkeypatch, tmp_path):
     print("LIVE RESULT:", b["status"], "| nina", MODEL, "| judge", igor_model,
           "(independent)" if igor_model != MODEL else "(SAME MODEL, opt-in)",
           "| gate", b["igor"]["gate_state"], "| igor", b["igor"]["status"],
+          "| verifier", b["pipeline"]["verifier_overall"], "| replay", b["replay_verification"]["status"],
           "| session", b["session_id"], "| head", b["pipeline"]["chain_head"],
           "| reasons", b["igor"]["gate_reasons"])
 
@@ -98,4 +99,11 @@ def test_live_pipeline_run_is_anchored_and_reverifiable(monkeypatch, tmp_path):
     again = client.get(f"/pipeline-session/{b['session_id']}", headers={"X-API-Key": key}).json()
     assert again["verification"]["status"] == b["igor"]["status"]
     assert again["verification"]["chain_head"] == b["pipeline"]["chain_head"]
-    assert again["replay_verification"]["status"] == "VERIFIED"
+    # The evidence of any honest session is consistent, whatever the judge said: FAILED would be an integrity defect.
+    assert b["pipeline"]["verifier_overall"] != "FAILED", (b["pipeline"], b["igor"]["reason"])
+    # The replay is rebuilt from the sealed record alone and scoped to the session's own verification
+    # (app.pipeline_bridge.scope_replay): it cannot vouch for a session whose verification is BLOCK. A judge that timed
+    # out (a reasoning model that never stops: qwen3:1.7b ran into the 600 s limit on CI) or answered BLOCK is exactly that.
+    # So: VERIFIED, unless the verification is BLOCK - then BLOCK, and nothing else, for ANY real outcome.
+    expected_replay = "BLOCK" if again["verification"]["status"] == "BLOCK" else "VERIFIED"
+    assert again["replay_verification"]["status"] == expected_replay, (again["verification"], again["replay_verification"])

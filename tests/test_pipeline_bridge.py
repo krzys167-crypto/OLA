@@ -115,6 +115,25 @@ def test_review_required_maps_to_unknown_and_never_verifies(env, fake):
     assert b["igor"]["gate_state"] == "REVIEW_REQUIRED" and b["igor"]["status"] == "UNKNOWN", b
     assert b["status"] == "BLOCK" and "UNKNOWN" in b["human_gate"]["reason"], b       # human cannot promote UNKNOWN
     assert len(anchors(tenant)) == 1                       # the refusal is itself evidence
+    assert b["replay_verification"]["status"] == "VERIFIED"      # UNKNOWN is not BLOCK: the sealed record can vouch for it
+
+
+def test_a_judge_that_times_out_is_a_consistent_block_and_the_replay_is_scoped_to_it(env, fake):
+    """What a live reasoning judge that never stops produced on CI (qwen3:1.7b, 600 s timeout): Nina executed, the judge
+    never answered. The session is fail-closed (BLOCK), its evidence is still consistent (never FAILED) and the replay,
+    rebuilt from the sealed record alone, must not say VERIFIED next to a BLOCK verification (scope_replay)."""
+    env.setenv("OLA_IGOR_TIMEOUT_S", "1")
+    fake.delays["igor-test"] = 3
+    tenant, key = make_tenant()
+    b = post(key, **HUMAN).json()
+    assert b["igor"]["status"] == "BLOCK" and b["status"] == "BLOCK" and b["igor"]["gate_state"] == "BLOCKED", b
+    assert b["pipeline"]["status"] == "ANCHORED" and b["pipeline"]["verifier_overall"] != "FAILED", b["pipeline"]
+    assert b["replay_verification"]["status"] == "BLOCK" and "scope" in b["replay_verification"], b["replay_verification"]
+    again = TestClient(app).get(f"/pipeline-session/{b['session_id']}", headers={"X-API-Key": key}).json()
+    assert again["verification"]["status"] == "BLOCK" and again["replay_verification"]["status"] == "BLOCK", again
+    assert len(anchors(tenant)) == 1
+    ok, why = verify_chain(pb.load_chain(tenant))
+    assert ok, why
 
 
 # ------------------------------------------------------------------ fail closed

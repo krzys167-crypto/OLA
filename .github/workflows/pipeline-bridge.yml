@@ -139,6 +139,12 @@ jobs:
           fi
           grep -E 'LIVE RESULT:' live-result.txt | while IFS= read -r line; do
             echo "::notice title=independent judge result::${line}"
+            # A legitimate outcome (the job stays green), but one that must not hide behind a green check: the judge
+            # did not verify (timeout, BLOCK or UNKNOWN). The LIVE RESULT line above carries the reasons.
+            case "$line" in
+              *"| igor VERIFIED |"*) ;;
+              *) echo "::warning title=independent judge did not verify::${line}" ;;
+            esac
           done
       - name: Upload evidence
         if: always()
