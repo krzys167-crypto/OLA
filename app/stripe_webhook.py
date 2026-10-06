@@ -18,6 +18,8 @@ from .models import EvidenceRecord, StripeEvent, Tenant
 STRIPE_SIGNATURE_TOLERANCE_SECONDS = 300
 OLA_OFFER = "ola-execution-audit"
 OLA_PRODUCT = "OLA Execution Audit"
+# the two events that can start a paid run; a run still requires payment_status == "paid" in the session
+PAID_EVENTS = {"checkout.session.completed", "checkout.session.async_payment_succeeded"}
 
 
 def verify_stripe_signature(payload: bytes, signature_header: str, secret: str, now: int | None = None) -> bool:
@@ -75,7 +77,10 @@ def _metadata_task(session: dict) -> str | None:
     return None
 
 
-def _validate_checkout(session: dict) -> str:
+def _validate_checkout(session: dict, *, allow_unpaid: bool = False) -> str:
+    """Validates the session and returns the audit task. `allow_unpaid` is only for `checkout.session.completed`:
+    with an asynchronous payment method (SEPA debit, bank transfer) Stripe sends it with payment_status "unpaid"
+    and confirms the money later in `checkout.session.async_payment_succeeded`."""
     metadata = _dict(session.get("metadata"), "metadata")
     if metadata.get("offer") != OLA_OFFER:
         raise HTTPException(status_code=400, detail="unsupported Stripe offer")
@@ -83,7 +88,9 @@ def _validate_checkout(session: dict) -> str:
     if product is not None and product != OLA_PRODUCT:  # `in {set}` would raise TypeError on a list/dict (500)
         raise HTTPException(status_code=400, detail="unsupported Stripe product")
     status = session.get("status")
-    if session.get("payment_status") != "paid" or (status is not None and status != "complete"):
+    payment_status = session.get("payment_status")
+    paid_enough = payment_status == "paid" or (allow_unpaid and payment_status == "unpaid")
+    if not paid_enough or (status is not None and status != "complete"):
         raise HTTPException(status_code=400, detail="payment is not confirmed")
     if session.get("currency") != "eur" or session.get("amount_total") != 9900:
         raise HTTPException(status_code=400, detail="unexpected payment amount or currency")
@@ -126,11 +133,20 @@ def process_checkout_event(payload: bytes, signature_header: str) -> dict:
     event_type = event.get("type")
     if not isinstance(event_id, str) or not isinstance(event_type, str) or not event_id or not event_type:
         raise HTTPException(status_code=400, detail="Stripe event id and type are required strings")
-    if event_type != "checkout.session.completed":
+    if event_type == "checkout.session.async_payment_failed":
+        # the money never arrived: nothing is run and nothing is charged to the audit; 200 so Stripe does not retry
+        return {"status": "NOT_RUN", "event_id": event_id, "event_type": event_type,
+                "reason": "asynchronous payment failed"}
+    if event_type not in PAID_EVENTS:
         return {"status": "IGNORED", "event_id": event_id, "event_type": event_type}
 
     session = _dict(_dict(event.get("data"), "data").get("object"), "data.object")
-    task = _validate_checkout(session)
+    task = _validate_checkout(session, allow_unpaid=(event_type == "checkout.session.completed"))
+    if session.get("payment_status") != "paid":
+        # asynchronous method: the order is valid but not paid yet. Run nothing, store nothing, answer 200;
+        # `checkout.session.async_payment_succeeded` is the event that starts the run.
+        return {"status": "AWAITING_PAYMENT", "event_id": event_id, "event_type": event_type,
+                "checkout_session_id": session.get("id")}
     tenant_id = _dict(session.get("metadata"), "metadata").get("tenant_id") or os.getenv("OLA_STRIPE_TENANT_ID", "")
     if not isinstance(tenant_id, str):
         raise HTTPException(status_code=400, detail="Stripe tenant_id must be a string")

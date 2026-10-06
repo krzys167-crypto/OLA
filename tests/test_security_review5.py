@@ -253,6 +253,74 @@ def test_a_failed_stripe_event_is_retried_once_and_a_completed_one_is_idempotent
     assert len(calls) == 2, "a COMPLETED event must never run the paid task again"
 
 
+def _counting_runner(stripe_env):
+    calls = []
+
+    def run(tenant, task):
+        calls.append(task)
+        return {"status": "VERIFIED", "run_id": "run-" + uuid.uuid4().hex, "final_result": "4", "evidence_ids": []}
+
+    stripe_env.setattr(sw, "run_agent_task", run)
+    return calls
+
+
+def _rows(event_id):
+    with SessionLocal() as db:
+        return db.scalars(select(StripeEvent).where(StripeEvent.event_id == event_id)).all()
+
+
+def test_async_payment_unpaid_completion_is_awaiting_payment_not_an_error_and_runs_nothing(stripe_env):
+    tenant_id, _ = make_tenant()
+    calls = _counting_runner(stripe_env)
+    event = _checkout_event(tenant_id)
+    event["data"]["object"]["payment_status"] = "unpaid"
+    body, headers = _signed(event)
+    r = client.post("/stripe/webhook", content=body, headers=headers)
+    assert r.status_code == 200 and r.json()["status"] == "AWAITING_PAYMENT", r.text[:200]
+    assert calls == [] and _rows(event["id"]) == []
+
+
+def test_async_payment_succeeded_runs_the_paid_task_once(stripe_env):
+    tenant_id, _ = make_tenant()
+    calls = _counting_runner(stripe_env)
+    event = _checkout_event(tenant_id)
+    event["type"] = "checkout.session.async_payment_succeeded"
+    body, headers = _signed(event)
+    first = client.post("/stripe/webhook", content=body, headers=headers)
+    assert first.status_code == 200 and first.json()["status"] == "COMPLETED", first.text[:200]
+    again = client.post("/stripe/webhook", content=body, headers=headers)
+    assert again.json() == first.json() and len(calls) == 1
+
+
+def test_async_payment_succeeded_must_actually_say_paid(stripe_env):
+    tenant_id, _ = make_tenant()
+    calls = _counting_runner(stripe_env)
+    event = _checkout_event(tenant_id)
+    event["type"] = "checkout.session.async_payment_succeeded"
+    event["data"]["object"]["payment_status"] = "unpaid"
+    body, headers = _signed(event)
+    assert client.post("/stripe/webhook", content=body, headers=headers).status_code == 400
+    assert calls == []
+
+
+def test_async_payment_failed_runs_nothing_and_is_not_retried(stripe_env):
+    tenant_id, _ = make_tenant()
+    calls = _counting_runner(stripe_env)
+    event = _checkout_event(tenant_id)
+    event["type"] = "checkout.session.async_payment_failed"
+    body, headers = _signed(event)
+    r = client.post("/stripe/webhook", content=body, headers=headers)
+    assert r.status_code == 200 and r.json()["status"] == "NOT_RUN" and calls == []
+
+
+def test_an_unpaid_foreign_offer_is_still_rejected(stripe_env):
+    tenant_id, _ = make_tenant()
+    event = _checkout_event(tenant_id, offer="someone-elses-offer")
+    event["data"]["object"]["payment_status"] = "unpaid"
+    body, headers = _signed(event)
+    assert client.post("/stripe/webhook", content=body, headers=headers).status_code == 400
+
+
 def test_only_one_concurrent_redelivery_may_claim_a_failed_event(stripe_env):
     tenant_id, _ = make_tenant()
     event = _checkout_event(tenant_id)
@@ -293,6 +361,17 @@ def test_decision_report_verifier_blocks_garbage_without_a_traceback(tmp_path, c
     missing = subprocess.run([sys.executable, "scripts/verify_decision_report.py", str(tmp_path / "nope.json")],
                              capture_output=True, text=True)
     assert missing.returncode == 1 and "Traceback" not in missing.stderr
+
+
+def test_every_third_party_action_is_pinned_to_a_commit_sha():
+    import pathlib, re
+    floating = []
+    for p in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
+        for n, line in enumerate(p.read_text().splitlines(), 1):
+            m = re.search(r"\buses:\s*(\S+)", line)
+            if m and not m.group(1).startswith("./") and not re.search(r"@[0-9a-f]{40}$", m.group(1)):
+                floating.append(f"{p.name}:{n}: {m.group(1)}")
+    assert floating == [], "actions referenced by a movable tag instead of a commit SHA:\n" + "\n".join(floating)
 
 
 def test_every_workflow_declares_least_privilege_permissions():

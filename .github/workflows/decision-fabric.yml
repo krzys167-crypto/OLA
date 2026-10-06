@@ -14,9 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout exact source
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
           cache: pip
@@ -43,10 +43,10 @@ jobs:
           if [ -n "${TYPESAFE_API_KEY:-}" ]; then echo "configured=true" >> "$GITHUB_OUTPUT"; else echo "configured=false" >> "$GITHUB_OUTPUT"; echo "LIVE_JEV=NOT_PROVEN (no TYPESAFE_API_KEY)"; fi
       - name: Checkout exact source
         if: steps.key.outputs.configured == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Python
         if: steps.key.outputs.configured == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
       - name: Install
@@ -82,7 +82,7 @@ jobs:
         run: sha256sum jev-live-evidence.json | tee jev-live-evidence.sha256
       - name: Upload live evidence
         if: steps.key.outputs.configured == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ola-jev-live-evidence-${{ github.sha }}
           path: |
@@ -105,10 +105,10 @@ jobs:
           if [ -n "${TYPESAFE_API_KEY:-}" ]; then echo "configured=true" >> "$GITHUB_OUTPUT"; else echo "configured=false" >> "$GITHUB_OUTPUT"; fi
       - name: Checkout exact source
         if: steps.key.outputs.configured == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Python
         if: steps.key.outputs.configured == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
       - name: Install
@@ -131,7 +131,7 @@ jobs:
           exit 0
       - name: Upload measurement
         if: steps.key.outputs.configured == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ola-jev-eval-${{ github.sha }}
           path: |

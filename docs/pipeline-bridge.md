@@ -647,6 +647,9 @@ it was changed. Tests: `tests/pipeline_suite/test_review5_lib.py`, `tests/test_s
 | `/agent-run` on a task with nothing to compute ("task accepted: ...") was `VERIFIED` | **fixed**: the run is `UNKNOWN`, `computation: NOT_PERFORMED`; chain integrity is still verified separately |
 | Stripe: a list/dict in `metadata.product` or `status` raised `TypeError` (500); a `FAILED` event could never be retried; the webhook ran the paid task on the event loop | **fixed**: 400; `FAILED` is claimed by compare-and-set and re-run once (evidence marks `retry_of_failed_attempt`), `COMPLETED` is idempotent; the route runs in a thread pool |
 | `/audit`, `/agent-run`, `/decision-evaluate`, `/chat`: wrong types, lone surrogates, oversized input | **fixed**: 400 |
+| Stripe asynchronous payment methods (SEPA debit, bank transfer): `checkout.session.completed` arrives with `payment_status: unpaid` (answered 400, so Stripe retried for days) and `checkout.session.async_payment_succeeded` was ignored, i.e. a customer who paid never got the audit | **fixed** (`stripe_webhook.py`): `completed`+`unpaid` is `200 AWAITING_PAYMENT` (nothing run, nothing stored); `async_payment_succeeded` starts the run only when the session says `paid`; `async_payment_failed` is `200 NOT_RUN`. Not covered: a session that is later refunded or disputed |
+| `app/contradiction.py`: a normal six-agent run produced 5 false `terminal_result_conflict` findings (agents of one run were compared with each other); a record with a non-JSON or non-object payload raised and hid every other finding | **fixed**: records are compared with records of the same `(run_id, record_type)`; an unreadable payload is an `unreadable_payload` finding. The detector is a library helper and is not wired into a route |
+| 9 floating `actions/*@v4/@v5` tags in workflows | **fixed**: pinned to the commit SHAs the other workflows already use; a test fails on any movable tag |
 
 **Considered and rejected:** SQLite WAL mode. It made a plain file copy of the database (what the standalone verifiers and the
 CI do) miss committed data, which the existing tamper test caught. It stays **opt-in** (`OLA_DB_WAL=1`).
@@ -657,9 +660,12 @@ garbage input (non-object, NaN, duplicate keys, non-string hash, unreadable file
 traceback and says its `VERIFIED` is artifact integrity only; `decision-fabric.yml` gets `permissions: contents: read`, and a
 test requires a top-level `permissions:` in every workflow.
 
-**Not done in this change (still open, reproduced by the reviewers):** other scripts (contradiction / replay helpers) that
-were not re-read after the reviewers' notes; GitHub Actions still referenced by tag (`@v4`, `@v5`) in several workflows
-instead of a commit SHA; the Stripe `payment-success` page and async payment events. **UNKNOWN (cannot be measured here):**
+**Checked and left as is (stated limit):** `verify_replay` verifies the hash chain, tenant, record types and the status of the
+run's records, but it accepts a run that has fewer than six agent records (its own tests use two). Completeness of a run is
+established by `verify_agent_run` and the standalone verifier, not by the replay.
+
+**Not done in this change:** the Stripe `payment-success` page for asynchronous sessions still answers `BLOCK` until the money
+arrives (correct, but it shows no "awaiting payment" state); refunds and disputes. **UNKNOWN (cannot be measured here):**
 behaviour under real load, a real Ollama judge, live Stripe (500-character metadata limit, async payment methods), CI result
 for this commit until the runners pick it up.
 
