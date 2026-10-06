@@ -6,13 +6,14 @@ import os
 import uuid
 from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, JSONResponse
+from sqlalchemy.exc import OperationalError
 from sqlalchemy import select
 from .database import Base, engine, SessionLocal, install_append_only_triggers
 from .models import Tenant, ApiKey, EvidenceRecord, StripeEvent
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
 from .agent_runtime import run_agent_task
-from .business_runtime import run_invoice_task
+from .business_runtime import run_invoice_task, MAX_INVOICE_BYTES
 from .nina import NinaOrchestrator, NinaTask
 from .igor import IgorVerifier
 from .replay import build_replay, verify_replay
@@ -25,10 +26,21 @@ from .revenue import create_checkout, retrieve_checkout, payment_verified
 from .stripe_webhook import process_checkout_event
 from . import ambient, anchor_external, cfr, firewall, identity, pipeline_bridge
 from .payment_binding import checkout_result_matches
+from .http_guard import HttpGuard
+from starlette.concurrency import run_in_threadpool
 
 app = FastAPI(title="OLA Execution Gate")
+app.add_middleware(HttpGuard)
 Base.metadata.create_all(bind=engine)
 install_append_only_triggers()
+
+
+@app.exception_handler(OperationalError)
+async def _database_busy(request, exc):
+    """A locked database is a transient 503 (retry), never a 500 that prints the SQL and parameters."""
+    locked = "locked" in str(exc).lower() or "busy" in str(exc).lower()
+    return JSONResponse({"detail": "database busy, retry" if locked else "database error"},
+                        status_code=503 if locked else 500, headers={"Retry-After": "2"} if locked else None)
 
 
 def identity_from_key(raw_key):
@@ -164,6 +176,10 @@ def _agent_producer(result: dict):
     return None
 
 
+def _unjudged(result: dict) -> dict:
+    return dict(result, status="UNKNOWN", verification="NOT_JUDGED")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -183,15 +199,27 @@ def chat_endpoint(body: dict, background: BackgroundTasks, x_api_key: str | None
         raise HTTPException(status_code=400, detail="messages list is required")
     clean = []
     for item in messages:
-        if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"} or not isinstance(item.get("content"), str):
+        if (not isinstance(item, dict) or not isinstance(item.get("role"), str)
+                or item["role"] not in {"user", "assistant"} or not isinstance(item.get("content"), str)):
             raise HTTPException(status_code=400, detail="invalid message")
+        try:
+            item["content"].encode("utf-8")
+        except UnicodeEncodeError:
+            raise HTTPException(status_code=400, detail="message is not valid UTF-8 text") from None
         clean.append({"role": item["role"], "content": item["content"]})
     amb = _ambient_mode()
     result = chat(tenant_id, clean)
+    if result.get("status") != "VERIFIED" or not isinstance(result.get("message"), str):
+        return result                                   # BLOCK from the model layer passes through
+    # "VERIFIED" from the model layer means the model answered. It does NOT mean the answer is correct: only an
+    # enforce-mode ACCEPT by a qualified independent judge earns that word. Off and shadow report UNKNOWN.
+    if amb == "off":
+        return _unjudged(result)
     task = next((m["content"] for m in reversed(clean) if m["role"] == "user"), "")
-    if amb != "off" and result.get("status") == "VERIFIED" and isinstance(result.get("message"), str):
-        return _ambient_apply(amb, background, tenant_id, "chat", task, result["message"], result, result.get("model"))
-    return result
+    out = _ambient_apply(amb, background, tenant_id, "chat", task, result["message"], result, result.get("model"))
+    if amb == "shadow":
+        return _unjudged(out)
+    return dict(out, verification="INDEPENDENT_JUDGE_ACCEPTED") if out is result else out
 
 
 @app.post("/checkout")
@@ -301,9 +329,7 @@ def create_evidence(body: dict, x_api_key: str | None = Header(default=None)):
 @app.post("/audit")
 def create_audit(body: dict, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
-    task = body.get("task")
-    if not task:
-        raise HTTPException(status_code=400, detail="task is required")
+    task = _task_from_body(body)
     return run_controlled_audit(
         tenant_id,
         task,
@@ -314,13 +340,11 @@ def create_audit(body: dict, x_api_key: str | None = Header(default=None)):
 @app.post("/agent-run")
 def create_agent_run(body: dict, background: BackgroundTasks, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
-    task = body.get("task")
-    if not task:
-        raise HTTPException(status_code=400, detail="task is required")
+    task = _task_from_body(body)
     amb = _ambient_mode()
     result = run_agent_task(tenant_id, task)
     if amb != "off" and result.get("status") == "VERIFIED":
-        task_text = task if isinstance(task, str) else canonical_json(task)
+        task_text = task
         return _ambient_apply(amb, background, tenant_id, "agent-run", task_text, ambient.agent_output_text(result),
                               result, _agent_producer(result))
     return result
@@ -630,6 +654,10 @@ def _visible_text(value, field: str, limit: int, required: bool) -> str:
         raise HTTPException(status_code=400, detail=f"{field} must be a string")
     if len(value) > limit:
         raise HTTPException(status_code=400, detail=f"{field} is too long (max {limit})")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise HTTPException(status_code=400, detail=f"{field} is not valid UTF-8 text") from None
     visible = "".join(ch for ch in value if unicodedata.category(ch)[0] not in ("Z", "C"))
     if required and not visible:
         raise HTTPException(status_code=400, detail=f"{field} must contain visible characters")
@@ -864,6 +892,12 @@ def decision_evaluate(body: dict, x_api_key: str | None = Header(default=None)):
         raise HTTPException(status_code=400, detail="state is required")
     if not isinstance(questions, dict) or not questions:
         raise HTTPException(status_code=400, detail="questions object is required")
+    try:                                              # strict JSON, valid Unicode, bounded: checked before any model call
+        size = len(canonical_json(state).encode("utf-8")) + len(canonical_json(questions).encode("utf-8"))
+    except (ValueError, UnicodeEncodeError, RecursionError, TypeError):
+        raise HTTPException(status_code=400, detail="state and questions must be strict JSON with valid Unicode") from None
+    if size > MAX_EVIDENCE_BYTES:
+        raise HTTPException(status_code=400, detail=f"state and questions must be at most {MAX_EVIDENCE_BYTES} bytes")
 
     fabric = DecisionFabric()
     try:
@@ -885,7 +919,8 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
     if not stripe_signature:
         raise HTTPException(status_code=400, detail="missing Stripe signature")
     body = await request.body()
-    return process_checkout_event(body, stripe_signature)
+    # the handler is synchronous (DB + agent run): keep it off the event loop so one paid run cannot stall every request
+    return await run_in_threadpool(process_checkout_event, body, stripe_signature)
 
 
 @app.post("/business-invoice-run")
@@ -894,10 +929,17 @@ def create_business_invoice_run(body: dict, x_api_key: str | None = Header(defau
     invoice = body.get("invoice")
     if not isinstance(invoice, dict):
         raise HTTPException(status_code=400, detail="invoice object is required")
-    task = "INVOICE_JSON:" + canonical_json(invoice)
+    try:
+        encoded = canonical_json(invoice)
+        encoded_len = len(encoded.encode("utf-8"))
+    except (ValueError, UnicodeEncodeError, RecursionError):
+        raise HTTPException(status_code=400, detail="invoice must be strict JSON (no NaN/Infinity, valid Unicode)") from None
+    if encoded_len > MAX_INVOICE_BYTES:
+        raise HTTPException(status_code=400, detail=f"invoice must be at most {MAX_INVOICE_BYTES} bytes")
+    task = "INVOICE_JSON:" + encoded
     try:
         return run_invoice_task(tenant_id, task)
-    except (ValueError, json.JSONDecodeError) as exc:
+    except (ValueError, TypeError, OverflowError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

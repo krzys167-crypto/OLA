@@ -61,5 +61,7 @@ def test_nina_chat_route_reaches_runtime(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "VERIFIED"
+    # the model answered, but no independent judge accepted it: the surface must say UNKNOWN, not VERIFIED
+    assert response.json()["status"] == "UNKNOWN"
+    assert response.json()["verification"] == "NOT_JUDGED"
     assert response.json()["message"] == "hello from test"

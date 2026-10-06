@@ -18,6 +18,7 @@ EXPECTED_INVOCATION = {
     "invocation_type": "local_deterministic_model",
 }
 GENESIS = "0" * 64
+CONTROLLED_VAT_RATE = 0.21
 
 
 def canonical(value):
@@ -40,6 +41,7 @@ def main():
     expected_net = round(float(invoice["net"]), 2)
     expected_vat = round(expected_net * float(invoice["vat_rate"]), 2)
     expected_gross = round(expected_net + expected_vat, 2)
+    policy_match = float(invoice["vat_rate"]) == CONTROLLED_VAT_RATE     # otherwise the payment must be REJECTED
 
     db = sqlite3.connect(args.db)
     rows = db.execute(
@@ -84,8 +86,9 @@ def main():
             fail("run_id mismatch")
         if payload.get("task") != "INVOICE_JSON:" + canonical(invoice):
             fail("task mismatch")
-        if payload.get("status") != "VERIFIED":
-            fail("agent status is not VERIFIED")
+        expected_status = "VERIFIED" if (policy_match or agent != "self_reflection") else "BLOCK"
+        if payload.get("status") != expected_status:
+            fail(f"agent status is not {expected_status}")
         if payload.get("capability") != CAPABILITIES[agent]:
             fail(f"capability mismatch for {agent}")
         if payload.get("execution_boundary") != "independent":
@@ -115,12 +118,15 @@ def main():
         "net": expected_net,
         "vat": expected_vat,
         "gross": expected_gross,
-        "payment_decision": "APPROVE_FOR_TEST_TRANSFER",
-        "transfer_amount": expected_gross,
-        "transfer_status": "READY_NOT_SENT",
+        "payment_decision": "APPROVE_FOR_TEST_TRANSFER" if policy_match else "REJECT_POLICY_MISMATCH",
+        "transfer_amount": expected_gross if policy_match else 0.0,
+        "transfer_status": "READY_NOT_SENT" if policy_match else "NOT_SENT",
     }
     if final != expected_final:
         fail("final business result mismatch")
+    if not policy_match:
+        fail("invoice VAT rate differs from the controlled policy: the run correctly rejected the payment, "
+             "so the invoice is NOT approved")
 
     print(json.dumps({
         "status": "VERIFIED",

@@ -65,6 +65,11 @@ def answering(env):
     return state
 
 
+def unjudged(answering):
+    """Without an enforce-mode ACCEPT by a qualified independent judge, /chat reports UNKNOWN, never VERIFIED."""
+    return dict(answering["response"], status="UNKNOWN", verification="NOT_JUDGED")
+
+
 def chat(key, content=QUESTION):
     return TestClient(app).post("/chat", headers={"X-API-Key": key},
                                 json={"messages": [{"role": "user", "content": content}]})
@@ -94,14 +99,14 @@ def judge_calls(fake):
 def test_off_is_the_default_and_does_nothing(env, fake, answering):
     tenant, key = make_tenant()
     r = chat(key)
-    assert r.status_code == 200 and r.json() == answering["response"]
+    assert r.status_code == 200 and r.json() == unjudged(answering)
     assert judge_calls(fake) == 0 and records(tenant) == []
 
 
 def test_explicit_off_does_nothing(env, fake, answering):
     env.setenv("OLA_AMBIENT_IGOR", "off")
     tenant, key = make_tenant()
-    assert chat(key).json() == answering["response"]
+    assert chat(key).json() == unjudged(answering)
     assert judge_calls(fake) == 0 and records(tenant) == []
 
 
@@ -121,7 +126,7 @@ def test_shadow_records_a_verdict_and_leaves_the_response_untouched(env, fake, a
     env.setenv("OLA_AMBIENT_IGOR", "shadow")
     tenant, key = make_tenant()
     r = chat(key)
-    assert r.status_code == 200 and r.json() == answering["response"], "shadow must not change the response"
+    assert r.status_code == 200 and r.json() == unjudged(answering), "shadow must not change the answer, and must not call it VERIFIED"
     (rec,) = records(tenant)
     p = payload(rec)
     assert rec["record_type"] == "igor.shadow" and p["mode"] == "shadow" and p["surface"] == "chat"
@@ -157,7 +162,7 @@ def test_shadow_never_blocks_even_when_the_judge_rejects(env, fake, answering):
     fake.script("igor-test", igor_json("BLOCK", 10, corrections=["wrong"]))
     tenant, key = make_tenant()
     r = chat(key)
-    assert r.json() == answering["response"]
+    assert r.json() == unjudged(answering)
     assert payload(records(tenant)[0])["verdict"] == "REJECT"
 
 
@@ -166,7 +171,7 @@ def test_shadow_survives_an_unreachable_judge_and_says_so_in_evidence(env, fake,
     env.setenv("OLA_NINA_BASE_URL", "http://127.0.0.1:1")
     tenant, key = make_tenant()
     r = chat(key)
-    assert r.status_code == 200 and r.json() == answering["response"]
+    assert r.status_code == 200 and r.json() == unjudged(answering)
     p = payload(records(tenant)[0])
     assert p["verdict"] == "NO_VERDICT" and p["detail"], p
 
@@ -176,7 +181,7 @@ def test_shadow_with_an_unusable_judge_config_records_ERROR_instead_of_hiding_it
     env.delenv("OLA_IGOR_MODEL")
     tenant, key = make_tenant()
     r = chat(key)
-    assert r.status_code == 200 and r.json() == answering["response"]
+    assert r.status_code == 200 and r.json() == unjudged(answering)
     p = payload(records(tenant)[0])
     assert p["verdict"] == "ERROR" and "OLA_IGOR_MODEL" in p["detail"]
 
@@ -252,7 +257,8 @@ def test_enforce_passes_an_accepted_answer_from_a_qualified_judge(env, fake, ans
     qualified(env, tmp_path)
     tenant, key = make_tenant()
     r = chat(key)
-    assert r.status_code == 200 and r.json() == answering["response"]
+    assert r.status_code == 200
+    assert r.json() == dict(answering["response"], verification="INDEPENDENT_JUDGE_ACCEPTED")
     (rec,) = records(tenant)
     p = payload(rec)
     assert rec["record_type"] == "igor.ambient" and p["allowed"] is True and p["enforced"] is True

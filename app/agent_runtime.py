@@ -334,13 +334,20 @@ def run_agent_task(tenant_id, task):
         previous_output = output
     verification = verify_agent_run(tenant_id, run_id)
     final_result = execution[-1].get("final_result") if execution else None
+    # "task accepted: ..." means nothing was computed. The evidence chain is intact (integrity), but the run did not
+    # *do* anything, so it must not be reported as VERIFIED work.
+    computed = not (execution and str(execution[0].get("tool_output", "")).startswith("task accepted:"))
+    status = verification["status"]
+    if status == "VERIFIED" and not computed:
+        status = "UNKNOWN"
     result = {
+        "computation": "PERFORMED" if computed else "NOT_PERFORMED",
         "run_id": run_id,
         "source_commit": os.getenv("OLA_SOURCE_COMMIT", os.getenv("OLA_RUNTIME_COMMIT", "UNKNOWN")),
         "replay_nonce": replay_nonce,
         "task": task,
         "final_result": final_result,
-        "status": verification["status"],
+        "status": status,
         "agents": AGENT_ROLES,
         "evidence_count": len(evidence_ids),
         "evidence_ids": evidence_ids,

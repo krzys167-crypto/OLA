@@ -97,7 +97,7 @@ def test_live_shadow_records_real_verdicts_and_never_touches_the_response(live):
     for name, (q, a) in (("right", RIGHT), ("wrong", WRONG)):
         state["answer"] = a
         r = _chat(key, q)
-        assert r.status_code == 200 and r.json() == {"status": "VERIFIED", "message": a, "model": "stub-answerer"}
+        assert r.status_code == 200 and r.json() == {"status": "UNKNOWN", "verification": "NOT_JUDGED", "message": a, "model": "stub-answerer"}
     recs = _records(tenant, "igor.shadow")
     assert len(recs) == 2, recs
     for name, rec in zip(("right", "wrong"), recs):

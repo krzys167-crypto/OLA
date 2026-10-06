@@ -627,6 +627,36 @@ Run against the HTTP surface (`/pipeline-run`, `/nina-run`, `/agent-run`, `/chat
 - Jev's advisory extras are advisory by design and are not part of the gate.
 - Judge-prompt injection through `task` can only be measured with a real model: **UNKNOWN** (no Ollama here).
 
+## Fifth independent review (library, request limits, database, honesty of status words)
+
+Four reviewers (library, app layer, business/Stripe, scripts) read the code and reproduced each item with a script before
+it was changed. Tests: `tests/pipeline_suite/test_review5_lib.py`, `tests/test_security_review5.py`, plus the updated
+`test_ambient*.py`, `test_agent_runtime.py`, `test_nina_chat_surface.py`.
+
+| defect (reproduced) | state |
+|---|---|
+| a provider redirect (`302`) was followed with the `Authorization` header; credentials in a provider URL were accepted | **fixed** (`ola_pipeline/providers.py`): redirects are refused, `http(s)` only, no userinfo in the URL |
+| a generation that could not be persisted (non-UTF-8 text, unserialisable runtime proof) or contained a known secret crashed the stage or was written | **fixed** (`stage.py`): such a generation is a BLOCKED stage, never written; finalize failures end in `gate_state="BLOCKED"` |
+| `derive_gate` accepted a session with more iterations than allowed, a PASS inconsistent with its own scores, a recomputed independence that differed, or a weak policy | **fixed** (`verify.py`): each is a failure or an explicit warning; a canary with a non-integer score is not "accepted" |
+| the IGOR fallback after a failed finalize could end as PASS | **fixed**: `IgorOutcome("BLOCK", ...)` |
+| no request-size limit (a 2 MB body was parsed before authentication) | **fixed** (`app/http_guard.py`): 1 MiB default (`OLA_MAX_BODY_BYTES`), 64 KiB for `/stripe/webhook`, chunked bodies cut off, answered 413 before parsing |
+| no security headers | **fixed**: CSP (`default-src 'self'`, `frame-ancestors 'none'`) on the page; `nosniff`, `DENY`, `no-referrer`, `no-store` everywhere |
+| `INSERT OR REPLACE` / `REPLACE INTO` replaced an evidence row without firing the append-only DELETE trigger (SQLite `recursive_triggers` off); `CREATE TRIGGER IF NOT EXISTS` kept a neutered trigger; a locked database was a 500 | **fixed** (`app/database.py`): `recursive_triggers=ON` on every connection, a trigger with a different body is recreated at start, `OperationalError` is a 503 + `Retry-After` |
+| invoices: `vat_rate=0.05` was "VERIFIED" and approved; negative, huge, boolean, string, NaN and surrogate fields were coerced | **fixed** (`business_runtime.py`): strict validation (400); a VAT rate different from the controlled rate is `BLOCK` / `REJECT_POLICY_MISMATCH` / `NOT_SENT`; `scripts/verify_business_invoice.py` applies the same rule and says "NOT approved" |
+| `/chat` returned `status: "VERIFIED"` for any answer the model gave, with the judge off | **fixed**: without an enforce-mode ACCEPT by a qualified independent judge the answer is `UNKNOWN` / `verification: NOT_JUDGED`; ACCEPT adds `INDEPENDENT_JUDGE_ACCEPTED`. The web page labels unverified answers. *This is an API contract change* |
+| `/agent-run` on a task with nothing to compute ("task accepted: ...") was `VERIFIED` | **fixed**: the run is `UNKNOWN`, `computation: NOT_PERFORMED`; chain integrity is still verified separately |
+| Stripe: a list/dict in `metadata.product` or `status` raised `TypeError` (500); a `FAILED` event could never be retried; the webhook ran the paid task on the event loop | **fixed**: 400; `FAILED` is claimed by compare-and-set and re-run once (evidence marks `retry_of_failed_attempt`), `COMPLETED` is idempotent; the route runs in a thread pool |
+| `/audit`, `/agent-run`, `/decision-evaluate`, `/chat`: wrong types, lone surrogates, oversized input | **fixed**: 400 |
+
+**Considered and rejected:** SQLite WAL mode. It made a plain file copy of the database (what the standalone verifiers and the
+CI do) miss committed data, which the existing tamper test caught. It stays **opt-in** (`OLA_DB_WAL=1`).
+
+**Not done in this change (still open, reproduced by the reviewers):** `scripts/forensic_gate`, contradiction and replay
+scripts still accept `UNKNOWN` commits in places; `decision_report` wording; workflow hardening (pinned actions, minimal
+`permissions`); the Stripe `payment-success` page and `async` payment events. **UNKNOWN (cannot be measured here):**
+behaviour under real load, a real Ollama judge, live Stripe (500-character metadata limit, async payment methods), CI result
+for this commit until the runners pick it up.
+
 ## Control evidence matrix (`governance/controls.json`)
 15 controls (EC-01..EC-15: chain, server-only records, fail-closed gate, anchor, signing, RFC 3161, judge qualification,
 ambient IGOR, firewall, identity, CFR, Jev, record verification, evidence graph), each with its mechanism, the tests that

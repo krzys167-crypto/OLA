@@ -6,7 +6,7 @@ import time
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from .agent_runtime import run_agent_task
@@ -79,9 +79,11 @@ def _validate_checkout(session: dict) -> str:
     metadata = _dict(session.get("metadata"), "metadata")
     if metadata.get("offer") != OLA_OFFER:
         raise HTTPException(status_code=400, detail="unsupported Stripe offer")
-    if metadata.get("product") not in {None, OLA_PRODUCT}:
+    product = metadata.get("product")
+    if product is not None and product != OLA_PRODUCT:  # `in {set}` would raise TypeError on a list/dict (500)
         raise HTTPException(status_code=400, detail="unsupported Stripe product")
-    if session.get("payment_status") != "paid" or session.get("status") not in {None, "complete"}:
+    status = session.get("status")
+    if session.get("payment_status") != "paid" or (status is not None and status != "complete"):
         raise HTTPException(status_code=400, detail="payment is not confirmed")
     if session.get("currency") != "eur" or session.get("amount_total") != 9900:
         raise HTTPException(status_code=400, detail="unexpected payment amount or currency")
@@ -138,25 +140,38 @@ def process_checkout_event(payload: bytes, signature_header: str) -> dict:
         if db.get(Tenant, tenant_id) is None:
             raise HTTPException(status_code=400, detail="Stripe session names an unknown tenant")
 
+    retry = False
     with SessionLocal() as db:
         existing = db.scalar(select(StripeEvent).where(StripeEvent.event_id == event_id))
         if existing is not None:
             if existing.status == "COMPLETED" and existing.result_json:
                 return json.loads(existing.result_json)
-            raise HTTPException(status_code=409, detail="Stripe event is already being processed")
-
-        record = StripeEvent(
-            id=str(uuid.uuid4()),
-            event_id=event_id,
-            status="PROCESSING",
-            task=task,
-        )
-        db.add(record)
-        try:
+            if existing.status != "FAILED":
+                raise HTTPException(status_code=409, detail="Stripe event is already being processed")
+            # A FAILED attempt must be retryable (Stripe re-delivers): claim it with a compare-and-set so two
+            # concurrent redeliveries cannot both run the paid task.
+            claimed = db.execute(
+                update(StripeEvent)
+                .where(StripeEvent.event_id == event_id, StripeEvent.status == "FAILED")
+                .values(status="PROCESSING", task=task)
+            )
             db.commit()
-        except IntegrityError:
-            db.rollback()
-            raise HTTPException(status_code=409, detail="Stripe event is already being processed") from None
+            if claimed.rowcount != 1:
+                raise HTTPException(status_code=409, detail="Stripe event is already being processed")
+            retry = True
+        else:
+            record = StripeEvent(
+                id=str(uuid.uuid4()),
+                event_id=event_id,
+                status="PROCESSING",
+                task=task,
+            )
+            db.add(record)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                raise HTTPException(status_code=409, detail="Stripe event is already being processed") from None
 
     try:
         payment_evidence_id = _append_evidence(
@@ -170,6 +185,7 @@ def process_checkout_event(payload: bytes, signature_header: str) -> dict:
                 "amount_total": session.get("amount_total"),
                 "currency": session.get("currency"),
                 "task": task,
+                "retry_of_failed_attempt": retry,
             },
         )
 

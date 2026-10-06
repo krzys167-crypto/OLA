@@ -240,7 +240,8 @@ def test_item9_evidence_payload_must_be_an_object_of_bounded_size(tenant):
         r = C.post("/evidence", headers=H_JSON(tenant[1]), content=('{"payload":%s}' % bad).encode())
         assert r.status_code == 400, (bad, r.text)
     big = json.dumps({"payload": {"a": "x" * 2_000_000}}).encode()
-    assert C.post("/evidence", headers=H_JSON(tenant[1]), content=big).status_code == 400
+    # 2 MB now trips the request-size guard (413) before the route's own payload bound (400): either way, refused
+    assert C.post("/evidence", headers=H_JSON(tenant[1]), content=big).status_code in (400, 413)
 
 
 def test_item7_concurrent_evidence_writes_all_succeed_and_the_chain_verifies(tenant):
