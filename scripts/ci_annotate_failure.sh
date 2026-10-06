@@ -5,7 +5,8 @@
 set -u
 file="${1:?usage: ci_annotate_failure.sh <log-file> [title]}"
 title="${2:-test failed}"
-msg=$(tail -n 45 "$file" 2>/dev/null | cut -c1-400 | head -c 3500)
+# keep the END of the log (the assertion and the summary line), not its beginning, when the lines are long
+msg=$(tail -n 45 "$file" 2>/dev/null | cut -c1-400 | tail -c 3500)
 msg=${msg//'%'/'%25'}
 msg=${msg//$'\r'/'%0D'}
 msg=${msg//$'\n'/'%0A'}

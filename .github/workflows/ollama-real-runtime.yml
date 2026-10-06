@@ -107,12 +107,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The gate is unchanged. What is new: a red step says WHY as an annotation (job logs are not always readable,
+          # annotations are), because this step failed once on a commit that changed no application code and passed on
+          # the rerun, and nothing recorded the reason.
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then cat ollama-runtime-stderr.txt >&2 2>/dev/null; bash scripts/ci_annotate_runtime_failure.sh "$rc" "real six-agent LLM runtime failed" ollama-runtime-stderr.txt; fi' EXIT
           docker exec -i ola-ollama-e2e sh -c 'cat > /data/run-challenge.json' < run-challenge.json
           docker exec -i \
             -e EXPECTED_COMMIT="$SOURCE_SHA" \
             -e REPLAY_NONCE="$REPLAY_NONCE" \
             -e OLLAMA_MODEL="$OLLAMA_MODEL" \
-            ola-ollama-e2e python - <<'PY' > ollama-runtime-proof.json
+            ola-ollama-e2e python - <<'PY' > ollama-runtime-proof.json 2> ollama-runtime-stderr.txt
           import hashlib
           import json
           import os
@@ -179,12 +183,14 @@ jobs:
               json.dump({"tenant_id":tenant_id,"run_id":result["run_id"],"task":task},stream,sort_keys=True)
 
           PY
+          cat ollama-runtime-stderr.txt >&2
           docker cp ola-ollama-e2e:/data/run-challenge.json run-challenge.json
 
       - name: Standalone verifier over captured runtime evidence
         shell: bash
         run: |
           set -euo pipefail
+          trap 'rc=$?; [ "$rc" -eq 0 ] || bash scripts/ci_annotate_failure.sh verifier-output.txt "standalone verifier failed"' EXIT
           TENANT_ID=$(docker exec ola-ollama-e2e python -c 'import json; print(json.load(open("/data/ollama-proof-context.json"))["tenant_id"])')
           RUN_ID=$(docker exec ola-ollama-e2e python -c 'import json; print(json.load(open("/data/ollama-proof-context.json"))["run_id"])')
           docker exec ola-ollama-e2e \
@@ -197,7 +203,7 @@ jobs:
               --expected-provider "ollama" \
               --expected-model "$OLLAMA_MODEL" \
               --expected-invocation-type "real_llm" \
-              --expected-nonce "$REPLAY_NONCE"
+              --expected-nonce "$REPLAY_NONCE" 2>&1 | tee verifier-output.txt
 
       - name: Capture Ollama provider evidence
         shell: bash

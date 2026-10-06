@@ -763,6 +763,27 @@ unavailable (fail closed)", `verifier_overall: CONSISTENT`, replay `BLOCK` with 
 `test_review_required_maps_to_unknown_and_never_verifies` (UNKNOWN is not BLOCK: its replay is `VERIFIED`). Thresholds, judge
 prompts and the verifier were not touched.
 
+### An intermittent red in the real-LLM runtime job (`ollama-real-runtime`)
+
+The job builds the Docker image, starts the application against a live Ollama (`qwen2.5:0.5b-instruct`, `OLA_LLM_MODE=required`)
+and sends one `/agent-run` ("Calculate 17 * 23 ...") through the six agents; the run must be `VERIFIED` with `391`, six
+`real_llm` steps with a provider response digest, then the standalone verifier must agree. **Measured (check-run data, not
+logs):** green on `22edab3` (runtime step 103 s) and `23d0aa4` (60 s); on `fd4dcaa` the first attempt was red (runtime step
+136 s, annotation: only "Process completed with exit code 1") and the rerun of that job was green (103 s). `fd4dcaa` changed
+tests, a workflow and documents, no application code, so this is not a regression from that commit. **UNKNOWN:** the reason
+of the red attempt (job logs are not readable from the authoring sandbox). Two failure modes exist by design and both fail
+closed with a 500: a call that exceeds `OLA_LLM_TIMEOUT` (60 s) and a `codeact` reply that is not exactly the JSON the
+runtime demands or proposes a different number than the deterministic execution; either would be plausible for a 0.5B model
+on a shared runner, but neither was observed.
+
+**Changed (diagnostics only, the gate is the same):** a failing "Real six-agent LLM runtime" or "Standalone verifier" step now
+publishes one error annotation (`scripts/ci_annotate_runtime_failure.sh`: tail of Ollama's log, of the application
+container's log and of the step's stderr; the generic `scripts/ci_annotate_failure.sh` now keeps the END of a long log, which
+is where the assertion is). The annotation is produced in an `EXIT` trap that only acts on a non-zero status and never
+changes it. `tests/test_ci_annotate_runtime_failure.py` (6 tests, `docker` stubbed) pins this, and the three mutations that
+matter (keep the beginning instead of the end, exit with another status, drop the annotation) fail it. The next red attempt
+therefore carries its own reason; until one does, whether this job is flaky or has a defect is open.
+
 ## Control evidence matrix (`governance/controls.json`)
 15 controls (EC-01..EC-15: chain, server-only records, fail-closed gate, anchor, signing, RFC 3161, judge qualification,
 ambient IGOR, firewall, identity, CFR, Jev, record verification, evidence graph), each with its mechanism, the tests that
