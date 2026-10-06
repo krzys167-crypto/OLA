@@ -13,8 +13,8 @@ from ola_pipeline.config import PipelineConfig, Policy, ProviderConfig  # noqa: 
 @pytest.fixture
 def fake():
     f = FakeOllama().start()
-    f.add_model("nina-test")
-    f.add_model("igor-test")
+    f.add_model("nina-test", digest="a1b2c3d4" * 8)    # a different model has a different digest: equal digests
+    f.add_model("igor-test")                           # would mean the same weights (see verify.same_model)
     yield f
     f.stop()
 

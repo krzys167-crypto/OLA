@@ -664,10 +664,79 @@ test requires a top-level `permissions:` in every workflow.
 run's records, but it accepts a run that has fewer than six agent records (its own tests use two). Completeness of a run is
 established by `verify_agent_run` and the standalone verifier, not by the replay.
 
-**Not done in this change:** the Stripe `payment-success` page for asynchronous sessions still answers `BLOCK` until the money
-arrives (correct, but it shows no "awaiting payment" state); refunds and disputes. **UNKNOWN (cannot be measured here):**
+**Not done in this change:** refunds and disputes (the `payment-success` page for asynchronous sessions was a plain `BLOCK`
+until the money arrived; it is `AWAITING_PAYMENT` since the sixth review). **UNKNOWN (cannot be measured here):**
 behaviour under real load, a real Ollama judge, live Stripe (500-character metadata limit, async payment methods), CI result
 for this commit until the runners pick it up.
+
+## Sixth independent review (request limits, database, library verifier, Stripe state machine, invoice maths)
+
+Three reviewers (app layer, library, money flow) read the code and reproduced each item with a script before it was changed;
+three implementers fixed them in separate copies, which were merged and then run together. Tests: `tests/test_review6_app.py`
+(116), `tests/pipeline_suite/test_review6_lib.py` (374 cases), `tests/test_review6_money.py` (118). The only existing test
+that had to change is the `_event` fixture of `test_security_review4.py` (it modelled several payments as one checkout
+session, which per-session idempotency now rightly answers from the cache); the fixtures of `tests/pipeline_suite` now build
+sessions the way the pipeline writes them (the judge has its own digest, replies mirror evaluations, envelopes carry the
+derived `gate_state`), so a test that wants a deviation names exactly that one.
+
+### App layer: request limit, database, error handling, input
+
+| defect (reproduced) | state |
+|---|---|
+| after the body budget was exceeded the application was handed an empty *final* chunk and ran on the prefix it had already read: a complete JSON object followed by padding was executed and then answered 413 | **fixed** (`app/http_guard.py`): the application is told `http.disconnect`, whatever it answers or raises is discarded, the caller gets 413 with `Connection: close` |
+| only the last `Content-Length` header was checked; the smaller `/stripe/webhook` budget was skipped behind `--root-path` | **fixed**: every `Content-Length` must be a plain integer within the budget; paths are matched the way the router matches them (`root_path` stripped, trailing slash) |
+| an unhandled exception was answered by a layer outside the guard, i.e. without the security headers; the CSP was added to any `text/html` answer | **fixed**: a JSON 500 with the security headers and no details; the CSP only on the product page `/` |
+| `OLA_DB_BUSY_MS` above 2^31 silently became 0 (no waiting at all) | **fixed** (`app/database.py`): plain digits in 1..600000, anything else is the 30 s default |
+| the trigger repair was DROP and CREATE as two autocommitted statements: a failing CREATE left the table without its append-only trigger, and processes starting together raced between check and DROP | **fixed**: one `BEGIN IMMEDIATE` transaction, the check repeated inside the lock, rolled back on any failure (the old trigger keeps protecting the table) |
+| a "lock" was recognised by the words *locked*/*busy* anywhere in `str(exc)`, which includes the SQL parameters: a payload containing "busy" turned a disk error into a retryable 503; other `OperationalError`s were not logged; pool exhaustion was a 500 | **fixed** (`app/main.py`): lock = SQLite error code 5/6 or the lock text of the driver's own message; every other `OperationalError` is a logged 500; pool timeout is 503 + `Retry-After` |
+| `/checkout` created the Stripe session before validating the URLs; NUL characters, lone surrogates, over-long `success_url`/`cancel_url`, non-string `requested_tools` and `/firewall/approve` fields reached the chain, a model or Stripe | **fixed**: one validator (`_checked_text`) for every free text, run before any side effect; 400 |
+| ambient judge records used 8 append attempts: a burst of concurrent requests of one tenant lost the sequence race (enforce then withheld an accepted answer, shadow lost a verdict) | **fixed** (`app/ambient.py`): the same 96-attempt budget as the rest of the app |
+| a human-gate name made of Hangul fillers, blank Braille or combining marks counted as "visible" | **fixed**: such characters do not count; a name needs one other character |
+| payload nesting was unbounded, and `GET /evidence/{id}` answered 500 for a stored payload that is deeply nested or no longer strict JSON (rows written before NaN/Infinity were refused); `/chat` passed on `VERIFIED` without a text answer | **fixed**: nesting is capped at 32 levels on write; a stored record is always readable (its raw text and a `payload_error` when it is not strict JSON); `VERIFIED` without a text answer is `BLOCK` |
+
+### Library: verifier and pipeline
+
+| defect (reproduced) | state |
+|---|---|
+| the judge's and the canary's generation had to pass less than Nina's: an unknown provider, missing provenance or a `TEST_DOUBLE` proof was accepted as a live judge | **fixed** (`ola_pipeline/verify.py`): the same proof and provenance checks as Nina's; `TEST_DOUBLE` only with `allow_test_double`, and it never counts as live evidence |
+| the verifier trusted the stored evaluation: a session whose evaluation said `PASS` while the judge's own raw reply said `REVIEW` (forged or corrupted) verified | **fixed**: the verifier re-parses the judge's raw reply with the SAME function the pipeline used (`parse_judge` moved into `verify.py`) and fails an evaluation that does not follow from it (a *stricter* evaluation is not an inconsistency); the same for canary verdicts |
+| independence was decided twice by different rules (stage time vs verifier) and by names only | **fixed**: one `same_model()` (normalised provider / model / endpoint, `:latest`, loopback aliases, default ports; equal non-empty digests are the same weights under any name); a judge that is Nina under another spelling is not independent |
+| `max_iterations` was not validated (a bool, a string or a missing key); a judge score outside 0..100 or non-integer verified; a weak policy (`min_quality_score` < 70) got the top tier | **fixed**: an integer in 1..3 (absent or loosened after the fact is a failure); scores are integers 0..100 (an integral float such as `85.0` is read as 85, by the pipeline and the verifier alike); a weak policy is capped at `CONSISTENT` (exit 2) with the reason under `caps` |
+| an iteration chain could be forged: iteration 2 without a non-PASS verdict on iteration 1, or without saying which verdict it corrects; an envelope's `gate_state` was a label | **fixed**: every iteration before the last needs a REVIEW/BLOCK verdict and the next iteration must reference it (sessions written before the references existed still verify through their hash-bound input artifact); each envelope's `gate_state` must be the one its content derives |
+| `sk-` patterns flagged ordinary prose (`risk-based-approach-…`); every pattern had to be linear on adversarial input | **fixed** (`ola_pipeline/redact.py`): token patterns start at a word boundary (also after an escaped `\n` or a `%XX`), a placeholder DSN password (`password`, `<password>`, `${DB_PASSWORD}`, `****`) is not a secret when it is the WHOLE password field; 200 000 characters scan in under 0.1 s |
+| loopback was a string match (`127.0.0.2`, `::ffff:127.0.0.1` were "remote"); an IPv6 endpoint lost its brackets in the evidence | **fixed** (`providers.py`, `config.py`): parsed with `ipaddress`; brackets kept; credentials over plain http to a non-loopback host are still refused |
+| a non-integer policy limit (`3.0`, a string) failed late with a `TypeError`; a task that is not UTF-8 text created a session before failing; the CLI printed a traceback for odd envelopes or an unreadable task file | **fixed**: integral floats coerced, anything else a `ConfigError`; `Pipeline.run` refuses the task before a session exists; the CLI report reads every envelope field defensively and the `run` command answers `BLOCKED` JSON |
+| a stage whose `finalize` failed lost its `verifies_*` references | **fixed** (`stage.py`): `refs` are recorded even when `finalize` fails |
+
+**Behaviour changes for data written by earlier versions** (checked with hand-built sessions only; there are no archived real
+sessions here, so the effect on real ones is **UNKNOWN**): a policy snapshot without `max_iterations` is now a failure; an
+iteration chain without verdicts/references is a failure; an envelope with a `gate_state` its content does not derive is a
+failure; a session with `min_quality_score` < 70 is `CONSISTENT`, never `VERIFIED`. `require_igor_calibration=False` and
+`require_model_digest=False` still only warn (they are deliberate operator choices, not thresholds): **owner decision** whether
+they should cap as well. `app/ambient.py` still compares judge model names as plain strings (not through `same_model`).
+
+### Money flow: Stripe state machine and invoice maths
+
+| defect (reproduced) | state |
+|---|---|
+| a `PROCESSING` stripe row never recovered (process crash mid-run, or the `FAILED` mark failing because the database was busy): every redelivery was 409 for ever, the customer paid and got nothing | **fixed** (`stripe_webhook.py`, `migrations.py`): `claimed_at` is a lease (`OLA_STRIPE_LEASE_S`, default 900 s) and the fencing token; an expired `PROCESSING` row is reclaimed by compare-and-set and every later write of a worker is conditional on its token (a slow worker that lost the lease cannot overwrite the new owner); the `FAILED` mark is retried with back-off. The new columns and a unique index are added to an existing database by `app/migrations.py` (idempotent, run at start) |
+| three different event ids for one checkout session were three paid runs | **fixed**: one row per session (its first event id, later ids are aliases): `COMPLETED` answers from the cache (200, no run), in flight is 409; unique index on `checkout_session_id` |
+| a retry after a failure in the bookkeeping ran the paid task again and recorded `stripe.payment_confirmed` twice | **fixed**: `payment_evidence_id`, `run_id` and the run summary are persisted as soon as they exist and reused; a retry also looks for evidence that a crash left behind |
+| a paid task nothing could compute ("summarise my contract") was `COMPLETED` / payment `CONFIRMED` with no word that nothing was done; with a real model it raised (500, Stripe retries for days) | **fixed**: the result and the `stripe.ola_execution_completed` evidence carry `computation: PERFORMED / NOT_PERFORMED`; a refusal is `NOT_PERFORMED`, never an exception. `/checkout` now says so BEFORE the customer pays (`computation_expected`: `PERFORMED` / `NOT_PERFORMED`, and a `notice` for the latter; also in the `revenue.checkout_created` evidence). **Owner decision:** it still sells the audit for any text; *refusing* tasks that cannot be computed is a product decision and was not made here |
+| `scripts/verify_agent_runtime.py` said `VERIFIED` for a run the API calls `UNKNOWN` | **fixed**: `UNKNOWN`, `computation: NOT_PERFORMED`, exit status 1 |
+| `_safe_expression` cut the task at an offset taken from `task.lower()` (U+0130 is two characters there) and evaluated another expression; `calculate True` was `VERIFIED "True"`; unary minus, `%` and `//` were refused | **fixed**: searched in the original string, booleans excluded, unary `+`/`-`, `%` and `//` added (still no `**`) |
+| a non-ASCII `v1` signature was an unauthenticated 500 (`compare_digest` on `str`); a signed body of invalid UTF-8, 60 KB of nesting, a lone surrogate or an over-long id was a 500 | **fixed**: 400 |
+| `/payment-success` read the task differently from the webhook (spaces: pending for ever; custom field only: "BLOCK payment not verified") and answered `BLOCK` plus a new `revenue.payment_blocked` row on every poll of an unpaid or asynchronous session | **fixed**: same extraction as the webhook; unpaid or asynchronous is `AWAITING_PAYMENT`, expired is `BLOCK`; neither writes anything |
+| VAT in binary floats: `round(0.5 * 0.21, 2)` is 0.10 (0.11 half-up), 0.7 % of two-decimal nets were a cent off, and the standalone verifier used the same formula so it could not notice | **fixed**: `Decimal` with `ROUND_HALF_UP`, in the app and in the script |
+| `scripts/verify_business_invoice.py` was weaker than the app (forged evidence with net -5000, 0, 1e300, currency `eur` or an empty id was `VERIFIED`) and needed exactly six records per tenant (two approved runs: BLOCK) | **fixed**: same validation; the whole tenant chain is verified, then the run's rows are selected by `run_id`; a malformed command line is a JSON BLOCK, not a traceback; the database is opened read-only and never created. A test runs app and script on 1,500 random invoices |
+| a chain failure after the evidence was written returned `status: BLOCK` with `final_result` `APPROVE_FOR_TEST_TRANSFER` | **fixed**: the response says `NOT_APPROVED` / `NOT_SENT` / 0 (the append-only evidence still says what it said) |
+
+**Not fixed (stated limits):** real Stripe events carry no `line_items`, so the price check is skipped for them (amount and
+currency are still checked); a paid event answered 400 (unknown tenant, no task, foreign offer) leaves no row, so nothing
+reconciles it; two invoices with the same `invoice_id` are both accepted; `/payment-success` still writes one
+`revenue.payment_blocked` row per poll for a session that is *paid* but not for this offer; a run that outlives its lease is
+paid for twice (the second result wins); `amount_total: 9900.0` and a missing session `status` are still accepted (a valid
+signature is required).
 
 ## Control evidence matrix (`governance/controls.json`)
 15 controls (EC-01..EC-15: chain, server-only records, fail-closed gate, anchor, signing, RFC 3161, judge qualification,

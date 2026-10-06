@@ -184,7 +184,9 @@ def _post_webhook(payload: bytes):
 
 
 def _event(tenant_id, **session_over):
-    session = {"id": "cs_1", "payment_status": "paid", "status": "complete", "amount_total": 9900, "currency": "eur",
+    # one checkout session per event: the old fixture reused "cs_1" for every event, i.e. it modelled several payments
+    # as ONE session, which per-session idempotency (review 6) rightly answers from the cache
+    session = {"id": "cs_" + uuid.uuid4().hex, "payment_status": "paid", "status": "complete", "amount_total": 9900, "currency": "eur",
                "metadata": {"offer": "ola-execution-audit", "product": "OLA Execution Audit",
                             "task": "Calculate 2+2", "tenant_id": tenant_id}}
     session.update(session_over)

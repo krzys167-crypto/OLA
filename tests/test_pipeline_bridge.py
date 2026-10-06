@@ -36,8 +36,8 @@ HUMAN = {"human_approved": True, "human_actor": "reviewer-1", "human_reason": "c
 @pytest.fixture
 def fake():
     f = FakeOllama().start()
-    f.add_model("nina-test")
-    f.add_model("igor-test")
+    f.add_model("nina-test", digest="a1b2c3d4" * 8)   # a different model has a different digest: equal digests
+    f.add_model("igor-test")                          # would mean the same weights, i.e. no independent judge
     f.version = "0.99.0"                       # non-declared endpoint -> OLLAMA_OBSERVED (logic only)
     f.script("nina-test", "Paris is the capital of France.")
     f.script("igor-test", igor_json("PASS", 92))

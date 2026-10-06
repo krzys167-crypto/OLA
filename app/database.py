@@ -8,12 +8,19 @@ engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread"
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
 
+DEFAULT_BUSY_MS = 30_000
+MAX_BUSY_MS = 600_000
+
 
 def _busy_ms() -> int:
-    try:
-        return max(0, int(os.environ.get("OLA_DB_BUSY_MS", "30000")))
-    except ValueError:
-        return 30000
+    """OLA_DB_BUSY_MS: plain digits in 1..600000, anything else (empty, text, 0, negative, too large) is the default.
+    SQLite reads the pragma as a 32-bit integer: a larger number silently became 0 (no waiting at all)."""
+    raw = os.environ.get("OLA_DB_BUSY_MS", "").strip()
+    if re.fullmatch(r"[0-9]{1,7}", raw):
+        value = int(raw)
+        if 1 <= value <= MAX_BUSY_MS:
+            return value
+    return DEFAULT_BUSY_MS
 
 
 @event.listens_for(engine, "connect")
@@ -46,12 +53,27 @@ def _norm(sql: str) -> str:
 
 def install_append_only_triggers():
     """Creates the triggers AND re-creates one whose stored body is not the expected one (a trigger replaced by a
-    no-op `WHEN 0` used to be kept by CREATE TRIGGER IF NOT EXISTS)."""
-    with engine.begin() as conn:
-        for name, sql in _TRIGGERS.items():
-            row = conn.exec_driver_sql("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (name,)).first()
-            if row is not None and _norm(row[0]) == _norm(sql):
-                continue
-            if row is not None:
-                conn.exec_driver_sql(f"DROP TRIGGER {name}")
-            conn.exec_driver_sql(sql)
+    no-op `WHEN 0` used to be kept by CREATE TRIGGER IF NOT EXISTS).
+
+    The whole repair is ONE write transaction (BEGIN IMMEDIATE, then the check is repeated inside the lock): pysqlite
+    opens no transaction for DDL, so DROP and CREATE used to autocommit separately. A failing CREATE (lock, bad SQL, a
+    crash) then left the table without its trigger, and several processes starting together raced between the check and
+    the DROP/CREATE ("trigger already exists" / "no such trigger" aborted the import). DDL is transactional in SQLite:
+    on any failure everything is rolled back and the old trigger keeps protecting the table."""
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+        try:
+            for name, sql in _TRIGGERS.items():
+                row = conn.exec_driver_sql("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                                           (name,)).first()
+                if row is not None and _norm(row[0]) == _norm(sql):
+                    continue
+                conn.exec_driver_sql(f"DROP TRIGGER IF EXISTS {name}")
+                conn.exec_driver_sql(sql)
+            conn.exec_driver_sql("COMMIT")
+        except BaseException:
+            try:
+                conn.exec_driver_sql("ROLLBACK")
+            except Exception:                                # noqa: BLE001 - the original error is the one to report
+                pass
+            raise

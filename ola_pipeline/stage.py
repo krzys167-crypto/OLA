@@ -31,7 +31,9 @@ def run_stage(*, vault: EvidenceVault, anchor: SourceAnchor, session_id: str, ru
               parent_run_id: Optional[str], agent_id: str, iteration: int, cfg: ProviderConfig,
               messages: List[Dict[str, str]], input_obj: Any, json_mode: bool = False,
               skip_reason: Optional[str] = None, finalize: Optional[Finalize] = None,
-              refs: Optional[Dict[str, Any]] = None) -> StageResult:
+              refs: Optional[Dict[str, Any]] = None, observed: Optional[Dict[str, Any]] = None) -> StageResult:
+    """`refs` are recorded even if `finalize` fails, so a BLOCKED stage still links to what it was about.
+    `observed`, if given, is filled (model_digest, runtime_kind) before `finalize` runs."""
     input_hash = vault.put_artifact(canonical_bytes(input_obj))
     prompt_hash = None if skip_reason else vault.put_artifact(canonical_bytes(messages))
     known = cfg.known_secrets()
@@ -79,6 +81,8 @@ def run_stage(*, vault: EvidenceVault, anchor: SourceAnchor, session_id: str, ru
 
     gate_state = "PENDING" if status == "EXECUTED" else "BLOCKED"
     all_refs: Dict[str, Any] = dict(refs or {})
+    if observed is not None:
+        observed.update(model_digest=digest, runtime_kind=proof.get("kind") if proof else None)
     if finalize is not None:
         try:
             extra = finalize(status, text, detail) or {}

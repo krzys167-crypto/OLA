@@ -3,6 +3,7 @@ import json
 import math
 import re
 import uuid
+from decimal import Context, Decimal, ROUND_HALF_UP
 
 from sqlalchemy import select
 
@@ -24,6 +25,9 @@ CONTROLLED_VAT_RATE = 0.21
 MAX_NET = 1_000_000_000.0
 MAX_INVOICE_BYTES = 65536
 _CURRENCY = re.compile(r"[A-Z]{3}")
+_CENT = Decimal("0.01")
+_CONTEXT = Context(prec=60)                       # far more digits than net (<= 1e9, 2 decimals) x rate can ever need
+_CONTROLLED_RATE = Decimal(repr(CONTROLLED_VAT_RATE))
 
 
 def _number(value, field):
@@ -56,6 +60,22 @@ def validate_invoice(invoice):
     return net, vat_rate
 
 
+def money(net, vat_rate):
+    """(vat, gross, policy_match) in decimal arithmetic, rounded half-up to the cent. Binary floats cannot do this:
+    round(0.5 * 0.21, 2) is 0.10 because 0.105 is stored as 0.10499999999999999, where the invoice means 0.11.
+    The inputs are the floats the JSON parser produced; repr() is the shortest decimal that round-trips to them, i.e.
+    the number the client wrote. scripts/verify_business_invoice.py repeats exactly this."""
+    try:
+        net_d, rate_d = Decimal(repr(net)), Decimal(repr(vat_rate))
+        vat = _CONTEXT.multiply(net_d, rate_d).quantize(_CENT, rounding=ROUND_HALF_UP, context=_CONTEXT)
+        if vat.is_zero():
+            vat = abs(vat)                        # never -0.00 (a vat_rate of -0.0 is accepted: -0.0 == 0)
+        gross = _CONTEXT.add(net_d, vat).quantize(_CENT, rounding=ROUND_HALF_UP, context=_CONTEXT)
+    except ArithmeticError as exc:
+        raise ValueError("invoice amounts are outside the supported range") from exc
+    return float(vat), float(gross), rate_d == _CONTROLLED_RATE
+
+
 def _append(tenant_id, run_id, record_type, payload):
     # same chain, same hashing (v2, type-bound), through the retrying append; imported here because pipeline_bridge
     # imports modules that import this one
@@ -83,9 +103,7 @@ def run_invoice_task(tenant_id, task):
     evidence_ids = []
 
     net, vat_rate = validate_invoice(invoice)
-    expected_vat = round(net * vat_rate, 2)
-    gross = round(net + expected_vat, 2)
-    policy_match = vat_rate == CONTROLLED_VAT_RATE       # False -> the controlled policy REJECTS the invoice
+    expected_vat, gross, policy_match = money(net, vat_rate)     # policy_match False -> the controlled policy REJECTS it
 
     checks = {
         "codeact": {
@@ -116,7 +134,7 @@ def run_invoice_task(tenant_id, task):
         "self_reflection": {
             "capability": "checked_previous_output",
             "tool": "invoice_consistency_check",
-            "tool_output": "PASS" if policy_match and gross == round(net + expected_vat, 2) else "FAIL",
+            "tool_output": "PASS" if policy_match and Decimal(repr(net)) + Decimal(repr(expected_vat)) == Decimal(repr(gross)) else "FAIL",
             "result": ("reflection accepted the invoice calculation and policy match" if policy_match else
                        "reflection REJECTED the invoice: its VAT rate differs from the controlled policy"),
         },
@@ -171,6 +189,13 @@ def run_invoice_task(tenant_id, task):
     status = "VERIFIED" if (chain_ok and policy_match) else "BLOCK"
     if chain_ok and not policy_match:
         reason = "invoice VAT rate differs from the controlled policy; payment rejected"
+    if policy_match and not chain_ok:
+        # the evidence was written (it is append-only) before the chain could be re-checked, so its multi_agent record
+        # says "approve": the RESPONSE must not repeat that. A caller that reads final_result must see no payment.
+        final_result = {**final_result, "payment_decision": "NOT_APPROVED", "transfer_amount": 0.0,
+                        "transfer_status": "NOT_SENT"}
+        execution = execution[:-1] + [{**execution[-1], "final_result": final_result,
+                                       "result": f"six-agent invoice decision BLOCKED: evidence chain verification failed ({reason})"}]
     return {
         "run_id": run_id,
         "task": task,

@@ -99,9 +99,11 @@ class FakeOllama:
                 items = outer.scripts.get(model, ["default answer"])
                 item = items[min(idx, len(items) - 1)]
                 text = item(idx, body["messages"]) if callable(item) else item
+                # a dict item is a whole message (e.g. {"content": ..., "thinking": ...} of a reasoning model)
+                message = {"role": "assistant", **text} if isinstance(text, dict) else {"role": "assistant", "content": text}
                 self._send(200, {
                     "model": model, "created_at": "2026-10-03T00:00:00Z",
-                    "message": {"role": "assistant", "content": text},
+                    "message": message,
                     "done": True, "done_reason": "stop", "total_duration": 1000,
                     "eval_count": 5, "prompt_eval_count": 7,
                 })

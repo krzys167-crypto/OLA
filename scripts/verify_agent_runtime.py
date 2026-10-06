@@ -22,6 +22,7 @@ EXPECTED_INVOCATION = {
     "invocation_type": "local_deterministic_model",
 }
 GENESIS_HASH = "0" * 64
+NOT_COMPUTED = "task accepted:"     # app.agent_runtime: every refusal text starts with this, i.e. nothing was computed
 
 
 def compute_record_hash(tenant_id, seq, prev_hash, payload_json, record_type=None):
@@ -175,8 +176,13 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
     if final_result != codeact_result:
         return fail("final result does not match CodeAct execution result")
 
+    # Everything above holds: the agents ran, the chain is intact. But "task accepted: ..." is the runtime's refusal text,
+    # not a result: nothing was computed, so this run is not a VERIFIED execution of the task (exit status != 0).
+    performed = not (isinstance(codeact_result, str) and codeact_result.startswith(NOT_COMPUTED))
+
     return {
-        "status": "VERIFIED",
+        "status": "VERIFIED" if performed else "UNKNOWN",
+        "computation": "PERFORMED" if performed else "NOT_PERFORMED",
         "run_id": run_id,
         "commit": expected_commit,
         "source_commit_verified": True,
@@ -189,7 +195,9 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
         "invocations": invocations,
         "evidence_count": len(run_rows),
         "replay_nonce": next(iter(replay_nonces)),
-        "reason": "standalone verifier recomputed roles, capabilities, invocation metadata, result, identities, contexts, replay nonce and hash chain without importing runtime verification code",
+        "reason": ("standalone verifier recomputed roles, capabilities, invocation metadata, result, identities, contexts, replay nonce and hash chain without importing runtime verification code"
+                   if performed else
+                   "the evidence is intact but nothing was computed: the task was accepted without a computable expression, so the result is a refusal text, not work that was done"),
     }
 
 

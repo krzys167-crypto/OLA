@@ -36,21 +36,24 @@ def _report(sd: Path) -> int:
     kid = (rep["attestation"] or {}).get("key_id")
     print(f"authenticity   : {rep['authenticity']}" + (f"  key_id={kid}" if kid else "")
           + ("  (key NOT pinned; use `verify --trusted-key`)" if rep["authenticity"] == "UNPINNED_VALID" else ""))
-    for e in facts.envelopes:
-        refs = e.get("refs") or {}
-        print(f"\n[{e['seq']:02d}] {e['agent_id']:<5} run_id={e['run_id']}  iter={e['iteration']}  "
-              f"parent={e['parent_run_id']}  status={e['execution_status']}")
-        print(f"     provider={e['provider']} model={e['model']} digest={e.get('model_digest')}")
+    for e in facts.envelopes:                    # evidence of unknown quality: every field via .get(), never e[...]
+        refs = e.get("refs") if isinstance(e.get("refs"), dict) else {}
+        seq = e.get("seq")
+        seq_s = f"{seq:02d}" if isinstance(seq, int) and not isinstance(seq, bool) else str(seq)
+        print(f"\n[{seq_s}] {str(e.get('agent_id')):<5} run_id={e.get('run_id')}  iter={e.get('iteration')}  "
+              f"parent={e.get('parent_run_id')}  status={e.get('execution_status')}")
+        print(f"     provider={e.get('provider')} model={e.get('model')} digest={e.get('model_digest')}")
         for k in ("input_hash", "prompt_hash", "output_hash", "runtime_proof_hash"):
             print(f"     {k:<19}: {e.get(k)}")
         if refs.get("evaluation_hash"):
             print(f"     {'evaluation_hash':<19}: {refs['evaluation_hash']}")
-        print(f"     envelope_hash      : {e['envelope_hash']}")
+        print(f"     envelope_hash      : {e.get('envelope_hash')}")
     print("\nFINAL" + ("" if rep["overall"] == "VERIFIED" else "  (CLAIMED by final.json, NOT verified)"))
     for k in ("run_id", "source_sha", "provider", "model", "iterations", "nina_status", "igor_status",
               "gate_state", "evidence_class", "chain_head"):
         print(f"  {k:<15}: {final.get(k)}")
-    for r in final.get("gate_reasons", []):
+    reasons = final.get("gate_reasons")
+    for r in reasons if isinstance(reasons, list) else []:
         print(f"  reason         : {r}")
     for w in rep["warnings"]:
         print(f"  warning        : {w}")
@@ -104,7 +107,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             args.append("--json")
         return _verify.main(args)
 
-    task = a.task if a.task is not None else Path(a.task_file).read_text("utf-8")
+    try:
+        task = a.task if a.task is not None else Path(a.task_file).read_text("utf-8")
+        task.encode("utf-8")      # argv can carry undecodable bytes as lone surrogates: not persistable, say so cleanly
+    except (OSError, UnicodeError) as e:
+        print(json.dumps({"gate_state": "BLOCKED", "error": f"task cannot be read as UTF-8 text ({type(e).__name__})"}))
+        return 1
     try:
         cfg = PipelineConfig.from_env()
     except ConfigError as e:
@@ -112,6 +120,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     try:
         run = Pipeline(cfg).run(task)
+    except ConfigError as e:
+        print(json.dumps({"gate_state": "BLOCKED", "error": f"configuration: {e}"}))
+        return 1
     except SigningError as e:
         unsigned = e.run
         print(json.dumps({"gate_state": unsigned.final["gate_state"] if unsigned else "BLOCKED",

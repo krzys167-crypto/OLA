@@ -51,6 +51,8 @@ class ProviderConfig:
         """Endpoint without userinfo/query/fragment — safe to persist."""
         u = urlsplit(self.effective_base_url())
         host = u.hostname or ""
+        if ":" in host:                                  # urlsplit strips the brackets of an IPv6 literal
+            host = f"[{host}]"
         if u.port:
             host = f"{host}:{u.port}"
         return urlunsplit((u.scheme, host, u.path, "", ""))
@@ -68,6 +70,16 @@ class Policy:
     require_igor_calibration: bool = True
     # Same provider+model grading its own output is self-verification; forbidden unless opted in.
     allow_same_model_igor: bool = False
+
+    def __post_init__(self) -> None:
+        # numeric limits are integers; an integral float (3.0, 70.0) is coerced, anything else is a ConfigError
+        # (never a TypeError out of a later comparison)
+        for name in ("max_iterations", "min_quality_score"):
+            v = getattr(self, name)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or (isinstance(v, float) and not v.is_integer()):
+                raise ConfigError(f"{name} must be an integer")
+            if isinstance(v, float):
+                object.__setattr__(self, name, int(v))
 
     def validate(self) -> "Policy":
         if not 1 <= self.max_iterations <= 3:

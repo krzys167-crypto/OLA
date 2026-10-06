@@ -8,6 +8,7 @@ declares itself via its version string, and the Gate rejects it unless policy al
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
 import os
 import socket
@@ -23,7 +24,18 @@ from .errors import (ConfigError, ModelUnresolved, ProviderError, ProviderTimeou
 from .redact import scrub
 from .verify import KNOWN_PROVIDERS
 
-_LOOPBACK = ("localhost", "127.0.0.1", "::1")
+def _is_loopback(host: str) -> bool:
+    """localhost, 127.0.0.0/8, ::1 (also as an IPv4-mapped address). Parsed, not string-matched."""
+    h = (host or "").strip().lower().rstrip(".")
+    if h == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
 
 
 @dataclass
@@ -46,14 +58,14 @@ def _http(method: str, url: str, body: Optional[dict], headers: Dict[str, str],
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
         raise ConfigError(f"unsupported URL scheme {parts.scheme!r} (only http and https)")
-    if "Authorization" in headers and parts.scheme != "https" and (parts.hostname or "") not in _LOOPBACK:
+    if "Authorization" in headers and parts.scheme != "https" and not _is_loopback(parts.hostname or ""):
         raise ConfigError("refusing to send credentials over plain http to a non-loopback host")
     data = None if body is None else json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method=method,
                                  headers={"Content-Type": "application/json", **headers})
     host = parts.hostname or ""
     opener = (urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
-              if host in _LOOPBACK else urllib.request.build_opener(_NoRedirect))
+              if _is_loopback(host) else urllib.request.build_opener(_NoRedirect))
     path = urlsplit(url).path
     try:
         with opener.open(req, timeout=timeout) as r:

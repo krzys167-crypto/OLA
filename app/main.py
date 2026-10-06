@@ -1,18 +1,20 @@
 import unicodedata
 import hashlib
+import logging
 import re
 import json
 import os
+import traceback
 import uuid
 from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from starlette.responses import FileResponse, JSONResponse
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, TimeoutError as PoolTimeoutError
 from sqlalchemy import select
 from .database import Base, engine, SessionLocal, install_append_only_triggers
 from .models import Tenant, ApiKey, EvidenceRecord, StripeEvent
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
-from .agent_runtime import run_agent_task
+from .agent_runtime import run_agent_task, task_is_computable
 from .business_runtime import run_invoice_task, MAX_INVOICE_BYTES
 from .nina import NinaOrchestrator, NinaTask
 from .igor import IgorVerifier
@@ -22,25 +24,63 @@ from .nina_igor import NinaIgorChain, STATUS_FIELDS
 from .decision_report import build_decision_report
 from .decision_fabric import DecisionFabric
 from .chat_runtime import chat
-from .revenue import create_checkout, retrieve_checkout, payment_verified
-from .stripe_webhook import process_checkout_event
+from .revenue import create_checkout, retrieve_checkout
+from .stripe_webhook import process_checkout_event, checkout_task, session_is_for_offer, session_paid_for_offer
 from . import ambient, anchor_external, cfr, firewall, identity, pipeline_bridge
 from .payment_binding import checkout_result_matches
-from .http_guard import HttpGuard
+from .http_guard import HttpGuard, security_headers
+from .migrations import run_migrations
 from starlette.concurrency import run_in_threadpool
 
 app = FastAPI(title="OLA Execution Gate")
 app.add_middleware(HttpGuard)
 Base.metadata.create_all(bind=engine)
 install_append_only_triggers()
+run_migrations()                                          # stripe_events lease + per-session columns (idempotent)
+
+
+log = logging.getLogger("ola.app")
+SQLITE_BUSY, SQLITE_LOCKED = 5, 6                       # primary result codes: a transient lock, not a bug
+
+
+def _is_lock_error(exc) -> bool:
+    """Lock or busy, decided from the DBAPI error alone: its sqlite error code, or the lock text in ITS message.
+    str(exc) of the SQLAlchemy error also holds the SQL and the bound parameters, i.e. caller-controlled text: a payload
+    containing the word "busy" used to turn a disk or read-only error into a retryable 503."""
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "sqlite_errorcode", None)
+    if isinstance(code, int) and (code & 0xFF) in (SQLITE_BUSY, SQLITE_LOCKED):
+        return True
+    message = str(orig).lower() if orig is not None else ""
+    return "database is locked" in message or "database table is locked" in message
 
 
 @app.exception_handler(OperationalError)
-async def _database_busy(request, exc):
-    """A locked database is a transient 503 (retry), never a 500 that prints the SQL and parameters."""
-    locked = "locked" in str(exc).lower() or "busy" in str(exc).lower()
-    return JSONResponse({"detail": "database busy, retry" if locked else "database error"},
-                        status_code=503 if locked else 500, headers={"Retry-After": "2"} if locked else None)
+async def _database_error(request, exc):
+    """A locked database is a transient 503 (retry), never a 500 that prints the SQL and parameters. Every other
+    OperationalError stays a 500 for the client (nothing of the SQL reaches it) but is logged: this handler is the
+    reason the server no longer sees it as an unhandled exception."""
+    if _is_lock_error(exc):
+        return JSONResponse({"detail": "database busy, retry"}, status_code=503, headers={"Retry-After": "2"})
+    orig = getattr(exc, "orig", None)
+    log.error("database error on %s %r: %s: %s (%s)\n%s", request.method, request.url.path, type(orig).__name__, orig,
+              getattr(orig, "sqlite_errorname", "?"), "".join(traceback.format_tb(exc.__traceback__)))
+    return JSONResponse({"detail": "database error"}, status_code=500)
+
+
+@app.exception_handler(PoolTimeoutError)
+async def _database_pool_exhausted(request, exc):
+    """All pooled connections are busy waiting for the same lock: the same transient condition, so the same 503."""
+    log.warning("database connection pool exhausted on %s %r", request.method, request.url.path)
+    return JSONResponse({"detail": "database busy, retry"}, status_code=503, headers={"Retry-After": "2"})
+
+
+@app.exception_handler(Exception)
+async def _internal_error(request, exc):
+    """An unhandled error is answered by ServerErrorMiddleware, which sits OUTSIDE HttpGuard: the security headers have
+    to be set here. The exception is still re-raised to the server afterwards (it is logged there); nothing of it
+    reaches the client."""
+    return JSONResponse({"detail": "internal server error"}, status_code=500, headers=security_headers())
 
 
 def identity_from_key(raw_key):
@@ -75,11 +115,34 @@ def append_record(tenant_id, record_type, payload):
 
 
 MAX_EVIDENCE_BYTES = 262144
+MAX_PAYLOAD_DEPTH = 32
+
+
+def _nesting_depth(value, cap: int) -> int:
+    """Depth of the deepest dict/list (the value itself is level 1), computed with an explicit stack - a deeply nested
+    document must not be able to exhaust the interpreter stack here - and abandoned as soon as it passes `cap`."""
+    deepest = 0
+    stack = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, dict):
+            children = node.values()
+        elif isinstance(node, list):
+            children = node
+        else:
+            continue
+        deepest = max(deepest, depth)
+        if deepest > cap:
+            return deepest
+        stack.extend((child, depth + 1) for child in children)
+    return deepest
 
 
 def _checked_payload(payload):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be a JSON object")
+    if _nesting_depth(payload, MAX_PAYLOAD_DEPTH) > MAX_PAYLOAD_DEPTH:
+        raise HTTPException(status_code=400, detail=f"payload nesting is limited to {MAX_PAYLOAD_DEPTH} levels")
     try:
         encoded = canonical_json(payload).encode("utf-8")
     except (ValueError, UnicodeEncodeError, RecursionError):
@@ -209,7 +272,10 @@ def chat_endpoint(body: dict, background: BackgroundTasks, x_api_key: str | None
         clean.append({"role": item["role"], "content": item["content"]})
     amb = _ambient_mode()
     result = chat(tenant_id, clean)
-    if result.get("status") != "VERIFIED" or not isinstance(result.get("message"), str):
+    if result.get("status") == "VERIFIED" and not isinstance(result.get("message"), str):
+        # "VERIFIED" without a text answer is a broken model layer: never passed on as verified (or as anything else)
+        return {"status": "BLOCK", "reason": "the model layer returned no text answer"}
+    if result.get("status") != "VERIFIED":
         return result                                   # BLOCK from the model layer passes through
     # "VERIFIED" from the model layer means the model answered. It does NOT mean the answer is correct: only an
     # enforce-mode ACCEPT by a qualified independent judge earns that word. Off and shadow report UNKNOWN.
@@ -225,19 +291,26 @@ def chat_endpoint(body: dict, background: BackgroundTasks, x_api_key: str | None
 @app.post("/checkout")
 def create_checkout_session(body: dict, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
-    task = body.get("task")
-    if not isinstance(task, str) or not task.strip():
-        raise HTTPException(status_code=400, detail="task is required")
-    success_url = body.get("success_url") or "http://localhost:8000/payment-success"
-    cancel_url = body.get("cancel_url") or "http://localhost:8000/"
+    # everything is validated BEFORE the Stripe session exists: a session is not undone by a later error
+    task = _task_from_body(body)
+    success_url = _url_from_body(body, "success_url", "http://localhost:8000/payment-success")
+    cancel_url = _url_from_body(body, "cancel_url", "http://localhost:8000/")
     try:
         session = create_checkout(task.strip(), success_url, cancel_url, tenant_id)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"checkout creation failed: {exc.__class__.__name__}") from exc
-    append_record(tenant_id, "revenue.checkout_created", {"session_id": session.get("id"), "task": task.strip(), "amount": session.get("amount_total")})
-    return {"status": "READY_FOR_PAYMENT", "session_id": session.get("id"), "checkout_url": session.get("url")}
+    expected = "PERFORMED" if task_is_computable(task) else "NOT_PERFORMED"
+    append_record(tenant_id, "revenue.checkout_created", {"session_id": session.get("id"), "task": task.strip(), "amount": session.get("amount_total"),
+                                                           "computation_expected": expected})
+    response = {"status": "READY_FOR_PAYMENT", "session_id": session.get("id"), "checkout_url": session.get("url"),
+                "computation_expected": expected}
+    if expected == "NOT_PERFORMED":
+        # not a refusal (that is a product decision): the customer is told before paying what the audit can do with this task
+        response["notice"] = ("the audit computes a plain arithmetic expression (for example \"Calculate 17 * 23\"); this task "
+                              "contains none, so the paid run will end as UNKNOWN with computation NOT_PERFORMED")
+    return response
 
 
 @app.get("/payment-success")
@@ -246,13 +319,24 @@ def payment_success(session_id: str):
         session = retrieve_checkout(session_id)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"payment lookup failed: {exc.__class__.__name__}") from exc
-    tenant_id = session.get("metadata", {}).get("tenant_id")
-    if not tenant_id:
+    if not isinstance(session, dict):
+        raise HTTPException(status_code=502, detail="payment lookup failed: unexpected answer")
+    metadata = session.get("metadata")
+    tenant_id = metadata.get("tenant_id") if isinstance(metadata, dict) else None
+    if not isinstance(tenant_id, str) or not tenant_id:
         raise HTTPException(status_code=403, detail="payment session has no tenant provenance")
-    if not payment_verified(session):
-        append_record(tenant_id, "revenue.payment_blocked", {"session_id": session_id, "payment_status": session.get("payment_status"), "status": session.get("status")})
+    if not session_paid_for_offer(session):
+        status, payment_status = session.get("status"), session.get("payment_status")
+        if status == "expired" and payment_status != "paid":
+            return {"status": "BLOCK", "reason": "checkout session expired without payment", "session_id": session_id}
+        if session_is_for_offer(session) and payment_status == "unpaid" and status in ("open", "complete"):
+            # The customer is still paying, or an asynchronous method (SEPA debit, bank transfer) has not settled yet:
+            # not an anomaly, so nothing is written (a GET that appended evidence on every poll let anyone holding a
+            # session id grow the tenant's chain). The webhook starts the run when Stripe confirms the money.
+            return {"status": "AWAITING_PAYMENT", "reason": "payment is not confirmed yet", "session_id": session_id}
+        append_record(tenant_id, "revenue.payment_blocked", {"session_id": session_id, "payment_status": payment_status, "status": status})
         return {"status": "BLOCK", "reason": "payment not verified", "session_id": session_id}
-    task = session.get("metadata", {}).get("task")
+    task = checkout_task(session)        # the task exactly as the webhook read (and stored) it: stripped, or the custom field
     if not task:
         return {"status": "BLOCK", "reason": "paid session has no task", "session_id": session_id}
 
@@ -354,9 +438,7 @@ def create_agent_run(body: dict, background: BackgroundTasks, x_api_key: str | N
 def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
     tenant_id, requester_id = identity_from_key(x_api_key)
     task_text = _task_from_body(body)
-    requested_tools = body.get("requested_tools", ["safe_expression"])
-    if not isinstance(requested_tools, list):
-        raise HTTPException(status_code=400, detail="requested_tools must be a list")
+    requested_tools = _requested_tools(body, ["safe_expression"])
 
     nina_task = NinaTask.create(tenant_id, task_text, requested_tools)
     nina = NinaOrchestrator()
@@ -625,7 +707,26 @@ def approve_nina_run(
     }
 
 
-MAX_TASK_CHARS = 8000
+MAX_TEXT_CHARS = 8000
+MAX_TASK_CHARS = MAX_TEXT_CHARS
+MAX_URL_CHARS = 5000                                    # Stripe's own limit for success_url / cancel_url
+
+
+def _checked_text(value, field: str, limit: int = MAX_TEXT_CHARS) -> str:
+    """The one validator for free text that reaches the chain, a model or a third party: a string, bounded, without NUL
+    and encodable as UTF-8 (a lone surrogate passes json.loads but later fails in the hash, the database or the JSON
+    response - as a 500, sometimes after a side effect)."""
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"{field} must be a string")
+    if len(value) > limit:
+        raise HTTPException(status_code=400, detail=f"{field} is too long (max {limit} characters)")
+    if "\x00" in value:
+        raise HTTPException(status_code=400, detail=f"{field} must not contain NUL characters")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise HTTPException(status_code=400, detail=f"{field} is not valid UTF-8 text") from None
+    return value
 
 
 def _task_from_body(body: dict) -> str:
@@ -633,21 +734,36 @@ def _task_from_body(body: dict) -> str:
     task = body.get("task")
     if not isinstance(task, str) or not task.strip():
         raise HTTPException(status_code=400, detail="task is required")
-    if len(task) > MAX_TASK_CHARS:
-        raise HTTPException(status_code=400, detail=f"task is too long (max {MAX_TASK_CHARS} characters)")
-    try:
-        task.encode("utf-8")
-    except UnicodeEncodeError:
-        raise HTTPException(status_code=400, detail="task is not valid UTF-8 text") from None
-    return task
+    return _checked_text(task, "task")
+
+
+def _url_from_body(body: dict, field: str, default: str) -> str:
+    value = body.get(field)
+    if not value:
+        return default
+    return _checked_text(value, field, MAX_URL_CHARS)
+
+
+def _requested_tools(body: dict, default: list) -> list:
+    tools = body.get("requested_tools", default)
+    if not isinstance(tools, list):
+        raise HTTPException(status_code=400, detail="requested_tools must be a list")
+    for index, tool in enumerate(tools):
+        _checked_text(tool, f"requested_tools[{index}]")
+    return tools
 
 
 MAX_HUMAN_ACTOR = 200
 MAX_HUMAN_REASON = 1000
+# Characters that render as nothing but are not whitespace/control/format characters: Hangul fillers and the blank
+# Braille cell. (Combining marks are excluded by category, see _visible_text.)
+_BLANK_LOOKING = frozenset("\u3164\uffa0\u115f\u1160\u2800")
 
 
 def _visible_text(value, field: str, limit: int, required: bool) -> str:
-    """A human-attested text must be a real string with visible characters (zero-width / whitespace-only is empty)."""
+    """A human-attested text must be a real string with visible characters. Whitespace (Z*), control/format/private
+    characters (C*), combining marks (M*) and the blank-looking set above do not count: a name needs at least one
+    other character."""
     if value is None and not required:
         return ""
     if not isinstance(value, str):
@@ -658,7 +774,8 @@ def _visible_text(value, field: str, limit: int, required: bool) -> str:
         value.encode("utf-8")
     except UnicodeEncodeError:
         raise HTTPException(status_code=400, detail=f"{field} is not valid UTF-8 text") from None
-    visible = "".join(ch for ch in value if unicodedata.category(ch)[0] not in ("Z", "C"))
+    visible = "".join(ch for ch in value if unicodedata.category(ch)[0] not in ("Z", "C", "M")
+                      and ch not in _BLANK_LOOKING)
     if required and not visible:
         raise HTTPException(status_code=400, detail=f"{field} must contain visible characters")
     return value
@@ -683,9 +800,7 @@ def create_pipeline_run(body: dict, x_api_key: str | None = Header(default=None)
     """NINA -> OLLAMA -> EVIDENCE -> IGOR -> GATE -> REPLAY, anchored in the tenant evidence chain."""
     tenant_id = tenant_from_key(x_api_key)
     task_text = _task_from_body(body)
-    requested_tools = body.get("requested_tools", [])
-    if not isinstance(requested_tools, list):
-        raise HTTPException(status_code=400, detail="requested_tools must be a list")
+    requested_tools = _requested_tools(body, [])
     review = _review_from_body(body)
     try:
         return pipeline_bridge.run_pipeline(tenant_id, task_text, review, requested_tools=requested_tools)
@@ -775,6 +890,9 @@ def firewall_authorize(body: dict, x_api_key: str | None = Header(default=None))
 @app.post("/firewall/approve")
 def firewall_approve(body: dict, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
+    for field in ("request_id", "approver_id", "reason"):       # strings only: any other type is the firewall's 400
+        if isinstance(body.get(field), str):
+            _checked_text(body[field], field)
     return _firewall_call(firewall.approve, tenant_id, body.get("request_id"), body.get("approver_id"),
                           body.get("reason"), body.get("auth"))
 
@@ -955,12 +1073,14 @@ def get_evidence(record_id: str, x_api_key: str | None = Header(default=None)):
         )
         if record is None:
             raise HTTPException(status_code=404, detail="evidence not found")
-        return {
-            "id": record.id,
-            "tenant_id": record.tenant_id,
-            "seq": record.seq,
-            "record_type": record.record_type,
-            "payload": json.loads(record.payload_json),
-            "prev_hash": record.prev_hash,
-            "record_hash": record.record_hash,
-        }
+        head = {"id": record.id, "tenant_id": record.tenant_id, "seq": record.seq, "record_type": record.record_type}
+        tail = {"prev_hash": record.prev_hash, "record_hash": record.record_hash}
+        payload_json = record.payload_json
+    # A stored record must always be readable. The row is returned as a JSONResponse (no jsonable_encoder: it recurses
+    # in Python and failed on deeply nested payloads); a payload that is not strict JSON any more (rows written before
+    # NaN/Infinity were refused, or an unparsable one) comes back as its raw text instead of a 500.
+    try:
+        return JSONResponse({**head, "payload": json.loads(payload_json), **tail})
+    except (ValueError, RecursionError):
+        return JSONResponse({**head, "payload": None, "payload_error": "stored payload is not readable as strict JSON",
+                             "payload_json": payload_json, **tail})

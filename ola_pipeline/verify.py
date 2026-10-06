@@ -9,7 +9,9 @@ It re-derives everything from the artifacts on disk:
 
 Overall verdicts:
   VERIFIED    integrity ok, recorded gate state reproduced, LIVE runtime observed, gate_state == PASS
-  CONSISTENT  integrity ok, outcome reproduced, live runtime observed, but outcome is not PASS
+  CONSISTENT  integrity ok, outcome reproduced, live runtime observed, but outcome is not PASS, or the
+              outcome is PASS under a weak policy (min_quality_score below the default minimum): such a
+              PASS is capped here and the reason is reported under `caps` / warnings
   PARTIAL     integrity ok, but runtime is a declared TEST_DOUBLE or absent (no runtime proof)
   FAILED      any inconsistency (tampering, hash mismatch, broken chain, replay, ...)
 
@@ -35,18 +37,23 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 KNOWN_PROVIDERS = ("ollama-local", "ollama-cloud", "openai")
 LIVE_KINDS = ("OLLAMA_OBSERVED", "OPENAI_OBSERVED")
 ALL_KINDS = LIVE_KINDS + ("TEST_DOUBLE",)
 GENESIS = "0" * 64
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+# The default minimum judge score (Policy.min_quality_score defaults to the same value; a test pins both).
+DEFAULT_MIN_QUALITY_SCORE = 70
+JUDGE_DECISIONS = ("PASS", "REVIEW", "BLOCK")      # least to most severe
 
 REQUIRED_PROVENANCE = (
     "session_id", "run_id", "source_sha", "agent_id", "provider", "model",
@@ -104,6 +111,123 @@ def missing_provenance(env: Dict[str, Any]) -> List[str]:
     return miss
 
 
+# --------------------------------------------------------------------------- numbers
+def intlike(x: Any) -> Optional[int]:
+    """An int, or a float that is integral (92.0 -> 92). Never a bool, str, None, NaN, inf or 92.5."""
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, int):
+        return x
+    if isinstance(x, float) and x.is_integer():        # False for NaN and +-inf
+        return int(x)
+    return None
+
+
+def judge_score(x: Any) -> Optional[int]:
+    """A judge quality score as an int within 0..100, or None. Pipeline parser and verifier both use this."""
+    q = intlike(x)
+    return q if q is not None and 0 <= q <= 100 else None
+
+
+# --------------------------------------------------------------------------- the judge's reply
+class _DuplicateKey(ValueError):
+    pass
+
+
+def _no_duplicate_keys(pairs: Any) -> Dict[str, Any]:
+    """json.loads keeps the LAST of two equal keys; a judge answer with two `decision` values is ambiguous."""
+    out: Dict[str, Any] = {}
+    for k, v in pairs:
+        if k in out:
+            raise _DuplicateKey(k)
+        out[k] = v
+    return out
+
+
+def parse_judge(text: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """THE parser for a judge's raw reply. The pipeline uses it to build the evaluation and the verifier
+    uses the very same function to re-derive it, so the two can never disagree about what a reply says.
+    Returns (result, "") or (None, why)."""
+    try:
+        obj = json.loads(text, object_pairs_hook=_no_duplicate_keys)
+    except _DuplicateKey:
+        return None, "judge output has a duplicate key"
+    except (ValueError, RecursionError):
+        return None, "judge output is not valid JSON"
+    if not isinstance(obj, dict):
+        return None, "judge output is not a JSON object"
+    decision = obj.get("decision")
+    if not isinstance(decision, str) or decision not in JUDGE_DECISIONS:
+        return None, "invalid decision"
+    q = judge_score(obj.get("quality_score"))
+    if q is None:
+        return None, "quality_score must be an integer 0..100"
+    for k in ("findings", "required_corrections"):
+        v = obj.get(k)
+        if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+            return None, f"{k} must be a list of strings"
+    if not isinstance(obj.get("reason"), str):
+        return None, "reason must be a string"
+    res = {k: obj[k] for k in ("decision", "quality_score", "findings", "required_corrections", "reason")}
+    res["quality_score"] = q
+    return res, ""
+
+
+# --------------------------------------------------------------------------- "the same model"
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _norm_model(m: Any) -> str:
+    s = str(m or "").strip().lower()
+    return s[: -len(":latest")] if s.endswith(":latest") else s       # "llama3" and "llama3:latest" are one model
+
+
+def _norm_host(h: str) -> str:
+    h = h.rstrip(".")
+    if h == "localhost":
+        return "127.0.0.1"
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return h
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if ip in (ipaddress.ip_address("127.0.0.1"), ipaddress.ip_address("::1")):
+        return "127.0.0.1"
+    return str(ip)
+
+
+def _norm_endpoint(e: Any) -> Tuple[Any, ...]:
+    s = str(e or "").strip().lower()
+    try:
+        u = urlsplit(s)
+        host, port = _norm_host(u.hostname or ""), u.port
+    except ValueError:
+        return (s.rstrip("/"),)
+    return (u.scheme, host, port if port is not None else _DEFAULT_PORTS.get(u.scheme), u.path.rstrip("/"))
+
+
+def _norm_digest(d: Any) -> str:
+    s = d.strip().lower() if isinstance(d, str) else ""
+    return s[len("sha256:"):] if s.startswith("sha256:") else s
+
+
+def same_model(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    """ONE definition of "the same model" for the stage-time independence label and for the verifier's
+    recomputation. `a` and `b` carry provider / model / endpoint / model_digest (an envelope, or the same
+    keys built from a config). Same weights = equal non-empty digests; otherwise equal provider + model +
+    endpoint after normalising case and whitespace, the default ':latest' tag, loopback aliases
+    (localhost / 127.0.0.1 / ::1), default ports and a trailing slash."""
+    da, db = _norm_digest(a.get("model_digest")), _norm_digest(b.get("model_digest"))
+    if da and da == db:
+        return True
+
+    def key(e: Dict[str, Any]) -> Tuple[Any, ...]:
+        return (str(e.get("provider") or "").strip().lower(), _norm_model(e.get("model")),
+                _norm_endpoint(e.get("endpoint")))
+    return key(a) == key(b)
+
+
 # --------------------------------------------------------------------------- inspection
 @dataclass
 class Facts:
@@ -122,6 +246,10 @@ class Facts:
     last_canary: Optional[Dict[str, Any]] = None
     canary_eval: Optional[Dict[str, Any]] = None
     runtime_proof: Optional[Dict[str, Any]] = None
+    # judge / canary run_id -> the judge's RAW reply exactly as the pipeline parsed it (None if unreadable)
+    raw: Dict[str, Optional[str]] = field(default_factory=dict)
+    igor_kind: Optional[str] = None      # runtime-proof kind of the judge's generation for the last Nina run
+    canary_kind: Optional[str] = None    # ... and of the canary's generation
 
 
 def _read_artifact(sd: Path, h: Any, label: str, failures: List[str]) -> Optional[bytes]:
@@ -144,6 +272,50 @@ def _read_artifact(sd: Path, h: Any, label: str, failures: List[str]) -> Optiona
 def _sname(sd: Path) -> str:
     """Directory name even when the session was given as `.` or `..`."""
     return sd.name or sd.resolve().name
+
+
+def _read_json_artifact(sd: Path, h: Any) -> Any:
+    """Parsed JSON of a hash-checked artifact, or None (problems are reported by the caller's own read)."""
+    data = _read_artifact(sd, h, "", [])
+    if data is None:
+        return None
+    try:
+        return json.loads(data.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _read_reply(sd: Path, e: Dict[str, Any]) -> Optional[str]:
+    """The judge's raw reply (its stored output artifact) as the exact text the pipeline parsed."""
+    if e.get("execution_status") != "EXECUTED":
+        return None
+    data = _read_artifact(sd, e.get("output_hash"), "", [])
+    try:
+        return data.decode("utf-8") if data is not None else None
+    except UnicodeDecodeError:
+        return None
+
+
+def _proof_kind(sd: Path, e: Optional[Dict[str, Any]]) -> Optional[str]:
+    proof = _read_json_artifact(sd, e.get("runtime_proof_hash")) if e is not None else None
+    return proof.get("kind") if isinstance(proof, dict) else None
+
+
+def _correction_link(sd: Path, e: Dict[str, Any]) -> Tuple[Any, Any]:
+    """(run_id, evaluation_hash) of the verdict a Nina iteration says it corrects: from its refs, else (for
+    sessions written before the refs existed) from its hash-bound input artifact."""
+    refs = e.get("refs") if isinstance(e.get("refs"), dict) else {}
+    if "correction_of_run_id" in refs or "correction_evaluation_hash" in refs:
+        return refs.get("correction_of_run_id"), refs.get("correction_evaluation_hash")
+    obj = _read_json_artifact(sd, e.get("input_hash"))
+    return (obj.get("previous_run_id"), obj.get("evaluation_hash")) if isinstance(obj, dict) else (None, None)
+
+
+def _refs(e: Any) -> Dict[str, Any]:
+    return e.get("refs") if isinstance(e, dict) and isinstance(e.get("refs"), dict) else {}
+
+
+_IGOR_GATE = {"PASS": "PASS", "REVIEW": "REVIEW_REQUIRED", "BLOCK": "BLOCKED"}
 
 
 def inspect_session(session_dir: Any) -> Facts:
@@ -210,7 +382,7 @@ def inspect_session(session_dir: Any) -> Facts:
     for label, group in (("igor", facts.igor), ("igor-canary", facts.canary)):
         seen_targets: set = set()
         for g in group:
-            t = (g.get("refs") or {}).get("verifies_run_id") if isinstance(g.get("refs"), dict) else None
+            t = _refs(g).get("verifies_run_id") if isinstance(g.get("refs"), dict) else None
             key = t if isinstance(t, str) else repr(t)
             if key in seen_targets:
                 f_.append(f"more than one {label} verdict for nina run {key} (verdict shopping)")
@@ -243,7 +415,11 @@ def inspect_session(session_dir: Any) -> Facts:
                 ev = json.loads(raw.decode("utf-8"))
             except Exception:
                 f_.append(f"igor {g.get('run_id')}: evaluation artifact is not valid JSON")
+            if ev is not None and not isinstance(ev, dict):
+                f_.append(f"igor {g.get('run_id')}: evaluation artifact is not a JSON object")
+                ev = None
         facts.evals[g.get("run_id")] = ev
+        facts.raw[g.get("run_id")] = _read_reply(sd, g)
 
     for c in facts.canary:
         refs = c.get("refs") if isinstance(c.get("refs"), dict) else {}
@@ -263,7 +439,59 @@ def inspect_session(session_dir: Any) -> Facts:
                 cev = json.loads(raw.decode("utf-8"))
             except Exception:
                 f_.append(f"{label}: evaluation artifact is not valid JSON")
+            if cev is not None and not isinstance(cev, dict):
+                f_.append(f"{label}: evaluation artifact is not a JSON object")
+                cev = None
         facts.canary_evals[c.get("run_id")] = cev
+        facts.raw[c.get("run_id")] = _read_reply(sd, c)
+
+    # The gate_state each envelope recorded must be the one its own content derives (a label is not evidence).
+    for e in facts.nina:
+        want = "PENDING" if e.get("execution_status") == "EXECUTED" else "BLOCKED"
+        if e.get("gate_state") != want:
+            f_.append(f"nina run {e.get('run_id')}: envelope gate_state {e.get('gate_state')!r} != derived {want!r}")
+    for g in facts.igor:
+        rid = g.get("run_id")
+        if rid not in facts.evals:
+            continue                                   # linkage problem, already reported
+        ev = facts.evals[rid]
+        d = ev.get("decision") if ev is not None else None
+        want = _IGOR_GATE.get(d) if isinstance(d, str) else None
+        if ev is None and _refs(g).get("evaluation_hash") is None:
+            want = "BLOCKED"                           # the evaluation could not be persisted
+        if want is not None and g.get("gate_state") != want:
+            f_.append(f"igor run {rid}: envelope gate_state {g.get('gate_state')!r} != derived {want!r}")
+    for c in facts.canary:
+        rid = c.get("run_id")
+        if rid not in facts.canary_evals:
+            continue
+        cev = facts.canary_evals[rid]
+        if cev is None:
+            allowed = {"BLOCKED"} if _refs(c).get("evaluation_hash") is None else None
+        elif cev.get("judge_status") != "OK":
+            allowed = {"CANARY_UNAVAILABLE"}
+        elif cev.get("decision") != "PASS":
+            allowed = {"CANARY_REJECTED"}
+        else:
+            allowed = {"CANARY_ACCEPTED", "CANARY_REJECTED"}    # which one depends on the policy threshold
+        if allowed is not None and c.get("gate_state") not in allowed:
+            f_.append(f"igor-canary run {rid}: envelope gate_state {c.get('gate_state')!r} != derived "
+                      f"{' or '.join(sorted(allowed))!r}")
+
+    # Every iteration before the last was followed by a further one only because Igor judged it non-PASS,
+    # and the next iteration says which verdict it corrects.
+    verdict_of = {_refs(g)["verifies_run_id"]: g for g in facts.igor
+                  if isinstance(_refs(g).get("verifies_run_id"), str)}
+    for k in range(len(facts.nina) - 1):
+        cur, nxt = facts.nina[k], facts.nina[k + 1]
+        g = verdict_of.get(cur.get("run_id"))
+        ev = facts.evals.get(g.get("run_id")) if g else None
+        if g is None or ev is None or ev.get("decision") not in ("REVIEW", "BLOCK"):
+            f_.append(f"nina iteration {k + 1}: iteration {k + 2} was run without a non-PASS Igor verdict on it")
+        want_hash = _refs(g).get("evaluation_hash") if g else None
+        if want_hash is None or _correction_link(sd, nxt) != (cur.get("run_id"), want_hash):
+            f_.append(f"nina iteration {k + 2}: not recorded as a correction of iteration {k + 1} "
+                      "(correction refs missing or pointing elsewhere)")
 
     if facts.nina:
         facts.last_nina = facts.nina[-1]
@@ -274,15 +502,17 @@ def inspect_session(session_dir: Any) -> Facts:
             except Exception:
                 f_.append("runtime proof artifact is not valid JSON")
         for g in facts.igor:
-            if (g.get("refs") or {}).get("verifies_run_id") == facts.last_nina.get("run_id"):
+            if _refs(g).get("verifies_run_id") == facts.last_nina.get("run_id"):
                 facts.last_igor = g
         if facts.last_igor is not None:
             facts.igor_eval = facts.evals.get(facts.last_igor.get("run_id"))
         for c in facts.canary:
-            if (c.get("refs") or {}).get("verifies_run_id") == facts.last_nina.get("run_id"):
+            if _refs(c).get("verifies_run_id") == facts.last_nina.get("run_id"):
                 facts.last_canary = c
         if facts.last_canary is not None:
             facts.canary_eval = facts.canary_evals.get(facts.last_canary.get("run_id"))
+        facts.igor_kind = _proof_kind(sd, facts.last_igor)
+        facts.canary_kind = _proof_kind(sd, facts.last_canary)
     return facts
 
 
@@ -300,6 +530,7 @@ def derive_gate(facts: Facts, policy: Dict[str, Any], end_source_sha: Optional[s
     blocked: List[str] = []
     review: List[str] = []
     warnings: List[str] = []
+    caps: List[str] = []
     runtime_kind: Optional[str] = None
     nina_status = "NOT_EXECUTED"
     igor_status = "NOT_RUN"
@@ -307,11 +538,19 @@ def derive_gate(facts: Facts, policy: Dict[str, Any], end_source_sha: Optional[s
     if facts.failures:
         blocked.append("evidence inconsistent: " + "; ".join(facts.failures[:5]))
     max_it = policy.get("max_iterations")
-    if isinstance(max_it, int) and not isinstance(max_it, bool) and len(facts.nina) > max_it:
+    if not (isinstance(max_it, int) and not isinstance(max_it, bool) and 1 <= max_it <= 3):
+        blocked.append(f"policy max_iterations {max_it!r} is missing or not an integer within 1..3")
+    elif len(facts.nina) > max_it:
         blocked.append(f"{len(facts.nina)} Nina iterations exceed the policy maximum of {max_it}")
+    min_policy = policy.get("min_quality_score")
     if (policy.get("require_igor_calibration") is False or policy.get("require_model_digest") is False
-            or (isinstance(policy.get("min_quality_score"), int) and policy["min_quality_score"] < 70)):
+            or (isinstance(min_policy, int) and not isinstance(min_policy, bool)
+                and min_policy < DEFAULT_MIN_QUALITY_SCORE)):
         warnings.append("policy snapshot is weaker than the defaults (calibration, model digest or minimum score relaxed)")
+    if isinstance(min_policy, int) and not isinstance(min_policy, bool) and min_policy < DEFAULT_MIN_QUALITY_SCORE:
+        caps.append(f"weak policy: min_quality_score {min_policy} is below the default minimum of "
+                    f"{DEFAULT_MIN_QUALITY_SCORE}; the result is capped below VERIFIED")
+        warnings.append(caps[-1])
 
     n = facts.last_nina
     if n is None:
@@ -354,24 +593,32 @@ def derive_gate(facts: Facts, policy: Dict[str, Any], end_source_sha: Optional[s
             js = meta.get("judge_status")
             reason = ev.get("reason", "")
             # independence is recomputed from the envelopes, never taken from the stored label
-            same = (g.get("provider"), g.get("model"), g.get("endpoint")) == \
-                   (n.get("provider"), n.get("model"), n.get("endpoint"))
-            if same:
+            if same_model(g, n):
                 meta = dict(meta, independence="SAME_MODEL_SEPARATE_CONTEXT")
             if meta.get("independence") == "SAME_MODEL_SEPARATE_CONTEXT":
                 warnings.append("Igor uses the same provider/model as Nina (separate context, weak independence)")
-            if dec == "PASS":
-                q = ev.get("quality_score")
-                min_q = policy.get("min_quality_score", 70)
+            # an evaluation that claims a usable judge reply must be re-derivable from that reply
+            tie = (_judge_tie_problem(facts, g, ev)
+                   if dec in JUDGE_DECISIONS and js == "OK" and g.get("execution_status") == "EXECUTED" else None)
+            if tie:
+                blocked.append(tie)
+                igor_status = "UNAVAILABLE"
+            elif dec == "PASS":
+                q = judge_score(ev.get("quality_score"))
+                min_q = policy.get("min_quality_score", DEFAULT_MIN_QUALITY_SCORE)
                 crit_fail = [c for c in (ev.get("evidence_checks") or [])
                              if isinstance(c, dict) and c.get("status") == "FAIL" and c.get("critical")]
                 if js != "OK" or g.get("execution_status") != "EXECUTED":
                     blocked.append("Igor PASS without an executed judge")
                     igor_status = "UNAVAILABLE"
-                elif (not isinstance(q, int) or isinstance(q, bool) or not isinstance(min_q, int) or q < min_q
+                elif (q is None or not isinstance(min_q, int) or isinstance(min_q, bool)
+                      or not 0 <= min_q <= 100 or q < min_q
                       or ev.get("required_corrections") or crit_fail):
                     blocked.append("Igor PASS is inconsistent with its own evaluation "
                                    "(score below the policy minimum, open corrections, or a failed critical check)")
+                    igor_status = "UNAVAILABLE"
+                elif _generation_problem(facts.igor_kind, g, policy, "Igor judge"):
+                    blocked.append(_generation_problem(facts.igor_kind, g, policy, "Igor judge"))
                     igor_status = "UNAVAILABLE"
                 else:
                     igor_status = "VERIFIED"
@@ -399,6 +646,8 @@ def derive_gate(facts: Facts, policy: Dict[str, Any], end_source_sha: Optional[s
                 igor_status = "UNAVAILABLE"
 
     state = "BLOCKED" if blocked else ("REVIEW_REQUIRED" if review else "PASS")
+    if igor_status in ("VERIFIED", "NOT_INDEPENDENT", "UNCALIBRATED") and "TEST_DOUBLE" in (facts.igor_kind, facts.canary_kind):
+        runtime_kind = "TEST_DOUBLE"        # a declared double anywhere in the verifying chain: never LIVE evidence
     if igor_status == "VERIFIED" and runtime_kind == "TEST_DOUBLE":
         igor_status = "PASS_UNATTESTED"
     evidence_class = "LIVE_RUNTIME_OBSERVED" if runtime_kind in LIVE_KINDS else (
@@ -406,8 +655,48 @@ def derive_gate(facts: Facts, policy: Dict[str, Any], end_source_sha: Optional[s
     return {
         "state": state, "reasons": _dedupe(blocked + review), "warnings": _dedupe(warnings),
         "igor_status": igor_status, "nina_status": nina_status,
-        "runtime_kind": runtime_kind, "evidence_class": evidence_class,
+        "runtime_kind": runtime_kind, "evidence_class": evidence_class, "caps": _dedupe(caps),
     }
+
+
+def _generation_problem(kind: Optional[str], env: Dict[str, Any], policy: Dict[str, Any], who: str) -> Optional[str]:
+    """The runtime-proof / provenance rules Nina's generation must pass, applied to a judge or canary
+    generation: known provider and model, complete provenance, a recognised proof kind, and a declared
+    TEST_DOUBLE only where the policy explicitly allows it (the same opt-in Nina has)."""
+    if env.get("provider") not in KNOWN_PROVIDERS:
+        return f"{who}: unknown provider {env.get('provider')!r}"
+    if not env.get("model"):
+        return f"{who}: model unknown"
+    miss = missing_provenance(env)
+    if miss:
+        return f"{who}: provenance incomplete: " + ", ".join(miss)
+    if kind not in ALL_KINDS:
+        return f"{who}: runtime proof missing or of an unrecognised kind"
+    if kind == "TEST_DOUBLE" and not policy.get("allow_test_double"):
+        return f"{who}: ran on a declared TEST_DOUBLE, not accepted by policy"
+    return None
+
+
+def _judge_tie_problem(facts: Facts, g: Dict[str, Any], ev: Dict[str, Any]) -> Optional[str]:
+    """None unless the stored evaluation is DEFINITELY inconsistent with the judge's raw reply. The raw
+    reply is re-parsed with the pipeline's own `parse_judge`. The pipeline may only make the evaluation
+    stricter than the reply (PASS with open corrections or a low score -> REVIEW, failed critical check ->
+    BLOCK), so a stricter decision is never flagged; a less strict one, another score, or corrections that
+    do not start with the reply's own always are."""
+    raw = facts.raw.get(g.get("run_id"))
+    if raw is None:
+        return "Igor evaluation cannot be tied to the judge's raw reply (reply artifact missing or unreadable)"
+    judged, why = parse_judge(raw)
+    if judged is None:
+        return f"Igor evaluation claims a usable judge reply, but the recorded raw reply is not one ({why})"
+    if JUDGE_DECISIONS.index(ev["decision"]) < JUDGE_DECISIONS.index(judged["decision"]):
+        return "Igor evaluation is less strict than the judge's raw reply (decision mismatch)"
+    if judge_score(ev.get("quality_score")) != judged["quality_score"]:
+        return "Igor evaluation quality_score does not match the judge's raw reply"
+    corrections, said = ev.get("required_corrections"), judged["required_corrections"]
+    if not isinstance(corrections, list) or corrections[:len(said)] != said:
+        return "Igor evaluation required_corrections do not match the judge's raw reply"
+    return None
 
 
 def _canary_problem(facts: Facts, igor_env: Dict[str, Any], policy: Dict[str, Any]) -> Optional[str]:
@@ -418,14 +707,21 @@ def _canary_problem(facts: Facts, igor_env: Dict[str, Any], policy: Dict[str, An
         return "Igor calibration missing: no known-wrong canary was judged"
     if ev.get("task") != CANARY_TASK or ev.get("output") != CANARY_OUTPUT:
         return "Igor calibration invalid: canary content was altered"
-    if (c.get("provider"), c.get("model"), c.get("model_digest")) != \
-            (igor_env.get("provider"), igor_env.get("model"), igor_env.get("model_digest")):
+    ident = ("provider", "model", "model_digest", "endpoint")
+    if tuple(c.get(k) for k in ident) != tuple(igor_env.get(k) for k in ident):
         return "Igor calibration invalid: canary was judged by a different model than the verdict"
     if c.get("execution_status") != "EXECUTED" or ev.get("judge_status") != "OK":
         return "Igor calibration unavailable: canary judge did not return a usable verdict"
-    q = ev.get("quality_score")
+    gen = _generation_problem(facts.canary_kind, c, policy, "canary judge")
+    if gen:
+        return "Igor calibration invalid: " + gen
+    raw = facts.raw.get(c.get("run_id"))
+    said, why = parse_judge(raw) if raw is not None else (None, "reply artifact missing")
+    q = judge_score(ev.get("quality_score"))
+    if said is None or said["decision"] != ev.get("decision") or said["quality_score"] != q:
+        return "Igor calibration invalid: the canary evaluation does not match the judge's recorded raw reply"
     accepted = ev.get("decision") == "PASS" and (
-        not isinstance(q, int) or isinstance(q, bool) or q >= policy.get("min_quality_score", 70))
+        q is None or q >= policy.get("min_quality_score", DEFAULT_MIN_QUALITY_SCORE))
     if accepted:
         return ("Igor failed calibration: it PASSed a known-wrong answer (2 + 2 = 5); "
                 "its PASS is not evidence of correctness")
@@ -437,7 +733,7 @@ def summarize_runs(facts: Facts) -> List[Dict[str, Any]]:
     for e in facts.nina:
         igor = None
         for g in facts.igor:
-            if (g.get("refs") or {}).get("verifies_run_id") == e.get("run_id"):
+            if _refs(g).get("verifies_run_id") == e.get("run_id"):
                 igor = g
         ev = facts.evals.get(igor.get("run_id")) if igor else None
         out.append({
@@ -616,7 +912,7 @@ def verify_session(session_dir: Any, *, expected_source_sha: Optional[str] = Non
         sd = Path(session_dir)
         return {"overall": "FAILED", "outcome": None, "runtime_kind": None, "recomputed": None,
                 "failures": [f"verifier could not process the session: {type(e).__name__}"],
-                "warnings": [], "session": _sname(sd), "authenticity": "NONE", "attestation": None}
+                "warnings": [], "caps": [], "session": _sname(sd), "authenticity": "NONE", "attestation": None}
 
 
 def _verify_session(session_dir: Any, *, expected_source_sha: Optional[str] = None,
@@ -663,7 +959,7 @@ def _verify_session(session_dir: Any, *, expected_source_sha: Optional[str] = No
             ("evidence.input_hash", ev.get("input_hash"), n.get("input_hash") if n else None),
             ("evidence.output_hash", ev.get("output_hash"), n.get("output_hash") if n else None),
             ("evidence.evaluation_hash", ev.get("evaluation_hash"),
-             (g.get("refs") or {}).get("evaluation_hash") if g else None),
+             _refs(g).get("evaluation_hash") if g else None),
         ]
         for name, claimed, derived in checks:
             if claimed != derived:
@@ -701,17 +997,18 @@ def _verify_session(session_dir: Any, *, expected_source_sha: Optional[str] = No
 
     runtime_kind = recomputed["runtime_kind"] if recomputed else None
     outcome = final.get("gate_state") if final else None
+    caps = list(recomputed["caps"]) if recomputed else []
     if failures:
         overall = "FAILED"
     elif runtime_kind not in LIVE_KINDS:
         overall = "PARTIAL"
     elif outcome == "PASS":
-        overall = "VERIFIED"
+        overall = "CONSISTENT" if caps else "VERIFIED"      # a PASS under a weak policy is never the top tier
     else:
         overall = "CONSISTENT"
     return {
         "overall": overall, "outcome": outcome, "runtime_kind": runtime_kind,
-        "recomputed": recomputed, "failures": failures, "warnings": warnings,
+        "recomputed": recomputed, "failures": failures, "warnings": warnings, "caps": caps,
         "session": _sname(sd), "authenticity": att["authenticity"], "attestation": att["info"],
     }
 

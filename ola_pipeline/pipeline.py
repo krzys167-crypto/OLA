@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, Optional
 from . import attest, verify
 from .config import PipelineConfig
 from .hashing import sha256_hex
-from .errors import SigningError
+from .errors import ConfigError, SigningError
 from .igor import Igor
 from .nina import Nina
 from .redact import contains_secret
@@ -32,6 +32,12 @@ class Pipeline:
         self.source_fn = source_fn
 
     def run(self, task: str) -> PipelineRun:
+        if not isinstance(task, str):
+            raise ConfigError("task must be a string")
+        try:
+            task.encode("utf-8")           # a lone surrogate cannot be stored: refuse before any session exists
+        except UnicodeEncodeError:
+            raise ConfigError("task is not valid UTF-8 text (lone surrogate)") from None
         cfg = self.cfg
         anchor = self.source_fn()  # 1. freeze source BEFORE any run id exists
         session_id = "ses_" + secrets.token_hex(12)

@@ -37,7 +37,13 @@ _SAFE_BINOPS = {
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
     ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
 }
+# unary plus/minus are plain arithmetic; there is deliberately NO ast.Pow: 9**9**9 or 2**100000000 is a CPU/RAM bomb
+_SAFE_UNARY = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+NOT_COMPUTED = "task accepted:"          # every refusal below starts with this: nothing was computed
+_CALCULATE = re.compile("calculate", re.IGNORECASE | re.ASCII)
 
 
 def _digest(value):
@@ -45,35 +51,43 @@ def _digest(value):
 
 
 def _safe_expression(task):
-    lowered = task.lower()
-    if "calculate" in lowered:
-        expression = task[lowered.index("calculate") + len("calculate"):].strip()
-    else:
-        expression = task.strip()
+    # searched in the ORIGINAL string: an offset taken from task.lower() is wrong when lower() changes the length
+    # (U+0130 becomes two characters) and used to evaluate a different expression than the one written
+    found = _CALCULATE.search(task)
+    expression = task[found.end():].strip() if found else task.strip()
     expression = expression.replace("?", "").split(" and ")[0].strip()
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError:
-        return "task accepted: no executable arithmetic expression supplied"
+        return f"{NOT_COMPUTED} no executable arithmetic expression supplied"
     except (RecursionError, MemoryError, ValueError):       # absurdly nested input / NUL byte: refused, never a 500
-        return "task accepted: expression outside safe execution policy"
+        return f"{NOT_COMPUTED} expression outside safe execution policy"
 
     def evaluate(node):
-        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        # bool is an int subclass: `True + True` is not arithmetic the task asked for
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
             return node.value
         if isinstance(node, ast.BinOp) and type(node.op) in _SAFE_BINOPS:
             return _SAFE_BINOPS[type(node.op)](evaluate(node.left), evaluate(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in _SAFE_UNARY:
+            return _SAFE_UNARY[type(node.op)](evaluate(node.operand))
         raise ValueError("unsafe expression")
 
     try:
         value = evaluate(tree.body)
         if isinstance(value, float) and not math.isfinite(value):
-            return "task accepted: expression is not computable (non-finite result)"
+            return f"{NOT_COMPUTED} expression is not computable (non-finite result)"
         return str(value)
     except ArithmeticError:                                  # 1/0, float overflow: a refusal in the record, not a 500
-        return "task accepted: expression is not computable (division by zero or overflow)"
+        return f"{NOT_COMPUTED} expression is not computable (division by zero or overflow)"
     except (ValueError, RecursionError):
-        return "task accepted: expression outside safe execution policy"
+        return f"{NOT_COMPUTED} expression outside safe execution policy"
+
+
+def task_is_computable(task) -> bool:
+    """True when the deterministic runtime can compute the task (it holds a plain arithmetic expression). False means a
+    run of it ends as status UNKNOWN / computation NOT_PERFORMED. Pure, so /checkout can say so BEFORE the customer pays."""
+    return isinstance(task, str) and not _safe_expression(task).startswith(NOT_COMPUTED)
 
 
 def _run_react(task, previous_output):
@@ -233,19 +247,24 @@ def _execute_agent(agent, tenant_id, task, previous_output, execution):
     model = _invoke_llm(agent, task, context) or _invoke_local_deterministic_model(agent, task, context)
     if agent == "codeact":
         if model["invocation_type"] == "real_llm":
-            try:
-                proposal = json.loads(model["output"])
-            except (TypeError, json.JSONDecodeError) as exc:
-                raise RuntimeError("real LLM codeact output must be JSON") from exc
-            if not isinstance(proposal, dict) or proposal.get("action") != "safe_expression":
-                raise RuntimeError("real LLM codeact output must declare safe_expression")
-            proposed_result = str(proposal.get("result", ""))
             verified_result = _safe_expression(task)
-            if proposed_result != verified_result:
-                raise RuntimeError(
-                    f"LLM proposed result {proposed_result!r}, verified execution result is {verified_result!r}"
-                )
-            tool_output = proposed_result
+            if verified_result.startswith(NOT_COMPUTED):
+                # nothing computable to hold the model to: the refusal itself is the output and the run is
+                # NOT_PERFORMED (status UNKNOWN). Raising here made every free-text task a 500 and a paid webhook retry loop.
+                tool_output = verified_result
+            else:
+                try:
+                    proposal = json.loads(model["output"])
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError("real LLM codeact output must be JSON") from exc
+                if not isinstance(proposal, dict) or proposal.get("action") != "safe_expression":
+                    raise RuntimeError("real LLM codeact output must declare safe_expression")
+                proposed_result = str(proposal.get("result", ""))
+                if proposed_result != verified_result:
+                    raise RuntimeError(
+                        f"LLM proposed result {proposed_result!r}, verified execution result is {verified_result!r}"
+                    )
+                tool_output = proposed_result
         else:
             tool_output = _safe_expression(task)
         result = {"capability": "executed_safe_expression", "tool": "safe_expression", "tool_output": tool_output, "result": f"safe execution returned {tool_output}"}
@@ -336,7 +355,7 @@ def run_agent_task(tenant_id, task):
     final_result = execution[-1].get("final_result") if execution else None
     # "task accepted: ..." means nothing was computed. The evidence chain is intact (integrity), but the run did not
     # *do* anything, so it must not be reported as VERIFIED work.
-    computed = not (execution and str(execution[0].get("tool_output", "")).startswith("task accepted:"))
+    computed = not (execution and str(execution[0].get("tool_output", "")).startswith(NOT_COMPUTED))
     status = verification["status"]
     if status == "VERIFIED" and not computed:
         status = "UNKNOWN"

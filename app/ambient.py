@@ -153,7 +153,9 @@ def _record(tenant_id: str, rtype: str, surface: str, md: str, task: str, output
     payload = {"schema": SCHEMA, "mode": md, "surface": surface, "task_digest": _sha(task),
                "output_digest": _sha(output), **{k: j[k] for k in ("verdict", "detail", "quality_score", "judge")},
                **extra}
-    return pb.append_evidence(tenant_id, rtype, payload)
+    # same retry budget as app.main.append_record: with the default of 8 attempts a burst of concurrent requests of
+    # one tenant lost the sequence race (RuntimeError) - enforce then withheld a judge-accepted answer, shadow lost a verdict
+    return pb.append_evidence(tenant_id, rtype, payload, attempts=96)
 
 
 def _evaluate(task: str, output: str, produced_by: Optional[str]) -> tuple[Dict[str, Any], Any]:
