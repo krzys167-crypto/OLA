@@ -567,6 +567,9 @@ def test_the_workflow_asserts_each_stage_of_the_incident_not_just_that_it_ran():
     assert "docker-restart" in restart and "--min-restarts 1" in restart
     k6 = next(v for k, v in run.items() if k.startswith("k6 load"))
     assert "SSL_CERT_FILE" in k6 and "--network host" in k6 and "--insecure" not in k6 and "insecure-skip" not in k6.lower()
+    # a positive run proves nothing about verification unless a wrong host name is REFUSED under the same setup
+    assert "svc-other.range.test" in k6 and 'grep -q "x509"' in k6 and '"$neg" -eq 0' in k6 and "exit 1" in k6
+    assert k6.index("svc-other.range.test") > k6.index('k6 "$HOST"')
     assert all(steps[n].get("if") == "always()" for n in ("Upload evidence", "Stop", "Container logs and state"))
     offline = steps["Offline tests of the container range (PyYAML installed, no test may be skipped)"]
     assert offline["if"] == "always()" and "tests/test_cfr_containers.py" in offline["run"] and "skipped" in offline["run"]
@@ -578,6 +581,9 @@ def test_the_k6_script_no_longer_claims_to_be_unrun_and_verifies_tls():
     js = (DIR / "k6_load.js").read_text(encoding="utf-8")
     assert "NOT run" not in js and "cfr-docker.yml" in js and "SSL_CERT_FILE" in js
     assert "insecureSkipTLSVerify" not in js
+    # measured in CI: a `host:port` key mapped to an address WITHOUT a port made k6 dial 127.0.0.1:0 (750 of 750 refused)
+    hosts = re.search(r"^\s*hosts:\s*(\{.*\}),\s*$", js, re.M)
+    assert hosts and hosts.group(1).replace(" ", "") == "{[__ENV.HOST]:'127.0.0.1'}", hosts and hosts.group(1)
 
 
 # ------------------------------------------------------------------ ci_check.py

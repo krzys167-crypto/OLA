@@ -47,6 +47,7 @@ jobs:
           docker compose version
           openssl version
           python3 --version
+          echo "::notice title=cfr container tools::docker $(docker version --format '{{.Server.Version}}'), $(docker compose version --short 2>/dev/null || docker compose version), $(openssl version | cut -d' ' -f1-2)"
 
       - name: Issue a local run (stands in for the run the OLA server issues)
         run: |
@@ -64,6 +65,7 @@ jobs:
         run: |
           trap 'rc=$?; [ "$rc" -eq 0 ] || bash scripts/ci_annotate_failure.sh ci-out/docker-up.txt "cfr docker-up failed"' EXIT
           make --no-print-directory -C "$SCN" docker-up 2>&1 | tee ci-out/docker-up.txt
+          echo "::notice title=cfr container image::$(docker image inspect cfr-range:local --format '{{.Id}} {{.Size}} bytes')"
 
       - name: Start the independent witness (on the host, probes the published ports)
         run: make -s --no-print-directory -C "$SCN" witness-up
@@ -118,20 +120,34 @@ jobs:
           echo "$line"
           echo "::notice title=cfr container restart observed::$line"
 
-      - name: k6 load against the api service (certificate chain and host name verified)
+      - name: k6 load against the api service (certificate chain and host name verified), then a negative control
         run: |
           trap 'rc=$?; [ "$rc" -eq 0 ] || bash scripts/ci_annotate_failure.sh ci-out/k6-output.txt "cfr k6 load failed"' EXIT
           HOST="$(python3 "$SCN/cfr_range.py" --state "$SCN/state" host)"
           PORT="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['api'])" "$SCN/state/ports.json")"
           docker pull --quiet "$K6_IMAGE" >/dev/null
           echo "::notice title=k6 image digest::$(docker image inspect --format '{{index .RepoDigests 0}}' "$K6_IMAGE" || echo unknown)"
-          docker run --rm --network host \
-            -v "$PWD/$SCN/state/certs:/range-ca:ro" -v "$PWD/$SCN/k6_load.js:/scripts/k6_load.js:ro" \
-            -e SSL_CERT_FILE=/range-ca/ca.crt -e HOST="$HOST" -e PORT="$PORT" \
-            "$K6_IMAGE" run /scripts/k6_load.js 2>&1 | tee ci-out/k6-output.txt
+          k6() {   # k6 in a container, the range CA is the only trust anchor it is given
+            docker run --rm --network host \
+              -v "$PWD/$SCN/state/certs:/range-ca:ro" -v "$PWD/$SCN/k6_load.js:/scripts/k6_load.js:ro" \
+              -e SSL_CERT_FILE=/range-ca/ca.crt -e HOST="$1" -e PORT="$PORT" "$K6_IMAGE" run "${@:2}" /scripts/k6_load.js
+          }
+          k6 "$HOST" 2>&1 | tee ci-out/k6-output.txt
           grep -E "http_req_duration|http_req_failed|checks\.|iterations" ci-out/k6-output.txt | while IFS= read -r l; do
             echo "::notice title=cfr k6::${l}"
           done
+          # negative control: the SAME address under a host name the certificate does not carry must be REFUSED, otherwise the
+          # run above proves nothing about verification
+          set +e
+          k6 svc-other.range.test --vus 1 --duration 3s > ci-out/k6-negative.txt 2>&1
+          neg=$?
+          set -e
+          if [ "$neg" -eq 0 ] || ! grep -q "x509" ci-out/k6-negative.txt; then
+            echo "::error title=k6 negative control::a wrong host name was NOT rejected by k6 (exit $neg)"
+            tail -n 15 ci-out/k6-negative.txt
+            exit 1
+          fi
+          echo "::notice title=cfr k6 negative control::a certificate for another host name is refused by k6 (exit $neg, x509 error)"
 
       - name: Score preview from the container run's state (labelled preview, not the server's score)
         run: |

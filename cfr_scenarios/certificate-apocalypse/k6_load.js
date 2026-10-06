@@ -11,7 +11,9 @@ export const options = {
   vus: 5,
   duration: '30s',
   thresholds: { http_req_failed: ['rate<0.01'], http_req_duration: ['p(95)<250'] },
-  hosts: { [`${__ENV.HOST}:${__ENV.PORT}`]: '127.0.0.1' },
+  // host name only: k6 dials the port of the URL. A `host:port` key with an address WITHOUT a port made it dial 127.0.0.1:0
+  // (measured in CI: 750 of 750 requests refused).
+  hosts: { [__ENV.HOST]: '127.0.0.1' },
 };
 
 export default function () {
