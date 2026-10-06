@@ -1,6 +1,9 @@
-// Optional load for a k6 runner (NOT run in the repository's checks: k6 is not installed there).
-// The built-in monitor in range.py measures availability and p95 latency without k6; use this when you want
-// k6's own thresholds against a running range:  k6 run -e HOST=svc-xxxx.range.test -e PORT=8441 k6_load.js
+// Load against a RUNNING range (process or container mode), with k6's own thresholds. The range's monitor measures
+// availability and p95 latency by itself; this is the second, independent source of the same kind of number.
+// The certificate chain AND the host name are verified, so the range CA must be trusted by the k6 process:
+//   SSL_CERT_FILE=state/certs/ca.crt k6 run -e HOST=svc-xxxx.range.test -e PORT=18441 k6_load.js
+// (HOST: `make` prints it, `python3 cfr_range.py host`; PORT: state/ports.json). Run in CI by .github/workflows/cfr-docker.yml
+// through the grafana/k6 container with --network host.
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 

@@ -254,7 +254,7 @@
           "job": "offline"
         }
       ],
-      "limits": "The runner attests the metrics; a lying runner can sign false numbers. Weights are uncalibrated. Docker/k3d modes are not provided."
+      "limits": "The runner attests the metrics; a lying runner can sign false numbers. Weights are uncalibrated. Container mode (docker compose) is checked by CI (EC-16); k3d / Kubernetes is not provided."
     },
     {
       "id": "EC-12",
@@ -350,6 +350,33 @@
         }
       ],
       "limits": "The witness is only as independent as its deployment: in local-process mode participant and witness share a machine, so the manifest of the shipped scenario keeps `required` false. Restarts and blast radius stay runner-attested."
+    },
+    {
+      "id": "EC-16",
+      "statement": "CFR container range: services publish on loopback only, run read-only without capabilities and see the certificates read-only; a restart is observed from the boot token, not trusted from an announcement.",
+      "mechanism": [
+        {
+          "file": "cfr_scenarios/certificate-apocalypse/docker/compose.yaml"
+        },
+        {
+          "file": "cfr_scenarios/certificate-apocalypse/cfr_range.py",
+          "symbol": "_observed_restarts"
+        }
+      ],
+      "tests": [
+        "tests/test_cfr_containers.py::test_published_ports_are_loopback_only_and_match_what_init_writes_to_ports_json",
+        "tests/test_cfr_containers.py::test_every_role_runs_unprivileged_read_only_with_no_capabilities_and_no_host_access",
+        "tests/test_cfr_containers.py::test_the_services_mount_the_certificate_directory_read_only_and_nothing_else",
+        "tests/test_cfr_containers.py::test_a_changed_boot_token_is_a_restart_and_a_stable_one_is_not",
+        "tests/test_cfr_containers.py::test_a_participant_run_against_the_container_roles_break_fix_assert_metrics_and_a_hand_restart"
+      ],
+      "ci": [
+        {
+          "workflow": "cfr-docker.yml",
+          "job": "cfr-docker"
+        }
+      ],
+      "limits": "The tests check the files and run the roles as processes: that Docker accepts compose.yaml and the image builds is measured only by the cfr-docker job. The participant shares the machine with the range; a restart through the daemon is observed, a participant with root on the host is not contained. Not Kubernetes."
     }
   ]
 }

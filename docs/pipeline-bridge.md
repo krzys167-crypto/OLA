@@ -497,8 +497,38 @@ MTTR (start of the first 10 s window in which every service was healthy), collat
 services that failed after the injection, e.g. after replacing the CA), restarts and downtime. `score.py` signs the result as
 an enrolled `runner`; the server computes the score. Tested end to end (`tests/test_cfr_certificate_apocalypse.py`, 16 tests:
 fixed run -> PASS and ranked, unfixed -> FAIL and not ranked, CA replaced -> FAIL with blast radius 2, one test per variant).
-**Not covered:** Docker/k3d/compose (not provided), k6 (script provided, not run), calibration of the weights. Independent
-measurement exists as an opt-in second observer, see the next section; the shipped manifest does not require it.
+**Not covered:** k3d / Kubernetes (not provided), calibration of the weights. Container mode (docker compose) and k6 exist and
+are measured by the CI job `cfr-docker`, see the next section. Independent measurement exists as an opt-in second observer,
+see the section after it; the shipped manifest does not require it.
+
+### Certificate Apocalypse in containers (docker compose)
+`make docker-up` starts one image in six roles (`cfr_scenarios/certificate-apocalypse/docker/`): `init` (leaf certificates, ports,
+the `up` event), one TLS server per service (`api`, `billing`, `static`, `admin`) and a `monitor` that probes all four over the
+compose network with the same verified probe, interval and metric code as process mode. `break`, `fix`, `assert`, `metrics`,
+`score` and the witness are the same targets and act on the shared `state/` on the host.
+* **Added over process mode:** one process and one network namespace per service; the monitor is a container of its own, not
+  the participant's shell; services run as the host uid:gid, `read_only`, `cap_drop: ALL`, `no-new-privileges`, with memory and
+  pid limits, and see only the certificate DIRECTORY, read-only (a directory, so that `make fix` replacing `server.pem` by rename
+  is seen without a restart). Ports are published on `127.0.0.1` only.
+* **Restarts are observed, not trusted.** Every server instance answers `/health` with a fresh `boot=` token and the monitor
+  records it. `restarts` = the larger of the announced `restart` events and the most often any ONE service changed its token.
+  A hand `docker restart` costs the same as `make docker-restart`; restarting api and billing once each is one restart (as
+  process mode restarts all four at once and counts one). An announced restart that is also observed is counted once.
+* **What CI asserts (job `cfr-docker`, on every pull request that touches `cfr_scenarios/`):** the baseline passes before any
+  fault; after the fault the expiry assertion and the stability window fail while handshake, chain, SAN and the CA hold;
+  after the fix all seven assertions (hidden ones too) pass over the full 10 s window; the monitor reports a recovery with
+  blast radius 0 and 0 restarts and an availability below 1 (a fault that cost nothing is not a measurement); the independent
+  witness on the host agrees within the manifest tolerance; a container restarted by hand shows up as `restarts >= 1`; k6 runs
+  its own thresholds against `api` with the chain AND the host name verified (`SSL_CERT_FILE` = the range CA, no skip-verify).
+  The numbers are annotations of that check (`cfr container range metrics`, `cfr k6`, ...); this file does not repeat them.
+* **Offline tests** (`tests/test_cfr_containers.py`, control EC-16) run the roles as processes and check the structure of
+  `compose.yaml`, the `Dockerfile`, the `Makefile`, the workflow and `ci_check.py`. They cannot show that Docker accepts the
+  compose file or that the image builds; only the CI job measures that.
+* **Not proven:** Kubernetes (k3d is not provided); the k6 image is pinned by tag, the digest the runner pulled is published as
+  a notice and is not yet pinned; the base image is the repository's `debian:13-slim` (tag, as the main Dockerfile); the
+  participant shares the machine with the range, so a participant with Docker access can read the CA key in `state/certs` (the
+  reference fix needs it) or stop the monitor: isolating the measurement from the participant is the operator's job, the witness
+  helps only when it runs somewhere the participant cannot reach.
 
 ### Independent measurement: the witness (`POST /cfr/witness`)
 The runner attests its own numbers. A **witness** is a second principal (role `witness`, its own Ed25519 key; one key is one

@@ -1,22 +1,36 @@
-"""Certificate Apocalypse range: four local TLS services, a monitor, and the metric computation.
+"""Certificate Apocalypse range: four TLS services, a monitor, and the metric computation.
 
-Services (all on 127.0.0.1, ports chosen at start and written to state/ports.json)
+Two ways to run the SAME services (one code path for the TLS server, the probe and the metrics):
+
+  process mode (`up` / `serve`)    four servers on 127.0.0.1 in ONE process, ports chosen at start. Needs nothing but
+                                   python3, openssl and curl.
+  container mode (`init`, `service`, `monitor`)   one container per role under docker/compose.yaml: `init` makes the
+                                   certificates and the start-of-run state, `api` `billing` `static` `admin` are one
+                                   TLS server each, `monitor` probes them over the compose network. The ports are
+                                   published on 127.0.0.1 only; break / fix / assert / metrics stay on the host.
+
+Services
     api, billing   share state/certs/server.pem  -> the fault hits them
     static, admin  have their own certificates   -> collateral damage if the participant breaks the CA
 
 The certificate is re-read on EVERY handshake, so replacing server.pem fixes the services without a restart (a
-restart is possible and costs a penalty: it is visible as downtime and counted).
+restart is possible and costs a penalty). A restart is OBSERVED, not only announced: every server instance answers
+/health with a fresh `boot=` token, the monitor records it, and a changed token is a restart whoever caused it.
 
-state/ files: ports.json, timeline.jsonl (one line per probe round), events.jsonl, run.json, range.pid
-HONEST LIMITS: this is a process-level range (no containers/k3d); the participant and the range share a machine, so
-isolation of the measurement from the participant is the runner's job, not something this file provides.
+state/ files: ports.json, timeline.jsonl (one line per probe round), events.jsonl, run.json, ready; range.pid (process mode)
+HONEST LIMITS: the participant and the range share a machine. Container mode separates the services from each other and
+the monitor from the participant's shell, it does not make the host trustworthy (the independent witness is for that).
+k3d / Kubernetes is not provided.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
+import re
+import secrets
 import signal
 import socket
 import ssl
@@ -66,7 +80,7 @@ def read_lines(path: Path) -> List[Dict[str, Any]]:
 # ------------------------------------------------------------------ the TLS services
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):                                              # noqa: N802
-        body = f"ok {self.server.svc_name}\n".encode()
+        body = f"ok {self.server.svc_name} boot={self.server.boot}\n".encode()
         code = 200 if self.path == "/health" else 404
         self.send_response(code)
         self.send_header("Content-Length", str(len(body)))
@@ -84,6 +98,7 @@ class TlsServer(ThreadingHTTPServer):
     def __init__(self, addr, svc_name: str, pem: Path):
         super().__init__(addr, _Handler)
         self.svc_name, self.pem = svc_name, pem
+        self.boot = secrets.token_hex(4)                          # new for every server instance: a restart changes it
 
     def finish_request(self, request, client_address):
         try:
@@ -102,12 +117,16 @@ class TlsServer(ThreadingHTTPServer):
         pass
 
 
-def probe(port: int, host: str, ca: Path, timeout: float = 2.0) -> Dict[str, Any]:
-    """One verified request. Hostname and chain are checked against `host` and the range CA."""
+_BOOT = re.compile(rb"\bboot=([0-9a-f]{1,32})\b")
+
+
+def probe(port: int, host: str, ca: Path, timeout: float = 2.0, addr: str = "127.0.0.1") -> Dict[str, Any]:
+    """One verified request. Hostname and chain are checked against `host` and the range CA, whatever `addr` is
+    (a container name on the compose network, 127.0.0.1 for a published port)."""
     t0 = time.monotonic()
     try:
         ctx = ssl.create_default_context(cafile=str(ca))
-        with socket.create_connection(("127.0.0.1", port), timeout=timeout) as raw:
+        with socket.create_connection((addr, port), timeout=timeout) as raw:
             with ctx.wrap_socket(raw, server_hostname=host) as tls:
                 tls.sendall(f"GET /health HTTP/1.0\r\nHost: {host}\r\n\r\n".encode())
                 data = b""
@@ -117,7 +136,11 @@ def probe(port: int, host: str, ca: Path, timeout: float = 2.0) -> Dict[str, Any
                         break
                     data += chunk
         ok = data.startswith(b"HTTP/1.0 200") or data.startswith(b"HTTP/1.1 200")
-        return {"ok": ok, "ms": round((time.monotonic() - t0) * 1000, 2), "err": "" if ok else "bad status"}
+        out: Dict[str, Any] = {"ok": ok, "ms": round((time.monotonic() - t0) * 1000, 2), "err": "" if ok else "bad status"}
+        boot = _BOOT.search(data.split(b"\r\n\r\n", 1)[-1]) if ok else None
+        if boot:
+            out["boot"] = boot.group(1).decode()
+        return out
     except (ssl.SSLError, OSError) as exc:
         return {"ok": False, "ms": round((time.monotonic() - t0) * 1000, 2), "err": type(exc).__name__}
 
@@ -190,6 +213,21 @@ def _p95(values: List[float]) -> float:
     return v[min(len(v) - 1, max(0, math.ceil(0.95 * len(v)) - 1))]
 
 
+def _observed_restarts(rounds: List[Dict[str, Any]]) -> int:
+    """The largest number of boot-token changes any single service showed between two successful probes."""
+    last: Dict[str, str] = {}
+    changes: Dict[str, int] = {}
+    for r in rounds:
+        for svc, p in r["results"].items():
+            boot = p.get("boot") if isinstance(p, dict) else None
+            if not isinstance(boot, str) or not boot:
+                continue
+            if svc in last and last[svc] != boot:
+                changes[svc] = changes.get(svc, 0) + 1
+            last[svc] = boot
+    return max(changes.values(), default=0)
+
+
 def compute_metrics(timeline: List[Dict[str, Any]], events: List[Dict[str, Any]], *, stable_s: float = STABLE_S
                     ) -> Optional[Dict[str, Any]]:
     """Metrics from what was OBSERVED. None when there is nothing to measure or no fault was injected.
@@ -200,7 +238,8 @@ def compute_metrics(timeline: List[Dict[str, Any]], events: List[Dict[str, Any]]
                     was healthy in every probe round; None = never recovered (or the stable window never completed)
     blast_radius    UNAFFECTED services (static, admin) that failed at least once after the injection: a fix that
                     breaks something else (e.g. regenerating the CA) is paid for here
-    restarts        number of service restarts
+    restarts        the most often any ONE service was restarted: the larger of the announced `restart` events and the
+                    boot-token changes the probes observed (a restart by hand counts, announcing it is not required)
     downtime_s      time during which at least one service failed (rounds are integrated up to the next round)
     """
     inj = [e["t"] for e in events if e.get("event") == "fault_injected"]
@@ -232,7 +271,7 @@ def compute_metrics(timeline: List[Dict[str, Any]], events: List[Dict[str, Any]]
             i = j + 1
         else:
             i += 1
-    restarts = sum(1 for e in events if e.get("event") == "restart")
+    restarts = max(sum(1 for e in events if e.get("event") == "restart"), _observed_restarts(rounds))
     return {"availability": round(availability, 6), "latency_p95_ms": round(latency, 3),
             "mttr_s": None if mttr is None else round(mttr, 3), "blast_radius": len(collateral),
             "restarts": restarts, "downtime_s": round(downtime, 3)}
@@ -320,6 +359,126 @@ def cmd_metrics(a) -> int:
     return 0 if m else 3
 
 
+# ------------------------------------------------------------------ container roles (docker/compose.yaml)
+# The same server, probe and metrics as process mode; what changes is who starts them and how they reach each other.
+def _port(text: str) -> int:
+    n = int(text)
+    if not 1 <= n <= 65535:
+        raise ValueError(f"port out of range: {text}")
+    return n
+
+
+def _target(text: str) -> Tuple[str, int]:
+    addr, sep, port = text.rpartition(":")
+    if not sep or not addr:
+        raise ValueError(f"expected <address>:<port>, got {text!r}")
+    return addr, _port(port)
+
+
+def parse_map(text: str, what: str, parse) -> Dict[str, Any]:
+    """`api=18441,billing=18442,static=18443,admin=18444` -> {name: parse(value)}; exactly the four services, once each."""
+    out: Dict[str, Any] = {}
+    for item in (x.strip() for x in text.split(",")):
+        if not item:
+            continue
+        name, sep, value = item.partition("=")
+        if not sep or name not in SERVICES or name in out:
+            raise ValueError(f"{what}: bad or repeated entry {item!r}")
+        out[name] = parse(value)
+    if set(out) != set(SERVICES):
+        raise ValueError(f"{what} must name exactly: {', '.join(SERVICES)}")
+    return out
+
+
+def cmd_init(a) -> int:
+    """Role `init`: runs once per `docker compose up`. Leaves the state a fresh process-mode `up` leaves: new leaf
+    certificates (the CA is kept when it exists: it is never regenerated), ports.json, the `up` event; no timeline."""
+    try:
+        ports = parse_map(a.ports, "--ports", _port)
+    except ValueError as exc:
+        print(f"init: {exc}", file=sys.stderr)
+        return 2
+    st = _state(a)
+    st.mkdir(parents=True, exist_ok=True)
+    for f in ("timeline.jsonl", "events.jsonl", "ready", "ports.json"):
+        (st / f).unlink(missing_ok=True)
+    rg = Range(st, a.host)
+    rg.certs.mkdir(parents=True, exist_ok=True)
+    try:
+        for name in ("server", "static", "admin"):
+            rg._gen(name)
+    except (subprocess.CalledProcessError, OSError) as exc:
+        detail = getattr(exc, "stderr", b"") or b""
+        print(f"init: certificate generation failed: {exc} {detail.decode(errors='replace')[:400]}", file=sys.stderr)
+        return 1
+    (st / "ports.json").write_text(json.dumps(ports))
+    ca = rg.certs / "ca.crt"
+    _append(st / "events.jsonl", {"t": now(), "event": "up", "host": a.host,
+                                  "ca_sha256": hashlib.sha256(ca.read_bytes()).hexdigest() if ca.is_file() else None})
+    print(f"init: host={a.host} ports={json.dumps(ports)}", flush=True)
+    return 0
+
+
+def cmd_service(a) -> int:
+    """Role `api` | `billing` | `static` | `admin`: one TLS server, in the foreground, until SIGTERM."""
+    if a.name not in SERVICES:
+        print(f"service: unknown service {a.name!r}", file=sys.stderr)
+        return 2
+    srv = TlsServer((a.bind, a.port), a.name, Path(a.state) / "certs" / PEM[a.name])
+
+    def _stop(*_):                                                # shutdown() must not run in the serving thread
+        threading.Thread(target=srv.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    print(f"service {a.name} boot={srv.boot} on {a.bind}:{a.port}", flush=True)
+    srv.serve_forever(poll_interval=0.1)
+    srv.server_close()
+    return 0
+
+
+def cmd_monitor(a) -> int:
+    """Role `monitor`: probes every service, verified (chain + hostname), every INTERVAL_S, and appends a timeline round.
+    `ready` appears after the first round in which all four answered."""
+    try:
+        targets = parse_map(a.targets, "--targets", _target)
+    except ValueError as exc:
+        print(f"monitor: {exc}", file=sys.stderr)
+        return 2
+    st = _state(a)
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    ca = st / "certs" / "ca.crt"
+    print(f"monitor: host={a.host} targets={a.targets}", flush=True)
+    ready = False
+    while not stop.is_set():
+        t = now()
+        res = {svc: probe(port, a.host, ca, addr=addr) for svc, (addr, port) in targets.items()}
+        _append(st / "timeline.jsonl", {"t": t, "results": res})
+        if not ready and all(p["ok"] for p in res.values()):
+            (st / "ready").write_text("1")
+            ready = True
+        stop.wait(INTERVAL_S)
+    _append(st / "events.jsonl", {"t": now(), "event": "down"})
+    return 0
+
+
+def cmd_wait(a) -> int:
+    """Host side: block until the range is observed healthy (ready + the last three rounds all healthy), or time out."""
+    st = _state(a)
+    deadline = time.monotonic() + a.timeout
+    while time.monotonic() < deadline:
+        rounds = [r for r in read_lines(st / "timeline.jsonl") if isinstance(r.get("results"), dict)]
+        healthy = len(rounds) >= 3 and all(p.get("ok") for r in rounds[-3:] for p in r["results"].values())
+        if (st / "ready").exists() and (st / "ports.json").is_file() and healthy:
+            print(f"range up: ports={(st / 'ports.json').read_text()}")
+            return 0
+        time.sleep(0.5)
+    print("range did not become healthy in time; see: docker compose logs", file=sys.stderr)
+    return 1
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="cfr_range.py")
     p.add_argument("--state", default="state")
@@ -331,6 +490,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     sub.add_parser("down").set_defaults(fn=cmd_down)
     sub.add_parser("host").set_defaults(fn=cmd_host)
     m = sub.add_parser("metrics"); m.add_argument("--stable-s", type=float, default=STABLE_S); m.set_defaults(fn=cmd_metrics)
+    i = sub.add_parser("init"); i.add_argument("--host", required=True); i.add_argument("--ports", required=True)
+    i.set_defaults(fn=cmd_init)
+    v = sub.add_parser("service"); v.add_argument("--name", required=True); v.add_argument("--bind", default="0.0.0.0")
+    v.add_argument("--port", type=int, default=8443); v.set_defaults(fn=cmd_service)
+    o = sub.add_parser("monitor"); o.add_argument("--host", required=True); o.add_argument("--targets", required=True)
+    o.set_defaults(fn=cmd_monitor)
+    w = sub.add_parser("wait"); w.add_argument("--timeout", type=float, default=120.0); w.set_defaults(fn=cmd_wait)
     a = p.parse_args(argv)
     return a.fn(a)
 

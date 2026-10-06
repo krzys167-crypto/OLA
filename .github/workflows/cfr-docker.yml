@@ -1,0 +1,178 @@
+name: CFR range in containers
+
+# Certificate Apocalypse with one container per service (docker compose), measured: baseline, fault, fix, metrics, a restart
+# observed by token, an independent witness on the host, k6 load with verified TLS. Not Kubernetes: k3d is not run here.
+
+on:
+  pull_request:
+    paths:
+      - "cfr_scenarios/**"
+      - ".github/workflows/cfr-docker.yml"
+      - "scripts/ci_annotate_failure.sh"
+      - "tests/test_cfr_*.py"
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+  SCN: cfr_scenarios/certificate-apocalypse
+  # pinned by tag; the digest the runner actually pulled is published as a notice below (a digest pin is a follow-up)
+  K6_IMAGE: grafana/k6:1.0.0
+
+jobs:
+  cfr-docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          ref: ${{ env.SOURCE_SHA }}
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install the repository requirements (and PyYAML for the structure tests)
+        run: python -m pip install --quiet -r requirements.txt PyYAML==6.0.2
+
+      - name: Tool versions
+        run: |
+          mkdir -p ci-out
+          docker version --format 'docker server {{.Server.Version}}'
+          docker compose version
+          openssl version
+          python3 --version
+
+      - name: Issue a local run (stands in for the run the OLA server issues)
+        run: |
+          mkdir -p "$SCN/state"
+          python3 - <<'PY'
+          import hashlib, json, os, secrets
+          scn = os.environ["SCN"]
+          run = {"run_id": f"ci-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}",
+                 "seed": secrets.token_hex(16), "variant": "expired",
+                 "manifest_sha256": hashlib.sha256(open(f"{scn}/manifest.json", "rb").read()).hexdigest()}
+          json.dump(run, open(f"{scn}/state/run.json", "w"))
+          PY
+
+      - name: Build the image and start the range (init, api, billing, static, admin, monitor)
+        run: |
+          trap 'rc=$?; [ "$rc" -eq 0 ] || bash scripts/ci_annotate_failure.sh ci-out/docker-up.txt "cfr docker-up failed"' EXIT
+          make --no-print-directory -C "$SCN" docker-up 2>&1 | tee ci-out/docker-up.txt
+
+      - name: Start the independent witness (on the host, probes the published ports)
+        run: make -s --no-print-directory -C "$SCN" witness-up
+
+      - name: Baseline - every assertion passes before any fault
+        run: |
+          make -s --no-print-directory -C "$SCN" assert STABLE_S=3 > ci-out/assert-baseline.jsonl
+          python3 "$SCN/docker/ci_check.py" all-pass ci-out/assert-baseline.jsonl "$SCN/manifest.json"
+
+      - name: Inject the fault (variant expired)
+        run: |
+          make -s --no-print-directory -C "$SCN" break
+          sleep 4
+
+      - name: The fault is visible - the expiry assertion and the stability window fail, the CA and the other checks hold
+        run: |
+          make -s --no-print-directory -C "$SCN" assert STABLE_S=3 > ci-out/assert-broken.jsonl
+          python3 "$SCN/docker/ci_check.py" assertions ci-out/assert-broken.jsonl \
+            x509_not_expired=fail health_stable_10s=fail tls_handshake_ok=pass x509_chain_ok=pass \
+            san_matches_host=pass san_exact=pass ca_untouched=pass
+
+      - name: Fix without touching the CA - every assertion, visible and hidden, passes (10 s stability window)
+        run: |
+          make -s --no-print-directory -C "$SCN" fix
+          sleep 2
+          make -s --no-print-directory -C "$SCN" assert > ci-out/assert-fixed.jsonl
+          python3 "$SCN/docker/ci_check.py" all-pass ci-out/assert-fixed.jsonl "$SCN/manifest.json"
+
+      - name: Metrics of the incident (measured by the monitor container)
+        run: |
+          sleep 3
+          make -s --no-print-directory -C "$SCN" metrics > ci-out/metrics.json
+          cat ci-out/metrics.json
+          line="$(python3 "$SCN/docker/ci_check.py" metrics ci-out/metrics.json --recovered --blast-radius 0 --restarts 0 --max-availability 0.999)"
+          echo "$line"
+          echo "::notice title=cfr container range metrics::$line"
+
+      - name: The independent witness (host process, own timeline) agrees within the manifest tolerance
+        run: |
+          make -s --no-print-directory -C "$SCN" witness-observe > ci-out/witness-observation.json
+          line="$(python3 "$SCN/docker/ci_check.py" witness ci-out/metrics.json ci-out/witness-observation.json "$SCN/manifest.json")"
+          echo "$line"
+          echo "::notice title=cfr container witness::$line"
+          make -s --no-print-directory -C "$SCN" witness-down
+
+      - name: A restart is OBSERVED (container restarted by hand, not announced anywhere)
+        run: |
+          make --no-print-directory -C "$SCN" docker-restart
+          sleep 6
+          make -s --no-print-directory -C "$SCN" metrics > ci-out/metrics-after-restart.json
+          line="$(python3 "$SCN/docker/ci_check.py" metrics ci-out/metrics-after-restart.json --min-restarts 1)"
+          echo "$line"
+          echo "::notice title=cfr container restart observed::$line"
+
+      - name: k6 load against the api service (certificate chain and host name verified)
+        run: |
+          trap 'rc=$?; [ "$rc" -eq 0 ] || bash scripts/ci_annotate_failure.sh ci-out/k6-output.txt "cfr k6 load failed"' EXIT
+          HOST="$(python3 "$SCN/cfr_range.py" --state "$SCN/state" host)"
+          PORT="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['api'])" "$SCN/state/ports.json")"
+          docker pull --quiet "$K6_IMAGE" >/dev/null
+          echo "::notice title=k6 image digest::$(docker image inspect --format '{{index .RepoDigests 0}}' "$K6_IMAGE" || echo unknown)"
+          docker run --rm --network host \
+            -v "$PWD/$SCN/state/certs:/range-ca:ro" -v "$PWD/$SCN/k6_load.js:/scripts/k6_load.js:ro" \
+            -e SSL_CERT_FILE=/range-ca/ca.crt -e HOST="$HOST" -e PORT="$PORT" \
+            "$K6_IMAGE" run /scripts/k6_load.js 2>&1 | tee ci-out/k6-output.txt
+          grep -E "http_req_duration|http_req_failed|checks\.|iterations" ci-out/k6-output.txt | while IFS= read -r l; do
+            echo "::notice title=cfr k6::${l}"
+          done
+
+      - name: Score preview from the container run's state (labelled preview, not the server's score)
+        run: |
+          make -s --no-print-directory -C "$SCN" score | tee ci-out/score-preview.json
+          python3 - <<'PY'
+          import json
+          out = json.load(open("ci-out/score-preview.json"))
+          assert out.get("preview"), out
+          print("::notice title=cfr container score preview::" + json.dumps(out["preview"], sort_keys=True))
+          PY
+
+      - name: Offline tests of the container range (PyYAML installed, no test may be skipped)
+        if: always()
+        run: |
+          python -m pytest tests/test_cfr_containers.py -q -rs -p no:cacheprovider 2>&1 | tee ci-out/pytest-containers.txt
+          if grep -qi "skipped" ci-out/pytest-containers.txt; then
+            echo "::error title=container tests skipped::a test of the container range was skipped"
+            exit 1
+          fi
+
+      - name: Container logs and state
+        if: always()
+        run: |
+          mkdir -p ci-out
+          make -s --no-print-directory -C "$SCN" docker-logs > ci-out/compose-logs.txt 2>&1 || true
+          cp "$SCN/state/events.jsonl" "$SCN/state/ports.json" "$SCN/state/run.json" ci-out/ 2>/dev/null || true
+          tail -n 200 "$SCN/state/timeline.jsonl" > ci-out/timeline-tail.jsonl 2>/dev/null || true
+
+      - name: Annotate a failure with the container logs
+        if: failure()
+        run: bash scripts/ci_annotate_failure.sh ci-out/compose-logs.txt "cfr container logs (tail)"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cfr-docker-evidence-${{ env.SOURCE_SHA }}
+          path: ci-out
+
+      - name: Stop
+        if: always()
+        run: |
+          make -s --no-print-directory -C "$SCN" witness-down || true
+          make -s --no-print-directory -C "$SCN" docker-down || true
