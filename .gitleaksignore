@@ -1,0 +1,9 @@
+# Gitleaks findings reviewed as synthetic test fixtures (not credentials).
+# Both literals live inside tests that assert the OLA secret-redaction / DLP
+# layer catches and strips them; neither is used against any real service.
+# Fingerprint format: <commit>:<file>:<rule>:<line>
+#
+# jwt-shaped sample in the secret-pattern fixture table (redaction test)
+23d0aa45cb4593c332617ec839630f9d86f89780:tests/pipeline_suite/test_review6_lib.py:jwt:468
+# AWS-key-shaped sample used by the egress firewall / DLP tests
+fe3c43bcbc45a5d06b97400703c10eeb871a9710:tests/test_firewall.py:aws-access-token:21

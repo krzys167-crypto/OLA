@@ -109,10 +109,10 @@ jobs:
 
           dotnet publish OLA-Workstation-Installer.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true
 
-          Copy-Item bin/Release/net8.0/win-x64/publish/OLA-Workstation-Installer-v2.exe ../../OLA-Workstation-Installer-v2.exe
-          Get-FileHash ../../OLA-Workstation-Installer-v2.exe -Algorithm SHA256 |
+          Copy-Item bin/Release/net8.0/win-x64/publish/OLA-Workstation-Installer-v2.exe ../OLA-Workstation-Installer-v2.exe
+          Get-FileHash ../OLA-Workstation-Installer-v2.exe -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash)  OLA-Workstation-Installer-v2.exe" } |
-            Set-Content ../../OLA-Workstation-Installer-v2.sha256 -Encoding ASCII
+            Set-Content ../OLA-Workstation-Installer-v2.sha256 -Encoding ASCII
 
       - name: Verify installer artifact
         shell: pwsh
