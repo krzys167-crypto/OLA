@@ -1,0 +1,8 @@
+{
+  "mode": "draft",
+  "approved_sends_required": 5,
+  "daily_cap": 5,
+  "send_window_brussels": ["09:00", "17:00"],
+  "languages": ["en", "fr"],
+  "auto_replies": {"opt_out_confirmation": true, "everything_else": "draft_only"}
+}
