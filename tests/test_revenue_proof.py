@@ -148,7 +148,7 @@ def test_only_an_explicit_true_livemode_counts_as_a_live_payment(env, live, mode
 
 @pytest.mark.parametrize("event_live, session_live, recorded", [
     (True, True, True), (False, False, False),
-    (True, OMIT, True), (OMIT, True, True), (False, OMIT, False), (OMIT, False, False),     # one source is enough
+    (True, OMIT, None), (OMIT, True, None), (False, OMIT, None), (OMIT, False, None),       # both sources must say it
     (True, False, None), (False, True, None),                                               # two sources that disagree
     ("true", True, None), (True, "true", None), (1, True, None), (None, True, None),         # one of them is not a boolean
     (OMIT, OMIT, None)], ids=repr)
@@ -503,3 +503,11 @@ def test_cli_exits_3_without_a_proof_and_0_with_one(env, capsys):
     _paid(env, tenant_id, live=True)
     assert cli.main(["--tenant", tenant_id]) == 0
     assert json.loads(capsys.readouterr().out)["proven"] == [tenant_id]
+
+
+def test_the_report_states_its_scope_so_proven_is_not_read_as_an_independent_verification(env):
+    tenant_id, _ = make_tenant()
+    _paid(env, tenant_id)
+    proof = revenue_proof(tenant_id)
+    assert proof["status"] == "PROVEN" and "independent judge" in proof["scope"] and "customer received" in proof["scope"]
+    assert "scope" in revenue_proof(make_tenant()[0])

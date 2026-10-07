@@ -31,6 +31,9 @@ from .database import SessionLocal
 from .hashchain import canonical_json, verify_chain
 from .models import StripeEvent
 
+SCOPE = ("PROVEN means: live payment, observed webhook, performed and runtime-verified run, bound evidence and a served "
+         "result, on a valid chain. It does not mean an independent judge verified the run or that the customer received it "
+         "(see not_observable).")
 STEPS = ("LIVE_PAYMENT", "OBSERVED_WEBHOOK", "RUN_PERFORMED", "RUN_VERIFIED", "EVIDENCE_BOUND", "RESULT_SERVED")
 
 NOT_OBSERVABLE = (
@@ -118,6 +121,7 @@ def revenue_proof(tenant_id: str) -> dict:
     chain_ok, chain_reason = verify_chain(chain)
     report = {
         "status": "NOT_PROVEN",
+        "scope": SCOPE,
         "missing": [],
         "chain": {"valid": chain_ok, "reason": chain_reason, "records": len(chain)},
         "counts": {"paid_sessions": 0, "live": 0, "test": 0, "mode_unknown": 0, "proven": 0},

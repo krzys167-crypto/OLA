@@ -51,7 +51,7 @@ hold: `LIVE_PAYMENT` (the payment evidence carries Stripe's `livemode: true`; re
 and non-boolean values are mode `UNKNOWN` and never count), `OBSERVED_WEBHOOK`, `RUN_PERFORMED`, `RUN_VERIFIED`,
 `EVIDENCE_BOUND` (event, session, payment evidence and run ids agree) and `RESULT_SERVED` (`revenue.result_served`
 carries the digest of the stored result, written when `/payment-success` hands the result over). A broken hash chain
-means nothing is trusted. With no live payment the answer is `NOT_PROVEN` with the list of what is missing.
+means nothing is trusted. `PROVEN` is deliberately narrower than the activation gate above: it covers the steps a record can show, and the report's `scope` field says what it leaves out. With no live payment the answer is `NOT_PROVEN` with the list of what is missing.
 
 Still not observable from records, and always listed in `not_observable`: that the webhook URL is public HTTPS, that the
 customer received the result, and an independent judge (the paid run is verified by the runtime itself).
