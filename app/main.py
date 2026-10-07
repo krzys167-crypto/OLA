@@ -28,6 +28,7 @@ from .revenue import create_checkout, retrieve_checkout
 from .stripe_webhook import process_checkout_event, checkout_task, session_is_for_offer, session_paid_for_offer
 from . import ambient, anchor_external, cfr, firewall, identity, pipeline_bridge
 from .payment_binding import checkout_result_matches
+from .revenue_proof import revenue_proof
 from .http_guard import HttpGuard, security_headers
 from .migrations import run_migrations
 from starlette.concurrency import run_in_threadpool
@@ -313,13 +314,13 @@ def create_checkout_session(body: dict, x_api_key: str | None = Header(default=N
     return response
 
 
-def _block_recorded(tenant_id: str, session_id: str, payment_status, status) -> bool:
-    """True when this tenant's chain already says that THIS session was blocked in THIS state. The endpoint needs no
-    secret (the session id is enough), so a poll must not be able to grow the chain: one row per distinct state of a
-    session, and a state Stripe reports later is a new fact. (Two polls racing on the very first one can both write.)"""
+def _session_row_recorded(tenant_id: str, record_type: str, session_id: str, **fields) -> bool:
+    """True when this tenant's chain already holds a `record_type` row about THIS session whose payload carries every
+    one of `fields`. /payment-success needs no secret (the session id is enough), so a poll must not be able to grow
+    the chain: one row per distinct state of a session. (Two polls racing on the very first one can both write.)"""
     with SessionLocal() as db:
         rows = db.scalars(select(EvidenceRecord).where(
-            EvidenceRecord.tenant_id == tenant_id, EvidenceRecord.record_type == "revenue.payment_blocked",
+            EvidenceRecord.tenant_id == tenant_id, EvidenceRecord.record_type == record_type,
             EvidenceRecord.payload_json.contains(session_id, autoescape=True)))
         for row in rows:
             try:
@@ -327,9 +328,27 @@ def _block_recorded(tenant_id: str, session_id: str, payment_status, status) -> 
             except (TypeError, ValueError):
                 continue
             if (isinstance(payload, dict) and payload.get("session_id") == session_id
-                    and payload.get("payment_status") == payment_status and payload.get("status") == status):
+                    and all(payload.get(key) == value for key, value in fields.items())):
                 return True
     return False
+
+
+def _block_recorded(tenant_id: str, session_id: str, payment_status, status) -> bool:
+    """True when the chain already says that THIS session was blocked in THIS state; a state Stripe reports later is
+    a new fact and gets its own row."""
+    return _session_row_recorded(tenant_id, "revenue.payment_blocked", session_id,
+                                 payment_status=payment_status, status=status)
+
+
+def _record_result_served(tenant_id: str, session_id: str, run_id, result: dict) -> None:
+    """The one place that says the paid result was handed out: `revenue.result_served` (session, run, SHA-256 of the
+    result exactly as the webhook stored it). It is written once per session and run, and only here, for a session
+    that is paid for this offer and whose execution is bound to the payment. It says that the SERVER served the result
+    to whoever presented the session id; that the customer received or read it cannot be observed."""
+    digest = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
+    if _session_row_recorded(tenant_id, "revenue.result_served", session_id, run_id=run_id, result_sha256=digest):
+        return
+    append_record(tenant_id, "revenue.result_served", {"session_id": session_id, "run_id": run_id, "result_sha256": digest})
 
 
 @app.get("/payment-success")
@@ -404,6 +423,7 @@ def payment_success(session_id: str):
             "execution": "STRIPE_WEBHOOK",
         }
 
+    _record_result_served(tenant_id, session_id, completed.run_id, bound_result)
     return {
         "status": "COMPLETED",
         "session_id": session_id,
@@ -412,6 +432,12 @@ def payment_success(session_id: str):
         "run_id": completed.run_id,
         "result": bound_result,
     }
+
+
+@app.get("/revenue/proof")
+def revenue_proof_report(x_api_key: str | None = Header(default=None)):
+    """Is a live payment proven end to end for THIS tenant? Computed from its evidence chain only (app/revenue_proof.py)."""
+    return revenue_proof(tenant_from_key(x_api_key))
 
 
 @app.post("/evidence")

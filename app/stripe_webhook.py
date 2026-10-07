@@ -332,6 +332,18 @@ def _summarise(runtime: dict) -> dict:
             "evidence_ids": list(runtime.get("evidence_ids") or []), "computation": computation}
 
 
+def stripe_livemode(event: dict, session: dict):
+    """True (a live payment), False (a test payment) or None (Stripe did not say, or said two different things).
+
+    Stripe puts the boolean `livemode` on the event and on the object inside it. A value that is missing, is not a
+    boolean (the string "true", the number 1) or differs between the two is None, because the revenue proof counts
+    only an explicit True: a payment whose mode is not known is never counted as live revenue."""
+    values = [source["livemode"] for source in (event, session) if "livemode" in source]
+    if all(isinstance(value, bool) for value in values) and len(set(values)) == 1:
+        return values[0]
+    return None
+
+
 def process_checkout_event(payload: bytes, signature_header: str) -> dict:
     secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
     if not verify_stripe_signature(payload, signature_header, secret):
@@ -383,6 +395,7 @@ def process_checkout_event(payload: bytes, signature_header: str) -> dict:
                 "product": OLA_PRODUCT,
                 "amount_total": session.get("amount_total"),
                 "currency": session.get("currency"),
+                "livemode": stripe_livemode(event, session),
                 "task": task,
                 "retry_of_failed_attempt": retry,
             }

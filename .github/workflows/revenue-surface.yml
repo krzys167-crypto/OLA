@@ -26,6 +26,6 @@ jobs:
           grep -q "https://buy.stripe.com/test_cNi28t0yN5Sd2B20ufdjO00" revenue/index.html
           grep -qi "sandbox" revenue/index.html
           grep -q "NOT" docs/revenue-marketing-flow.md
-          echo "REVENUE_SURFACE=VERIFIED"
+          echo "REVENUE_SURFACE=STRINGS_PRESENT"
           echo "STRIPE_MODE=SANDBOX"
           echo "PRODUCTION_REVENUE=NOT_PROVEN"
