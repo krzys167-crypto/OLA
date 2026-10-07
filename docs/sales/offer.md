@@ -11,7 +11,7 @@ comparable assessments start around EUR 5 000-10 000; that market is a later, se
 ## Tiers
 | Tier | Price (excl. VAT) | What the customer gets | How it is paid |
 |---|---|---|---|
-| Quick Map | EUR 490 | one process, one sample set, 5-page map of what can and cannot be automated, 30-min call | invoice |
+| Quick Map | EUR 490 | one process, one sample set, 5-page map of what can and cannot be automated, evidence record of the analysis, 30-min call | invoice |
 | Process Audit | EUR 1 500 | up to three processes, estimates per finding, fixed-price implementation quote, evidence trail of the analysis, 60-min walkthrough; the fee is credited against implementation | invoice |
 | Monthly Watch | EUR 250-400 / month | re-run of the checks on new samples, change log, one call a month; sold only after a Process Audit | invoice or subscription |
 | Flow test | EUR 99 | only to test the Stripe checkout end to end; not a public price | Stripe |

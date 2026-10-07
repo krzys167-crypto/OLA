@@ -2,6 +2,7 @@ name: Sales Daily (report only)
 
 # Lists who in sales/prospects.csv is due for a touch today. It reads the CSV and writes a job summary.
 # It sends nothing, uses no secrets and has no write permission: a human sends the messages.
+# The cron is UTC: 07:17 Brussels in winter, 08:17 in summer. A crash of the script fails the job (no `|| true`).
 # `schedule` runs only from the default branch, so this starts firing once it is merged there.
 
 on:
@@ -36,7 +37,7 @@ jobs:
             echo '```'
             echo "### Due today"
             echo '```'
-            python3 scripts/sales_pipeline.py due 2>&1 || true
+            python3 scripts/sales_pipeline.py due 2>&1
             echo '```'
             echo "Drafts: \`python3 scripts/sales_pipeline.py draft \"<company>\" --lang fr\`. Nothing is sent from CI."
           } | tee -a "$GITHUB_STEP_SUMMARY"

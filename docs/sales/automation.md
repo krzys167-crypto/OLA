@@ -11,10 +11,14 @@
 ## Rules the mailbox task must follow (tested in `tests/test_sales_mail.py`)
 1. **Mode is `draft` until a human has approved 5 first messages** (`sales/policy.json`). Drafts go into the Gmail drafts
    folder; the owner sends them. Switch `mode` to `send` only on purpose, in a reviewed commit.
-2. SEND additionally needs: fewer than `daily_cap` sent today, a weekday, 09:00-17:00 Brussels, a contact filled in by a
-   human, and a stage that is due.
-3. An **opt-out** ("stop", "unsubscribe", "ne plus me contacter", ...) sets DO_NOT_CONTACT at once and is the only reply
-   sent without a human (a one-line confirmation). A **decline** sets LOST and sends nothing.
+2. `send_decision` returns SEND only when all hold: `mode` is send, at least `approved_sends_required` (>= 1) first
+   messages were approved by a human, fewer than `daily_cap` were sent today, the contact was filled in by a human
+   (`has_contact`), the stage is due (`stage_due`), and `now` (timezone-aware) is a weekday 09:00-17:00 Brussels. The
+   count of approved messages is supplied by the caller; the repo does not count it.
+3. An **opt-out** sets DO_NOT_CONTACT at once; its one-line confirmation is the only message sent without a human, **in
+   every mode** (switch it off with `auto_replies.opt_out_confirmation`). Quoted text, our own "reply stop" line,
+   out-of-office and bounce mail (class AUTO) are ignored when classifying; AUTO is never answered. A reply that mixes a
+   decline with a condition ("no thanks, but call in Q1") goes to a human. A **decline** sets LOST and sends nothing.
 4. **Interest** and **anything else** produce a draft (slots, or a draft for a person) and are never sent unattended:
    price, scope, legal or contract questions are never answered by a script.
 5. Calendar: no calendar connector is attached to this account, so the task proposes three slots and attaches an `.ics`

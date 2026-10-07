@@ -73,7 +73,11 @@ def test_a_closed_prospect_is_not_reopened_by_the_script(table):
     gamma = sp.find(sp.load(table), "Gamma")
     with pytest.raises(SystemExit):
         sp.advance(gamma, "CONTACTED", D)
-    sp.advance(gamma, "LOST", D)                                          # moving between closed stages is allowed
+    with pytest.raises(SystemExit):
+        sp.advance(gamma, "LOST", D)                                      # an opt-out marker is not downgraded by a script
+    with pytest.raises(SystemExit):
+        sp.advance(gamma, "WON", D)
+    assert gamma["stage"] == "DO_NOT_CONTACT"
 
 
 def test_unknown_stage_and_unknown_company_are_refused(table):
@@ -134,3 +138,62 @@ def test_the_daily_workflow_only_reports_it_has_no_secret_no_write_permission_an
     for word in ("sendmail", "smtp", "curl", "mail ", "gh issue", "gh api", "slack"):
         assert word not in text.lower().split("jobs:")[1]
     assert "schedule:" in text and "workflow_dispatch:" in text
+
+
+def test_a_contacted_prospect_never_goes_back_to_new_or_backwards(table):
+    alpha = sp.find(sp.load(table), "Alpha")
+    sp.advance(alpha, "CALL_BOOKED", D)
+    for stage in ("NEW", "CONTACTED", "REPLIED"):
+        with pytest.raises(SystemExit):
+            sp.advance(alpha, stage, D)
+    sp.advance(alpha, "LOST", D)                                          # closing is always allowed from an open stage
+
+
+def test_an_opt_out_covers_the_same_contact_and_the_company_domain_on_other_rows(tmp_path):
+    path = tmp_path / "p.csv"
+    write(path, [
+        {"company": "A", "sector": "x", "stage": "DO_NOT_CONTACT", "contact": "boss@corp.example"},
+        {"company": "B", "sector": "x", "stage": "NEW", "contact": "boss@corp.example"},
+        {"company": "C", "sector": "x", "stage": "NEW", "contact": "other@corp.example"},
+        {"company": "D", "sector": "x", "stage": "NEW", "contact": "other@else.example"},
+        {"company": "E", "sector": "x", "stage": "DO_NOT_CONTACT", "contact": "me@gmail.com"},
+        {"company": "F", "sector": "x", "stage": "NEW", "contact": "you@gmail.com"},
+    ])
+    rows = sp.load(path)
+    block = sp.suppressed(rows)
+    assert [r["company"] for r in rows if sp.is_due(r, D, block)] == ["D", "F"]   # a freemail domain is not blocked wholesale
+    with pytest.raises(SystemExit):
+        sp.render(sp.find(rows, "B"), "en", "me", block)
+    assert sp.render(sp.find(rows, "D"), "en", "me", block)
+
+
+def test_spreadsheet_formulas_are_neutralised_on_disk_and_restored_on_load(tmp_path):
+    path = tmp_path / "p.csv"
+    write(path, [{"company": '=HYPERLINK("http://x","c")', "sector": "x", "stage": "NEW", "contact": "+32 2 123 45 67",
+                  "note": "@SUM(1)"}])
+    rows = sp.load(path)
+    sp.save(path, rows)
+    raw = path.read_text(encoding="utf-8")
+    assert "'=HYPERLINK" in raw and "'+32 2 123 45 67" in raw and "'@SUM(1)" in raw
+    assert not any(cell.startswith(("=", "+", "@")) for row in csv.reader(raw.splitlines()) for cell in row)
+    again = sp.load(path)
+    assert again[0]["company"] == '=HYPERLINK("http://x","c")' and again[0]["contact"] == "+32 2 123 45 67"
+    assert again[0]["note"] == "@SUM(1)"
+
+
+def test_a_bom_a_semicolon_delimiter_and_a_rewritten_date_are_handled_or_fail_with_a_clear_message(tmp_path):
+    path = tmp_path / "p.csv"
+    path.write_text("\ufeffcompany;sector;stage;contact;last_action;next_due;note\nAlpha;x;NEW;a@a.example;;;\n", encoding="utf-8")
+    assert sp.load(path)[0]["company"] == "Alpha"
+    path.write_text("company,sector,stage,contact,last_action,next_due,note\nAlpha,x,CONTACTED,a@a.example,,10/10/2026,\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as error:
+        sp.load(path)
+    assert "not YYYY-MM-DD" in str(error.value)
+    path.write_text("company,sector\nAlpha,x\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        sp.load(path)
+
+
+def test_company_names_cannot_inject_workflow_commands_or_fences_into_the_report():
+    assert "\n" not in sp.safe("a\n::warning::x") and not sp.safe("::set-output name=x::1").startswith("::")
+    assert "```" not in sp.safe("x ``` y")
