@@ -28,6 +28,7 @@ from .revenue import create_checkout, retrieve_checkout
 from .stripe_webhook import process_checkout_event, checkout_task, session_is_for_offer, session_paid_for_offer
 from . import ambient, anchor_external, cfr, firewall, identity, pipeline_bridge
 from .payment_binding import checkout_result_matches
+from .receipt import build_receipt
 from .revenue_proof import revenue_proof
 from .http_guard import HttpGuard, security_headers
 from .migrations import run_migrations
@@ -432,6 +433,16 @@ def payment_success(session_id: str):
         "run_id": completed.run_id,
         "result": bound_result,
     }
+
+
+@app.get("/revenue/receipt/{session_id}")
+def revenue_receipt(session_id: str, x_api_key: str = Header(default=None)):
+    """A self-contained bundle the customer can check offline with tools/verify_receipt.py."""
+    tenant_id = tenant_from_key(x_api_key)
+    receipt = build_receipt(tenant_id, session_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="no paid session with this id on a valid chain")
+    return receipt
 
 
 @app.get("/revenue/proof")
