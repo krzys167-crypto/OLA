@@ -123,3 +123,14 @@ def test_each_stage_gets_its_own_template(table, stage, marker):
     row = sp.find(sp.load(table), "Alpha")
     row["stage"] = stage
     assert marker in sp.render(row, "en", "me").lower()
+
+
+def test_the_daily_workflow_only_reports_it_has_no_secret_no_write_permission_and_sends_nothing():
+    import re
+    raw = (ROOT / ".github" / "workflows" / "sales-daily.yml").read_text()
+    text = "\n".join(line for line in raw.splitlines() if not line.lstrip().startswith("#")) + "\n"
+    assert re.search(r"^permissions:\n  contents: read\n", text, re.M)
+    assert "secrets." not in text and "write" not in text
+    for word in ("sendmail", "smtp", "curl", "mail ", "gh issue", "gh api", "slack"):
+        assert word not in text.lower().split("jobs:")[1]
+    assert "schedule:" in text and "workflow_dispatch:" in text

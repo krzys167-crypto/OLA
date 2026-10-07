@@ -33,6 +33,12 @@ whom, or an independent judge model (not part of the paid path today).
 3. Customer provides sample documents (no production access, no personal data beyond what the samples contain).
 4. Delivery: report + evidence + walkthrough. Implementation is quoted separately.
 
+## What is automated, and what stays human
+Automated: the prospect queue, follow-up timing, draft texts (EN/FR), a weekday report of who is due
+(`.github/workflows/sales-daily.yml`: read-only, no secrets, sends nothing; it fires on a schedule only after it is merged to
+the default branch), and for the EUR 99 flow: checkout, webhook, run, evidence, delivery and `GET /revenue/proof`.
+Human by design: sending any message, adding a contact, the call, the price, the invoice, and the first live payment.
+
 ## Open decisions for the owner
 - Price points above (test them: if 0 of the first 10 conversations object to EUR 1 500, raise it).
 - VAT/invoicing set-up and the company entity that invoices.
