@@ -26,9 +26,9 @@ def _seed_tenant(api_key="agent-key"):
 
 def test_six_agent_runtime_is_ordered_and_verified():
     tenant_id = _seed_tenant("agent-key-1")
-    result = run_agent_task(tenant_id, "verify an evidence-backed task")
+    result = run_agent_task(tenant_id, "calculate 6 * 7")
 
-    assert result["status"] == "VERIFIED"
+    assert result["status"] == "VERIFIED" and result["computation"] == "PERFORMED"
     assert result["agents"] == AGENT_ROLES
     assert result["evidence_count"] == 6
     assert verify_agent_run(tenant_id, result["run_id"])["status"] == "VERIFIED"
@@ -49,10 +49,18 @@ def test_six_agents_have_independent_execution_identity_and_context():
 
 def test_independent_verifier_rejects_missing_agent_evidence():
     tenant_id = _seed_tenant("agent-key-2")
-    result = run_agent_task(tenant_id, "task with complete evidence")
+    result = run_agent_task(tenant_id, "calculate 1 + 1")
 
     assert verify_agent_run(tenant_id, str(uuid.uuid4()))["status"] in {"UNKNOWN", "BLOCK"}
     assert result["status"] == "VERIFIED"
+
+
+def test_a_task_with_nothing_to_compute_is_unknown_not_verified():
+    """The chain is intact, but no work was done: reporting VERIFIED would be theater."""
+    tenant_id = _seed_tenant("agent-key-noop")
+    result = run_agent_task(tenant_id, "task with complete evidence")
+    assert result["status"] == "UNKNOWN" and result["computation"] == "NOT_PERFORMED"
+    assert verify_agent_run(tenant_id, result["run_id"])["status"] == "VERIFIED"   # integrity is a separate fact
 
 
 def test_agent_runtime_http_endpoint():
@@ -61,7 +69,7 @@ def test_agent_runtime_http_endpoint():
     response = client.post(
         "/agent-run",
         headers={"X-API-Key": "agent-key"},
-        json={"task": "runtime agent verification"},
+        json={"task": "calculate 2 + 2"},
     )
     assert response.status_code == 200
     assert response.json()["status"] == "VERIFIED"

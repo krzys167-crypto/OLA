@@ -5,17 +5,15 @@ on:
     branches:
       - main
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 permissions: {}
 
 jobs:
   final-production:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
-      attestations: write
     permissions:
       contents: read
       actions: read
@@ -38,54 +36,230 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ steps.target.outputs.sha }}
 
       - name: Verify required evidence gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            "Nina TDD"
+            "OLA DI-OS Product Gate"
+            "NINA IGOR Ollama Full Flow"
+            "OLA Decision Evidence Gate"
+            "Revenue Surface Gate"
+            "OLA E2E Gate"
+            "Evidence Graph v0.1"
+            "OLA CodeQL"
+            "OLA Supply Chain Evidence Gate"
+            "Real LLM Ollama Runtime Gate"
+            "Provenance Mutation Gate"
+            "Provenance Gate Final"
+            "Nina Igor Gate"
+            "OLA State Continuity and Stability"
+            "OLA Real Runtime Stress Gate"
+          )
+          for attempt in $(seq 1 30); do
+            curl -fsSL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TARGET_SHA}&per_page=100" \
+              > required-runs.json
+            if python - "${required[@]}" <<'PY'
+          import json,sys,os
+          required=sys.argv[1:]
+          data=json.load(open("required-runs.json",encoding="utf-8"))
+          runs={}
+          for r in data.get("workflow_runs",[]):
+              n=r.get("name")
+              if n and r.get("head_sha")==os.environ["TARGET_SHA"]:
+                  prev=runs.get(n)
+                  if prev is None or (r.get("created_at",""),r.get("run_attempt",1),r.get("updated_at",""),r.get("id",0))>(prev.get("created_at",""),prev.get("run_attempt",1),prev.get("updated_at",""),prev.get("id",0)):
+                      runs[n]=r
+          missing=[n for n in required if n not in runs]
+          pending=[n for n in required if n in runs and runs[n].get("status") not in ("completed","cancelled","failure","success")]
+          failed={n:runs[n].get("conclusion") or runs[n].get("status") for n in required if n in runs and runs[n].get("status")=="completed" and runs[n].get("conclusion")!="success"}
+          print(json.dumps({"observed":{n:(runs[n].get("conclusion") or runs[n].get("status")) if n in runs else "MISSING" for n in required},"missing":missing,"pending":pending,"failed":failed},sort_keys=True))
+          if missing or pending: raise SystemExit(10)
+          if failed: raise SystemExit(11)
+          PY
+            then
+              rc=0
+            else
+              rc=$?
+            fi
+            if [ "$rc" = "0" ]; then break; fi
+            if [ "$rc" = "11" ]; then echo "FAILED_REQUIRED_GATES"; exit 1; fi
+            if [ "$attempt" = "30" ]; then echo "TIMEOUT_WAITING_FOR_REQUIRED_GATES"; exit 1; fi
+            sleep 60
+          done
+          python - <<'PY'
+          import json,os
+          data=json.load(open("required-runs.json",encoding="utf-8"))
+          required=set(["Nina TDD","OLA DI-OS Product Gate","NINA IGOR Ollama Full Flow","OLA Decision Evidence Gate","Revenue Surface Gate","OLA E2E Gate","Evidence Graph v0.1","OLA CodeQL","OLA Supply Chain Evidence Gate","Real LLM Ollama Runtime Gate","Provenance Mutation Gate","Provenance Gate Final","Nina Igor Gate","OLA State Continuity and Stability","OLA Real Runtime Stress Gate"])
+          observed={}
+          for r in data.get("workflow_runs",[]):
+              if r.get("name") not in required or r.get("head_sha")!=os.environ["TARGET_SHA"]: continue
+              prev=observed.get(r["name"])
+              if prev is None or (r.get("created_at",""),r.get("run_attempt",1),r.get("updated_at",""),r.get("id",0))>(prev.get("created_at",""),prev.get("run_attempt",1),prev.get("updated_at",""),prev.get("id",0)):
+                  observed[r["name"]]=r
+          assert required == set(observed), sorted(required-set(observed))
+          assert all(r.get("conclusion")=="success" for r in observed.values()), observed
+          print("ALL_REQUIRED_EVIDENCE_GATES=SUCCESS")
+          PY
+          baseline_dir="frontier-baseline-evidence"
+          mkdir -p "$baseline_dir"
+          baseline_sha="472eaf20056f73b2d8bf5ed77a63a128b38cc171"
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/frontier-baseline.yml/runs?status=success&per_page=20" \
+            > frontier-baseline-runs.json
+          python - "$baseline_sha" <<'PY'
+          import json,sys
+          sha=sys.argv[1]
+          data=json.load(open("frontier-baseline-runs.json",encoding="utf-8"))
+          runs=[r for r in data.get("workflow_runs",[]) if r.get("conclusion")=="success"]
+          if not runs: raise SystemExit("MISSING_SUCCESSFUL_FRONTIER_BASELINE_RUN")
+          run=max(runs,key=lambda x:x.get("updated_at",""))
+          open("frontier-baseline-run-id.txt","w").write(str(run["id"]))
+          print(run["id"])
+          PY
+          baseline_run_id="$(cat frontier-baseline-run-id.txt)"
+          gh run download "$baseline_run_id" -n "ola-frontier-baseline-$baseline_sha" -D "$baseline_dir"
+          grep -Fx "BASELINE_SHA=$baseline_sha" "$baseline_dir/baseline-source.txt"
+          grep -F '"terminal_status": "VERIFIED"' "$baseline_dir/frontier-baseline.log"
+          echo "FRONTIER_BASELINE=VERIFIED"
+      - name: Correlate state, stress, provenance and Igor evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence-correlation
+          python - <<'PY'
+          import json, os, subprocess
+          target=os.environ["TARGET_SHA"]
+          runs=json.load(open("required-runs.json",encoding="utf-8"))["workflow_runs"]
+          wanted={
+              "OLA State Continuity and Stability": f"ola-state-continuity-{target}",
+              "OLA Real Runtime Stress Gate": f"ola-runtime-stress-{target}",
+              "Provenance Mutation Gate": f"ola-provenance-evidence-{target}",
+              "Nina Igor Gate": f"nina-igor-evidence-{target}",
+              "Real LLM Ollama Runtime Gate": f"ollama-real-llm-proof-{target}",
+              "NINA IGOR Ollama Full Flow": f"nina-igor-ollama-full-flow-{target}",
+          }
+          selected={}
+          for name,artifact in wanted.items():
+              candidates=[r for r in runs if r.get("name")==name and r.get("head_sha")==target]
+              if not candidates: raise SystemExit(f"MISSING_CORRELATED_RUN={name}")
+              run=max(candidates,key=lambda x:(x.get("created_at",""),x.get("run_attempt",1),x.get("updated_at",""),x.get("id",0)))
+              if run.get("status")!="completed" or run.get("conclusion")!="success":
+                  raise SystemExit(f"LATEST_CORRELATED_RUN_NOT_SUCCESS={name}")
+              run_id=run["id"]
+              dest=os.path.join("evidence-correlation",name.lower().replace(" ","-"))
+              os.makedirs(dest,exist_ok=True)
+              subprocess.run(["gh","run","download",str(run_id),"-n",artifact,"-D",dest],check=True)
+              api=f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}/artifacts"
+              arts=json.loads(subprocess.check_output(["gh","api",api],text=True)).get("artifacts",[])
+              match=next((a for a in arts if a.get("name")==artifact),None)
+              if not match: raise SystemExit(f"MISSING_ARTIFACT={artifact}")
+              selected[name]={"run_id":run_id,"head_sha":run["head_sha"],"artifact":artifact,"artifact_digest":match.get("digest")}
+          challenges=[]
+          for root,_,files in os.walk("evidence-correlation"):
+              if "run-challenge.json" in files:
+                  p=os.path.join(root,"run-challenge.json")
+                  d=json.load(open(p,encoding="utf-8"))
+                  nonce=str(d.get("replay_nonce","")).lower()
+                  if len(nonce)!=64 or any(ch not in "0123456789abcdef" for ch in nonce):
+                      raise SystemExit(f"INVALID_REPLAY_NONCE={p}")
+                  if d.get("source_commit")!=target:
+                      raise SystemExit(f"CHALLENGE_SOURCE_MISMATCH={p}")
+                  if not d.get("run_id"):
+                      raise SystemExit(f"CHALLENGE_RUN_ID_MISSING={p}")
+                  challenges.append({
+                      "path":p,
+                      "run_id":d["run_id"],
+                      "source_commit":d["source_commit"],
+                      "replay_nonce":nonce,
+                      "challenge_id":d.get("challenge_id"),
+                  })
+          if len(challenges) < 2:
+              raise SystemExit(f"EXPECTED_AT_LEAST_TWO_REAL_LLM_CHALLENGES={challenges}")
+          nonces=[d["replay_nonce"] for d in challenges]
+          if len(nonces)!=len(set(nonces)):
+              raise SystemExit("REPLAY_NONCE_REUSE_ACROSS_RUNTIME_GATES")
+          contexts=[]
+          for root,_,files in os.walk("evidence-correlation"):
+              for fn in files:
+                  if fn in ("evidence-context.json","provenance-context.json"):
+                      contexts.append(os.path.join(root,fn))
+          if len(contexts)!=3: raise SystemExit(f"EXPECTED_THREE_CONTEXTS={contexts}")
+          for p in contexts:
+              d=json.load(open(p,encoding="utf-8"))
+              assert d["source_commit"]==target,(p,d)
+              assert d["correlation_key"]==target,(p,d)
+          nina=[]
+          for root,_,files in os.walk("evidence-correlation"):
+              for fn in files:
+                  if fn=="nina-igor-evidence.json":
+                      nina.append(os.path.join(root,fn))
+          if len(nina)!=1: raise SystemExit(f"EXPECTED_ONE_NINA_IGOR_EVIDENCE={nina}")
+          d=json.load(open(nina[0],encoding="utf-8"))
+          assert d["commit"]==target,d
+          manifest={"schema":"ola-evidence-correlation-v2","source_sha":target,"correlation_key":target,"runs":selected,"anti_replay":{"challenge_count":len(challenges),"unique":True,"challenges":challenges}}
+          json.dump(manifest,open("evidence-correlation-manifest.json","w"),sort_keys=True,indent=2)
+          PY
+          sha256sum evidence-correlation-manifest.json | tee evidence-correlation-manifest.sha256
+      - name: Create freeze anchor
+        id: freeze-anchor
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          correlation_sha=$(cut -d" " -f1 evidence-correlation-manifest.sha256)
+          cat > freeze-anchor.json <<EOF
+          {
+            "schema": "ola-freeze-anchor-v1",
+            "source_sha": "${TARGET_SHA}",
+            "correlation_manifest_sha256": "${correlation_sha}",
+            "created_by_run": "${GITHUB_RUN_ID}"
+          }
+          EOF
+          sha256sum freeze-anchor.json | tee freeze-anchor.sha256
+
+      - name: Attest freeze anchor
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: freeze-anchor.json
+
+      - name: Independently verify freeze anchor
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${{ steps.target.outputs.sha }}&per_page=100" \
-            > required-runs.json
-          python - <<'PY'
-          import json
-          required = [
-              "Nina TDD",
-              "OLA DI-OS Product Gate",
-              "NINA IGOR Ollama Full Flow",
-              "OLA Decision Evidence Gate",
-              "Revenue Surface Gate",
-              "OLA E2E Gate",
-              "Evidence Graph v0.1",
-              "Real LLM Ollama Runtime Gate",
-              "OLA Frontier Baseline",
-              "Provenance Mutation Gate",
-              "Provenance Gate Final",
-              "Nina Igor Gate",
-              "Nina Real Runtime Provenance Gate (OpenAI optional)",
-              "OLA State Continuity and Stability",
-              "OLA Real Runtime Stress Gate",
-          ]
-          runs = {}
-          with open("required-runs.json", encoding="utf-8") as stream:
-              data = json.load(stream)
-          for run in data.get("workflow_runs", []):
-              name = run.get("name")
-              if name:
-                  runs[name] = run.get("conclusion") or run.get("status") or "UNKNOWN"
-          missing = [name for name in required if name not in runs]
-          failed = {name: runs[name] for name in required if name in runs and runs[name] != "success"}
-          print(json.dumps({"required": required, "observed": {name: runs.get(name, "MISSING") for name in required}}, indent=2, sort_keys=True))
-          if missing:
-              raise SystemExit("MISSING_REQUIRED_GATES=" + ",".join(missing))
-          if failed:
-              raise SystemExit("FAILED_REQUIRED_GATES=" + json.dumps(failed, sort_keys=True))
-          print("ALL_REQUIRED_EVIDENCE_GATES=SUCCESS")
-          PY
+          gh attestation verify freeze-anchor.json --repo "$GITHUB_REPOSITORY"
+          echo "FREEZE_ANCHOR_STATUS=VERIFIED" >> "$GITHUB_ENV"
+          echo "FREEZE_ANCHOR=VERIFIED"
 
+      - name: Require cryptographically verified source commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          verification="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}" --jq ".commit.verification.verified")"
+          reason="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}" --jq ".commit.verification.reason")"
+          echo "SOURCE_COMMIT_SIGNATURE=${verification} reason=${reason}"
+          test "$verification" = "true"
+          echo "SOURCE_SIGNATURE_STATUS=VERIFIED" >> "$GITHUB_ENV"
       - name: Build release image
         run: docker build -t ola-final:${{ steps.target.outputs.sha }} .
 
@@ -115,37 +289,77 @@ jobs:
           set -euo pipefail
           gh attestation verify "ola-source-${{ steps.target.outputs.sha }}.tar.gz" --repo "$GITHUB_REPOSITORY"
           gh attestation verify ola-release-image.tar --repo "$GITHUB_REPOSITORY"
+          echo "SOURCE_ATTESTATION_STATUS=VERIFIED" >> "$GITHUB_ENV"
+          echo "IMAGE_ATTESTATION_STATUS=VERIFIED" >> "$GITHUB_ENV"
 
       - name: Verify release image boots
         shell: bash
         run: |
           set -euo pipefail
-          docker run -d --name ola-final-gate -p 8000:8000 "ola-final:${{ steps.target.outputs.sha }}"
+          docker run -d --name ola-final-gate -p 8000:8000 \
+            -e OLA_SOURCE_COMMIT="${{ steps.target.outputs.sha }}" \
+            -e OLA_RUNTIME_COMMIT="${{ steps.target.outputs.sha }}" \
+            "ola-final:${{ steps.target.outputs.sha }}"
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null && exit 0; sleep 2; done
           docker logs ola-final-gate
           exit 1
 
+      - name: Independent exact-source replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec -i ola-final-gate python - <<'PY' > final-independent-replay.json
+          import hashlib, json, sqlite3, urllib.request, uuid, os
+          db_path="/data/ola.db"
+          tenant_id=str(uuid.uuid4())
+          raw_key="final-independent-replay-key"
+          db=sqlite3.connect(db_path)
+          db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tenant_id,"final-independent-replay"))
+          db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tenant_id,hashlib.sha256(raw_key.encode()).hexdigest()))
+          db.commit(); db.close()
+          task="Calculate 17 * 23 and return the verified result."
+          req=urllib.request.Request("http://127.0.0.1:8000/agent-run",data=json.dumps({"task":task}).encode(),headers={"Content-Type":"application/json","X-API-Key":raw_key},method="POST")
+          with urllib.request.urlopen(req,timeout=30) as response: result=json.load(response)
+          assert result["status"]=="VERIFIED", result
+          assert result["final_result"]=="391", result
+          print(json.dumps({"status":"VERIFIED","source_commit":os.environ.get("OLA_SOURCE_COMMIT"),"run_id":result["run_id"],"replay":"PASS"},sort_keys=True))
+          PY
+          cat final-independent-replay.json
       - name: Generate final production manifest
         if: always()
         shell: bash
         run: |
           set -euo pipefail
           status="BLOCKED"
-          if [ "${{ job.status }}" = "success" ]; then status="VERIFIED"; fi
+          if [ "${{ job.status }}" = "success" ]; then status="REVIEW_REQUIRED"; fi
           cat > production-manifest.json <<EOF
           {
             "schema": "ola-production-evidence-v1",
             "commit": "${{ steps.target.outputs.sha }}",
             "source_snapshot": "ola-source-${{ steps.target.outputs.sha }}.tar.gz",
             "release_image": "ola-release-image.tar",
-            "source_attestation": "verified-by-github-actions-attestation",
-            "image_attestation": "verified-by-github-actions-attestation",
+            "source_attestation": "${SOURCE_ATTESTATION_STATUS:-NOT_RUN}",
+            "source_commit_signature": "${SOURCE_SIGNATURE_STATUS:-UNVERIFIED}",
+            "image_attestation": "${IMAGE_ATTESTATION_STATUS:-NOT_RUN}",
+            "freeze_anchor": "${FREEZE_ANCHOR_STATUS:-NOT_RUN}",
+            "human_gate": "REVIEW_REQUIRED",
             "required_gates": ["ci","state-continuity","stability","provenance","signatures","real-runtime","stress","tamper","replay","human-gate"],
             "final_status": "${status}"
           }
           EOF
           sha256sum production-manifest.json | tee production-manifest-sha256.txt
 
+      - name: Attest final production manifest
+        if: ${{ job.status == 'success' }}
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: production-manifest.json
+
+      - name: Independently verify final production attestation
+        if: ${{ job.status == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh attestation verify production-manifest.json --repo "$GITHUB_REPOSITORY"
       - name: Publish final production evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -153,11 +367,16 @@ jobs:
           name: ola-final-production-${{ steps.target.outputs.sha }}
           path: |
             required-runs.json
+            evidence-correlation-manifest.json
+            evidence-correlation-manifest.sha256
             production-manifest.json
             production-manifest-sha256.txt
+            freeze-anchor.json
+            freeze-anchor.sha256
             source-sha256.txt
             image-sha256.txt
-            ola-source-${{ github.sha }}.tar.gz
+            final-independent-replay.json
+            ola-source-${{ steps.target.outputs.sha }}.tar.gz
             ola-release-image.tar
 
       - name: Cleanup

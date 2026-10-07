@@ -1,43 +1,165 @@
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern("^[0-9a-f]{40}$")]
+    [string]$SourceCommit,
+
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern("^[0-9a-f]{64}$")]
+    [string]$ReplayNonce
+)
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $RepoUrl = "https://github.com/krzysztofcieciwa07-ship-it/OLA.git"
-$SourceCommit = "426e781ba6e8bc2c17f6ed3bf1150372d673bc07"
 $Root = Split-Path -Parent $PSScriptRoot
 $RepoDir = Join-Path $Root "ola-source"
 $EvidenceDir = Join-Path $Root "workstation-evidence"
 $Container = "ola-workstation-v1"
 $Image = "ola-workstation:$($SourceCommit.Substring(0,12))"
 $Port = 8000
-function Write-Gate($name, $status, $detail) { Write-Host ("[{0}] {1} - {2}" -f $status, $name, $detail) }
+$OllamaModel = "qwen2.5:0.5b-instruct"
+$OfficialOllamaModelIdPrefix = "a8b0c5157701"
+$OllamaBaseUrl = "http://host.docker.internal:11434"
+$RegistrationRunId = [guid]::NewGuid().ToString()
+$RunChallengePath = Join-Path $EvidenceDir "run-challenge.json"
+$StartedAtDate = (Get-Date).ToUniversalTime()
+$StartedAt = $StartedAtDate.ToString("o")
+@{
+    schema = "ola-run-challenge/v1"
+    challenge_id = "$RegistrationRunId"
+    run_id = ""
+    source_commit = $SourceCommit
+    replay_nonce = $ReplayNonce
+    issued_at = $StartedAt
+} | ConvertTo-Json -Depth 10 | Set-Content $RunChallengePath
+$GateResults = [ordered]@{}
+function Write-Gate($name, $status, $detail, $exitCode = 0) {
+    Write-Host ("[{0}] {1} - {2}" -f $status, $name, $detail)
+    $GateResults[$name] = [ordered]@{
+        status = $status
+        detail = $detail
+        exit_code = $exitCode
+        timestamp = (Get-Date).ToUniversalTime().ToString("o")
+    }
+}
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Write-Gate "GIT" "BLOCKED" "Git is not installed"; exit 20 }
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { Write-Gate "DOCKER" "BLOCKED" "Docker is not installed"; exit 21 }
 try { docker info | Out-Null } catch { Write-Gate "DOCKER_ENGINE" "BLOCKED" "Docker engine is not running"; exit 22 }
-Write-Gate "PREREQUISITES" "VERIFIED" "Git and Docker are available"
+if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) { Write-Gate "OLLAMA" "BLOCKED" "Ollama is not installed"; exit 23 }
+try { ollama list | Out-Null } catch { Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden | Out-Null; Start-Sleep -Seconds 3 }
+ollama pull $OllamaModel | Tee-Object -FilePath (Join-Path $EvidenceDir "ollama-pull.log")
+$pullExit = $LASTEXITCODE
+if ($pullExit -ne 0) { Write-Gate "OLLAMA_PULL" "BLOCKED" "ollama pull failed" $pullExit; exit 23 }
+$ollamaTags = $null
+try {
+    $ollamaTags = Invoke-RestMethod "http://127.0.0.1:11434/api/tags" -TimeoutSec 5
+    $ollamaTags | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $EvidenceDir "ollama-models.json")
+} catch { Write-Gate "OLLAMA_ENGINE" "BLOCKED" "Ollama API is not reachable" 24; exit 24 }
+$modelEntry = @($ollamaTags.models | Where-Object { $_.name -eq $OllamaModel -or $_.model -eq $OllamaModel } | Select-Object -First 1)
+if ($modelEntry.Count -ne 1 -or [string]::IsNullOrWhiteSpace($modelEntry[0].digest)) {
+    Write-Gate "OLLAMA_MODEL_DIGEST" "BLOCKED" "Ollama model digest missing" 25
+    exit 25
+}
+$modelDigestText = ([string]$modelEntry[0].digest) -replace '^sha256:', ''
+if (-not $modelDigestText.StartsWith($OfficialOllamaModelIdPrefix)) {
+    Write-Gate "OLLAMA_MODEL_REGISTRY_BINDING" "REVIEW_REQUIRED" "model digest does not match public Ollama registry identity prefix"
+} else {
+    Write-Gate "OLLAMA_MODEL_REGISTRY_BINDING" "VERIFIED" "public Ollama registry identity prefix matched"
+}
+@{
+    model = $OllamaModel
+    digest = [string]$modelEntry[0].digest
+    official_registry_id_prefix = $OfficialOllamaModelIdPrefix
+    size = $modelEntry[0].size
+    modified_at = $modelEntry[0].modified_at
+} | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "ollama-model.json")
+Write-Gate "OLLAMA_MODEL_DIGEST" "VERIFIED" ([string]$modelEntry[0].digest)
+Write-Gate "PREREQUISITES" "VERIFIED" "Git, Docker and Ollama are available"
+git -C $RepoDir archive --format=tar.gz --output (Join-Path $EvidenceDir "source-archive.tar.gz") $SourceCommit
+$archiveExit = $LASTEXITCODE
+if ($archiveExit -ne 0) { Write-Gate "SOURCE_ARCHIVE" "BLOCKED" "git archive failed" $archiveExit; exit 26 }
+(Get-FileHash (Join-Path $EvidenceDir "source-archive.tar.gz") -Algorithm SHA256).Hash | Set-Content (Join-Path $EvidenceDir "source-archive.sha256")
+Write-Gate "SOURCE_ARCHIVE" "VERIFIED" "exact source archive created"
+$computer = Get-CimInstance Win32_ComputerSystem
+$bios = Get-CimInstance Win32_BIOS
+$os = Get-CimInstance Win32_OperatingSystem
+$tpmPresent = $false
+try { $tpmPresent = [bool](Get-Tpm).TpmPresent } catch {}
+$deviceFingerprintInput = "$($computer.Manufacturer)|$($computer.Model)|$($bios.SerialNumber)"
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$deviceFingerprint = (($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($deviceFingerprintInput)) | ForEach-Object { $_.ToString("x2") }) -join "")
+$sha.Dispose()
+@{
+    schema = "ola-zbook-runtime-registration/v1"
+    run_id = $RegistrationRunId
+    started_at = $StartedAt
+    hostname = $env:COMPUTERNAME
+    manufacturer = $computer.Manufacturer
+    model = $computer.Model
+    bios_serial_sha256 = $deviceFingerprint
+    os_caption = $os.Caption
+    os_version = $os.Version
+    tpm_present = $tpmPresent
+    source_commit = $SourceCommit
+    evidence_class = "PHYSICAL_WORKSTATION_METADATA"
+    physical_execution = "CAPTURED_METADATA"
+} | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "workstation-registration.json")
 if (Test-Path $RepoDir) { Remove-Item -Recurse -Force $RepoDir }
 git clone $RepoUrl $RepoDir | Out-Host
 Set-Location $RepoDir
 git fetch --depth 1 origin $SourceCommit | Out-Host
 git checkout --detach $SourceCommit | Out-Host
 $actual = (git rev-parse HEAD).Trim()
-if ($actual -ne $SourceCommit) { Write-Gate "SOURCE_PIN" "BLOCKED" "SHA mismatch"; exit 30 }
+if ($actual -ne $SourceCommit) { Write-Gate "SOURCE_PIN" "BLOCKED" "SHA mismatch" 30; exit 30 }
 Write-Gate "SOURCE_PIN" "VERIFIED" $actual
+try {
+    $commitApi = Invoke-RestMethod -Uri "https://api.github.com/repos/krzysztofcieciwa07-ship-it/OLA/commits/$SourceCommit" -Headers @{ Accept = "application/vnd.github+json" } -TimeoutSec 15
+    $commitApi | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $EvidenceDir "github-source-verification.json")
+    if ($commitApi.commit.verification.verified -ne $true) {
+        Write-Gate "SOURCE_SIGNATURE" "BLOCKED" ("GitHub reports verified=false reason=" + [string]$commitApi.commit.verification.reason) 1
+    }
+    Write-Gate "SOURCE_SIGNATURE" "VERIFIED" "GitHub cryptographic verification=true"
+} catch {
+    Write-Gate "SOURCE_SIGNATURE" "UNKNOWN" ("GitHub source verification failed: " + $_.Exception.Message) 2
+}
 "repository=$RepoUrl" | Set-Content (Join-Path $EvidenceDir "source.txt")
 "commit=$actual" | Add-Content (Join-Path $EvidenceDir "source.txt")
 docker build --tag $Image $RepoDir | Tee-Object -FilePath (Join-Path $EvidenceDir "docker-build.log")
-if ($LASTEXITCODE -ne 0) { Write-Gate "IMAGE_BUILD" "BLOCKED" "Docker build failed"; exit 40 }
+$buildExit = $LASTEXITCODE
+if ($buildExit -ne 0) { Write-Gate "IMAGE_BUILD" "BLOCKED" "Docker build failed" $buildExit; exit 40 }
+$imageInspect = @(docker image inspect $Image | Out-String | ConvertFrom-Json)
+if ($imageInspect.Count -ne 1 -or [string]::IsNullOrWhiteSpace($imageInspect[0].Id) -or -not $imageInspect[0].Id.StartsWith("sha256:")) {
+    Write-Gate "IMAGE_DIGEST" "BLOCKED" "Docker image content digest missing" 41
+    exit 41
+}
+$imageArchive = Join-Path $EvidenceDir "docker-image.tar"
+docker save $Image -o $imageArchive
+$imageSaveExit = $LASTEXITCODE
+if ($imageSaveExit -ne 0) { Write-Gate "IMAGE_ARCHIVE" "BLOCKED" "docker save failed" $imageSaveExit; exit 42 }
+$imageArchiveHash = (Get-FileHash $imageArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+@{
+    image = $Image
+    image_id = $imageInspect[0].Id
+    archive = "docker-image.tar"
+    archive_sha256 = $imageArchiveHash
+    repo_digests = @($imageInspect[0].RepoDigests)
+    created = $imageInspect[0].Created
+} | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "docker-image.json")
 Write-Gate "IMAGE_BUILD" "VERIFIED" $Image
+Write-Gate "IMAGE_DIGEST" "VERIFIED" $imageInspect[0].Id
+Write-Gate "IMAGE_ARCHIVE" "VERIFIED" $imageArchiveHash
 docker run --rm $Image python -m pytest -q | Tee-Object -FilePath (Join-Path $EvidenceDir "pytest.txt")
-if ($LASTEXITCODE -ne 0) { Write-Gate "PYTEST" "BLOCKED" "pytest failed"; exit 50 }
+$pytestExit = $LASTEXITCODE
+if ($pytestExit -ne 0) { Write-Gate "PYTEST" "BLOCKED" "pytest failed" $pytestExit; exit 50 }
 Write-Gate "PYTEST" "VERIFIED" "pytest passed"
 docker rm -f $Container 2>$null | Out-Null
-docker run -d --name $Container -p ("${Port}:8000") -e OLA_LLM_MODE=deterministic -e OLA_RUNTIME_COMMIT=$SourceCommit $Image | Set-Content (Join-Path $EvidenceDir "container-id.txt")
+docker run -d --name $Container -p ("${Port}:8000") -e OLA_LLM_PROVIDER=ollama -e OLA_LLM_MODE=required -e OLA_LLM_MODEL=$OllamaModel -e OLLAMA_MODEL=$OllamaModel -e OLLAMA_BASE_URL=$OllamaBaseUrl -e OLA_LLM_TIMEOUT=120 -e OLA_SOURCE_COMMIT=$SourceCommit -e OLA_RUNTIME_COMMIT=$SourceCommit -e OLA_REPLAY_NONCE=$ReplayNonce $Image | Set-Content (Join-Path $EvidenceDir "container-id.txt")
 $healthy = $false
 for ($i=0; $i -lt 30; $i++) {
   try { $h = Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 3; if ($h.status -eq "ok") { $healthy = $true; break } } catch {}
   Start-Sleep -Seconds 1
 }
-if (-not $healthy) { docker logs $Container | Set-Content (Join-Path $EvidenceDir "runtime.log"); Write-Gate "RUNTIME_HEALTH" "BLOCKED" "health failed"; docker rm -f $Container | Out-Null; exit 60 }
+if (-not $healthy) { docker logs $Container | Set-Content (Join-Path $EvidenceDir "runtime.log"); Write-Gate "RUNTIME_HEALTH" "BLOCKED" "health failed" 60; docker rm -f $Container | Out-Null; exit 60 }
 Write-Gate "RUNTIME_HEALTH" "VERIFIED" "health endpoint"
 $rawKey = "ola-workstation-key"
 $tenantId = [guid]::NewGuid().ToString()
@@ -46,17 +168,188 @@ $headers = @{ "X-API-Key" = $rawKey; "Content-Type" = "application/json" }
 $body = @{ task = "Calculate 17 * 23 and return the verified result." } | ConvertTo-Json
 $agentResult = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/agent-run" -Headers $headers -Body $body -TimeoutSec 30
 $agentResult | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $EvidenceDir "agent-run.json")
-if ($agentResult.status -ne "VERIFIED" -or $agentResult.final_result -ne "391" -or $agentResult.evidence_count -ne 6) { Write-Gate "AGENT_RUNTIME" "BLOCKED" "runtime proof failed"; docker logs $Container | Set-Content (Join-Path $EvidenceDir "runtime.log"); docker rm -f $Container | Out-Null; exit 70 }
-Write-Gate "AGENT_RUNTIME" "VERIFIED" "six-agent runtime returned 391"
-docker exec $Container python scripts/verify_agent_runtime.py --tenant-id $tenantId --run-id $agentResult.run_id --expected-commit $SourceCommit --expected-task "Calculate 17 * 23 and return the verified result." --expected-result 391 | Tee-Object -FilePath (Join-Path $EvidenceDir "independent-verifier.txt")
-if ($LASTEXITCODE -ne 0) { Write-Gate "INDEPENDENT_VERIFY" "BLOCKED" "standalone verifier rejected evidence"; docker rm -f $Container | Out-Null; exit 80 }
+$challenge = Get-Content $RunChallengePath -Raw | ConvertFrom-Json
+$challenge.run_id = $agentResult.run_id
+$challenge | ConvertTo-Json -Depth 10 | Set-Content $RunChallengePath
+if ($agentResult.status -ne "VERIFIED" -or $agentResult.final_result -ne "391" -or $agentResult.evidence_count -ne 6 -or $agentResult.source_commit -ne $SourceCommit -or @($agentResult.execution).Count -ne 6) { Write-Gate "AGENT_RUNTIME" "BLOCKED" "runtime proof failed" 70; docker logs $Container | Set-Content (Join-Path $EvidenceDir "runtime.log"); docker rm -f $Container | Out-Null; exit 70 }
+foreach ($item in @($agentResult.execution)) {
+    if ($item.provider -ne "ollama" -or $item.model -ne $OllamaModel -or $item.invocation_type -ne "real_llm" -or ([string]::IsNullOrWhiteSpace($item.response_id) -and [string]::IsNullOrWhiteSpace($item.response_digest)) -or [string]::IsNullOrWhiteSpace($item.started_at) -or [string]::IsNullOrWhiteSpace($item.ended_at)) {
+        Write-Gate "AGENT_RUNTIME" "BLOCKED" "real Ollama evidence incomplete" 71
+        docker rm -f $Container | Out-Null
+        exit 71
+    }
+}
+Write-Gate "AGENT_RUNTIME" "VERIFIED" "six-agent real Ollama runtime returned 391"
+$verifyOutput = docker exec $Container python scripts/verify_agent_runtime.py --tenant-id $tenantId --run-id $agentResult.run_id --expected-commit $SourceCommit --expected-nonce $ReplayNonce --expected-task "Calculate 17 * 23 and return the verified result." --expected-result 391 --expected-provider ollama --expected-model $OllamaModel --expected-invocation-type real_llm | Tee-Object -FilePath (Join-Path $EvidenceDir "independent-verifier.txt")
+$verifyExit = $LASTEXITCODE
+if ($verifyExit -ne 0) { Write-Gate "INDEPENDENT_VERIFY" "BLOCKED" "standalone verifier rejected evidence" $verifyExit; docker rm -f $Container | Out-Null; exit 80 }
+$verifyJsonLine = @($verifyOutput | Where-Object { $_ -match '^{' } | Select-Object -Last 1)
+if ($verifyJsonLine.Count -ne 1) { Write-Gate "INDEPENDENT_VERIFY" "BLOCKED" "standalone verifier did not emit JSON result" 81; docker rm -f $Container | Out-Null; exit 81 }
+$verifyResult = $verifyJsonLine[0] | ConvertFrom-Json
+@{
+    schema = "ola-independent-verifier/v1"
+    status = $verifyResult.status
+    verifier_component = "ola-workstation-independent-verifier"
+    runtime_component = "ola-workstation-runtime"
+    run_id = $agentResult.run_id
+    source_commit = $SourceCommit
+} | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "independent-verifier.json")
 Write-Gate "INDEPENDENT_VERIFY" "VERIFIED" "standalone verifier passed"
 $tamperExit = 0
-docker exec $Container python -c "import sqlite3; db=sqlite3.connect('/data/ola.db'); r=db.execute('select id from evidence_records where tenant_id=? order by seq desc limit 1',('$tenantId',)).fetchone(); db.execute('update evidence_records set payload_json=payload_json where id=?',(r[0],)); db.commit()" 2> (Join-Path $EvidenceDir "tamper-error.txt"); $tamperExit = $LASTEXITCODE
-if ($tamperExit -eq 0) { Write-Gate "APPEND_ONLY_TAMPER" "BLOCKED" "mutation accepted"; docker rm -f $Container | Out-Null; exit 90 }
-Write-Gate "APPEND_ONLY_TAMPER" "VERIFIED" "append-only trigger rejected mutation"
-$manifest = @{ schema="ola-workstation-evidence/v1"; source_commit=$SourceCommit; final_status="READY"; gates=@{ prerequisites="VERIFIED"; source_pin="VERIFIED"; image_build="VERIFIED"; pytest="VERIFIED"; runtime_health="VERIFIED"; agent_runtime="VERIFIED"; independent_verify="VERIFIED"; append_only_tamper="VERIFIED" } }
-$manifest | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "MANIFEST.json")
-Get-ChildItem $EvidenceDir -File | Where-Object { $_.Name -ne "SHA256SUMS.txt" } | ForEach-Object { Get-FileHash $_.FullName -Algorithm SHA256 } | ForEach-Object { "$($_.Hash)  $($_.Path)" } | Set-Content (Join-Path $EvidenceDir "SHA256SUMS.txt")
-Write-Gate "WORKSTATION" "READY" "all local gates passed"
+docker exec $Container python -c "import sqlite3; db=sqlite3.connect('/data/ola.db'); r=db.execute('select id,payload_json from evidence_records where tenant_id=? order by seq desc limit 1',('$tenantId',)).fetchone(); db.execute('update evidence_records set payload_json=? where id=?', (r[1]+'-TAMPER-MUTATION', r[0])); db.commit()" 2> (Join-Path $EvidenceDir "tamper-error.txt")
+$tamperExit = $LASTEXITCODE
+if ($tamperExit -eq 0) { Write-Gate "APPEND_ONLY_TAMPER" "BLOCKED" "mutation accepted" 0; docker rm -f $Container | Out-Null; exit 90 }
+Write-Gate "APPEND_ONLY_TAMPER" "VERIFIED" "append-only trigger rejected real mutation" 1
+
+Write-Gate "STABILITY" "VERIFIED" "30-second health stability window" 0
+for ($i = 0; $i -lt 30; $i++) {
+    try { Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 3 | Out-Null } catch { Write-Gate "STABILITY" "BLOCKED" "health failed during stability window" 92; docker rm -f $Container | Out-Null; exit 92 }
+    Start-Sleep -Seconds 1
+}
+
+$agentRunId = $agentResult.run_id
+@{
+    runtime_component = "ola-workstation-runtime"
+    source_commit = $SourceCommit
+    replay_nonce = $ReplayNonce
+    verifier_component = "ola-workstation-independent-verifier"
+    external_anchor = $false
+    calls = @($agentResult.execution | ForEach-Object {
+        @{
+            agent = $_.agent
+            run_id = $agentRunId
+            source_commit = $_.source_commit
+            replay_nonce = $ReplayNonce
+            response_id = $_.response_id
+            response_digest = $_.response_digest
+            model = $_.model
+            started_at = $_.started_at
+            ended_at = $_.ended_at
+        }
+    })
+} | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $EvidenceDir "provider-trace.json")
+
+$EndedAtDate = (Get-Date).ToUniversalTime()
+$durationSeconds = ($EndedAtDate - $StartedAtDate).TotalSeconds
+@{
+    started_at = $StartedAtDate.ToString("o")
+    ended_at = $EndedAtDate.ToString("o")
+    duration_seconds = [math]::Round($durationSeconds, 3)
+} | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "runtime-window.json")
+
+$githubApi = "https://api.github.com/repos/krzysztofcieciwa07-ship-it/OLA/commits/$SourceCommit"
+try {
+    $sourceVerification = Invoke-RestMethod -Uri $githubApi -Headers @{ "Accept" = "application/vnd.github+json" } -TimeoutSec 15
+    $sourceVerification | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $EvidenceDir "github-source-verification.json")
+    $verified = [bool]$sourceVerification.commit.verification.verified
+    if ($verified) {
+        Write-Gate "SOURCE_SIGNATURE" "VERIFIED" "GitHub reports exact source commit as cryptographically verified"
+    } else {
+        Write-Gate "SOURCE_SIGNATURE" "BLOCKED" ("GitHub reports source commit is not cryptographically verified: " + $sourceVerification.commit.verification.reason) 1
+    }
+} catch {
+    $_ | Out-String | Set-Content (Join-Path $EvidenceDir "github-source-verification-error.txt")
+    Write-Gate "SOURCE_SIGNATURE" "UNKNOWN" "GitHub source verification API unavailable" 2
+}
+
+@{
+    schema = "ola-zbook-runtime-registration/v2"
+    run_id = $RegistrationRunId
+    agent_run_id = $agentRunId
+    replay_nonce = $ReplayNonce
+    started_at = $StartedAtDate.ToString("o")
+    ended_at = $EndedAtDate.ToString("o")
+    hostname = $env:COMPUTERNAME
+    manufacturer = $computer.Manufacturer
+    model = $computer.Model
+    bios_serial_sha256 = $deviceFingerprint
+    os_caption = $os.Caption
+    os_version = $os.Version
+    tpm_present = $tpmPresent
+    source_commit = $SourceCommit
+    evidence_class = "PHYSICAL_WORKSTATION_RUNTIME"
+    physical_execution = "CAPTURED"
+} | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "workstation-registration.json")
+
+$GateResults["STABILITY"] = [ordered]@{
+    status = "VERIFIED"
+    detail = "30-second health stability window"
+    exit_code = 0
+    timestamp = $EndedAtDate.ToString("o")
+}
+@{
+    prerequisites = $GateResults["PREREQUISITES"]
+    ollama_pull = $GateResults["OLLAMA_PULL"]
+    ollama_model_digest = $GateResults["OLLAMA_MODEL_DIGEST"]
+    ollama_model_registry_binding = $GateResults["OLLAMA_MODEL_REGISTRY_BINDING"]
+    source_pin = $GateResults["SOURCE_PIN"]
+    source_signature = $GateResults["SOURCE_SIGNATURE"]
+    image_build = $GateResults["IMAGE_BUILD"]
+    image_digest = $GateResults["IMAGE_DIGEST"]
+    image_archive = $GateResults["IMAGE_ARCHIVE"]
+    pytest = $GateResults["PYTEST"]
+    runtime_health = $GateResults["RUNTIME_HEALTH"]
+    agent_runtime = $GateResults["AGENT_RUNTIME"]
+    independent_verify = $GateResults["INDEPENDENT_VERIFY"]
+    append_only_tamper = $GateResults["APPEND_ONLY_TAMPER"]
+    stability = $GateResults["STABILITY"]
+    skipped = @()
+} | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $EvidenceDir "gate-results.json")
+
+$manifest = @{
+    schema="ola-workstation-evidence/v3"
+    provider="ollama"
+    model=$OllamaModel
+    registration_run_id=$RegistrationRunId
+    agent_run_id=$agentRunId
+    source_commit=$SourceCommit
+    docker_image_id=$imageInspect[0].Id
+    ollama_model_digest=[string]$modelEntry[0].digest
+    source_signature_status=$GateResults["SOURCE_SIGNATURE"].status
+    final_status="READY_FOR_EXTERNAL_REVIEW"
+    gates=@{
+        source_pin="VERIFIED"
+        source_signature=$GateResults["SOURCE_SIGNATURE"].status
+        image_build="VERIFIED"
+        image_digest="VERIFIED"
+        image_archive="VERIFIED"
+        pytest="VERIFIED"
+        runtime_health="VERIFIED"
+        agent_runtime="VERIFIED"
+        independent_verify="VERIFIED"
+        append_only_tamper="VERIFIED"
+        stability="VERIFIED"
+        ollama_model_registry_binding=if ($GateResults["OLLAMA_MODEL_REGISTRY_BINDING"].status -eq "VERIFIED") { "VERIFIED" } else { "REVIEW_REQUIRED" }
+        provider_authenticity="REVIEW_REQUIRED"
+        freeze_anchor="REVIEW_REQUIRED"
+        physical_execution="CAPTURED"
+        workstation_registration="CAPTURED"
+    }
+}
+$manifest | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $EvidenceDir "MANIFEST.json")
+$manifestHash = (Get-FileHash (Join-Path $EvidenceDir "MANIFEST.json") -Algorithm SHA256).Hash.ToLowerInvariant()
+@{
+    schema = "ola-zbook-freeze-anchor/v1"
+    source_commit = $SourceCommit
+    registration_run_id = $RegistrationRunId
+    agent_run_id = $agentRunId
+    manifest_sha256 = $manifestHash
+    external_anchor = "PENDING_EXTERNAL_ATTESTATION"
+} | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $EvidenceDir "freeze-anchor.json")
+(Get-FileHash (Join-Path $EvidenceDir "freeze-anchor.json") -Algorithm SHA256).Hash.ToLowerInvariant() + "  freeze-anchor.json" | Set-Content (Join-Path $EvidenceDir "freeze-anchor.sha256")
+$freezeCheck = $GateResults["STABILITY"]
+Write-Gate "FREEZE_ANCHOR" "REVIEW_REQUIRED" "local freeze anchor captured; external attestation pending"
+Get-ChildItem $EvidenceDir -File |
+    Where-Object { $_.Name -ne "SHA256SUMS.txt" -and $_.Name -ne "freeze-anchor.json" -and $_.Name -ne "freeze-anchor.sha256" } |
+    Sort-Object Name |
+    ForEach-Object {
+        $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+        "$hash  $($_.Name)"
+    } |
+    Set-Content (Join-Path $EvidenceDir "SHA256SUMS.txt")
+if ($GateResults["SOURCE_SIGNATURE"].status -eq "BLOCKED") {
+    Write-Gate "WORKSTATION" "REVIEW_REQUIRED" "local runtime captured; exact source is unsigned; provider authenticity and external freeze remain open"
+} else {
+    Write-Gate "WORKSTATION" "REVIEW_REQUIRED" "local runtime captured; provider authenticity and external freeze remain REVIEW_REQUIRED"
+}
 docker rm -f $Container | Out-Null

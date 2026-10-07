@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - provenance-controlled-mutation
+      - main
 
 permissions:
   contents: read
@@ -13,31 +14,47 @@ permissions:
 jobs:
   provenance-mutation:
     runs-on: ubuntu-latest
+    env:
+      TARGET_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ env.TARGET_COMMIT }}
+          fetch-depth: 0
 
       - name: Build deployment image
-        run: docker build --tag ola:${GITHUB_SHA} .
+        run: docker build --tag ola:${TARGET_COMMIT} .
 
       - name: Start deployment image with source provenance
         run: |
           set -euo pipefail
-          docker run --detach --rm --name ola-provenance -p 8000:8000 \
-            -e OLA_RUNTIME_COMMIT="${GITHUB_SHA}" \
-            ola:${GITHUB_SHA}
+          docker run --detach --name ola-provenance -p 8000:8000 \
+            -e OLA_SOURCE_COMMIT="${TARGET_COMMIT}" \
+            -e OLA_RUNTIME_COMMIT="${TARGET_COMMIT}" \
+            ola:${TARGET_COMMIT}
           for i in $(seq 1 30); do
+            status=$(docker inspect --format '{{.State.Status}}' ola-provenance 2>/dev/null || echo missing)
+            if [ "$status" = "exited" ] || [ "$status" = "dead" ] || [ "$status" = "missing" ]; then
+              echo "CONTAINER_STATUS_EARLY_FAILURE:"
+              docker inspect --format '{{json .State}}' ola-provenance || true
+              echo "CONTAINER_LOGS_EARLY_FAILURE:"
+              docker logs ola-provenance || true
+              exit 1
+            fi
             if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then exit 0; fi
             sleep 1
           done
-          docker logs ola-provenance
+          echo "CONTAINER_STATUS_BEFORE_FAILURE:"
+          docker inspect --format '{{json .State}}' ola-provenance || true
+          echo "CONTAINER_LOGS:"
+          docker logs ola-provenance || true
           exit 1
 
       - name: Clean evidence must verify
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.TARGET_COMMIT }}
           EXPECTED_TASK: Calculate 17 * 23 and return the verified result.
           EXPECTED_RESULT: "391"
         run: |
@@ -72,7 +89,7 @@ jobs:
 
       - name: Evidence tamper must be rejected
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.TARGET_COMMIT }}
           EXPECTED_TASK: Calculate 17 * 23 and return the verified result.
           EXPECTED_RESULT: "391"
         run: |
@@ -161,6 +178,29 @@ jobs:
           print("CONTROLLED_COMMIT_MUTATION=VERIFIED")
           PY
 
+      - name: Write and publish provenance correlation context
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          context = {
+              "schema": "ola-evidence-context-v1",
+              "source_commit": os.environ["TARGET_COMMIT"],
+              "github_run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "correlation_key": os.environ["TARGET_COMMIT"],
+          }
+          json.dump(context, open("provenance-context.json", "w", encoding="utf-8"), sort_keys=True, indent=2)
+          PY
+
+      - name: Publish provenance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ola-provenance-evidence-${{ env.TARGET_COMMIT }}
+          path: provenance-context.json
       - name: Stop deployment image
         if: always()
         run: docker stop ola-provenance || true
