@@ -246,6 +246,26 @@ jobs:
             run-challenge.json
             ola-nina-ollama-runtime.log
 
+      - name: Capture OLA and Ollama logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          docker logs ola-nina-ollama > ola-nina-ollama-failure.log 2>&1
+          tail -n 200 /tmp/ollama.log > ollama-server-failure.log 2>&1
+          cat ola-nina-ollama-failure.log
+          echo "----- ollama server log (tail) -----"
+          cat ollama-server-failure.log
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nina-igor-ollama-failure-${{ env.SOURCE_SHA }}
+          path: |
+            ola-nina-ollama-failure.log
+            ollama-server-failure.log
+
       - name: Stop OLA
         if: always()
         run: docker rm --force ola-nina-ollama >/dev/null 2>&1 || true
