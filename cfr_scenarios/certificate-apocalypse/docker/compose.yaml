@@ -1,0 +1,84 @@
+# Certificate Apocalypse in containers: one image, six roles. Start it with `make docker-up` (it sets CFR_* below);
+# `make break`, `make fix`, `make assert`, `make metrics`, `make score`, `make witness-*` run on the HOST against the
+# shared ./state directory, exactly as in process mode.
+#
+#   init      once per run: leaf certificates (the CA is kept), ports.json, the `up` event
+#   api, billing   share state/certs/server.pem  -> the fault hits them        (one TLS server each)
+#   static, admin  have their own certificates   -> collateral damage if the participant breaks the CA
+#   monitor   verified probe (chain + hostname) of all four over the compose network, every 0.2 s -> state/timeline.jsonl
+#
+# The services mount the certificate DIRECTORY read-only. A directory, not the file: the host replaces server.pem by
+# rename (atomic), and a single-file bind mount would keep pointing at the old inode.
+# Published ports are bound to 127.0.0.1 only.
+name: cfr-certificate-apocalypse
+
+x-role: &role
+  image: cfr-range:local
+  pull_policy: never
+  user: "${CFR_UID:?run through make docker-up}:${CFR_GID:?run through make docker-up}"
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  restart: "no"
+  stop_grace_period: 5s
+  mem_limit: 128m
+  pids_limit: 256
+
+x-service: &service
+  <<: *role
+  volumes:
+    - "${CFR_STATE:?run through make docker-up}/certs:/state/certs:ro"
+  depends_on:
+    init:
+      condition: service_completed_successfully
+
+services:
+  init:
+    <<: *role
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["--state", "/state", "init", "--host", "${CFR_HOST:?run through make docker-up}",
+              "--ports", "api=${CFR_PORT_API:-18441},billing=${CFR_PORT_BILLING:-18442},static=${CFR_PORT_STATIC:-18443},admin=${CFR_PORT_ADMIN:-18444}"]
+    volumes:
+      - "${CFR_STATE:?run through make docker-up}:/state"
+
+  api:
+    <<: *service
+    command: ["--state", "/state", "service", "--name", "api"]
+    ports: ["127.0.0.1:${CFR_PORT_API:-18441}:8443"]
+
+  billing:
+    <<: *service
+    command: ["--state", "/state", "service", "--name", "billing"]
+    ports: ["127.0.0.1:${CFR_PORT_BILLING:-18442}:8443"]
+
+  static:
+    <<: *service
+    command: ["--state", "/state", "service", "--name", "static"]
+    ports: ["127.0.0.1:${CFR_PORT_STATIC:-18443}:8443"]
+
+  admin:
+    <<: *service
+    command: ["--state", "/state", "service", "--name", "admin"]
+    ports: ["127.0.0.1:${CFR_PORT_ADMIN:-18444}:8443"]
+
+  monitor:
+    <<: *role
+    command: ["--state", "/state", "monitor", "--host", "${CFR_HOST:?run through make docker-up}",
+              "--targets", "api=api:8443,billing=billing:8443,static=static:8443,admin=admin:8443"]
+    volumes:
+      - "${CFR_STATE:?run through make docker-up}:/state"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      api:
+        condition: service_started
+      billing:
+        condition: service_started
+      static:
+        condition: service_started
+      admin:
+        condition: service_started

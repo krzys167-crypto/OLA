@@ -2,6 +2,9 @@ from dataclasses import dataclass
 from typing import Any, Callable, FrozenSet, Optional
 
 
+_RISKS = frozenset({"LOW", "MEDIUM", "HIGH"})
+
+
 @dataclass(frozen=True)
 class ExecutionDecision:
     status: str
@@ -15,7 +18,12 @@ class ExecutionSafetyGate:
     """Fail-closed execution gate: unknown actions never execute."""
 
     def __init__(self, allowed_actions: Optional[set[str]] = None):
-        self._allowed_actions: FrozenSet[str] = frozenset(allowed_actions or set())
+        if allowed_actions is None:
+            allowed_actions = set()
+        # a bare string would silently become a set of single characters ("read" -> {"r","e","a","d"})
+        if isinstance(allowed_actions, (str, bytes)) or not all(type(a) is str for a in allowed_actions):
+            raise TypeError("allowed_actions must be a collection of str")
+        self._allowed_actions: FrozenSet[str] = frozenset(allowed_actions)
 
     def execute(
         self,
@@ -30,15 +38,20 @@ class ExecutionSafetyGate:
         # gate does not yet maintain an agent registry.
         _ = agent_id
 
-        # High-risk actions require explicit human-owner approval before any
-        # allow-list check can result in execution.
-        if risk.upper() == "HIGH" and not human_approved:
+        # Unknown input never executes: a risk label outside the known set (typo, None, zero-width character)
+        # is a BLOCK, not an implicit "not HIGH".
+        if type(risk) is not str or risk.upper() not in _RISKS:
+            return ExecutionDecision(status="BLOCK")
+
+        # High-risk actions require explicit human-owner approval (the JSON/Python boolean True, nothing truthy)
+        # before any allow-list check can result in execution.
+        if risk.upper() == "HIGH" and human_approved is not True:
             return ExecutionDecision(
                 status="REVIEW",
                 required_approval="HUMAN_OWNER",
             )
 
-        if action not in self._allowed_actions:
+        if type(action) is not str or action not in self._allowed_actions:
             return ExecutionDecision(status="BLOCK")
 
         result = effect()

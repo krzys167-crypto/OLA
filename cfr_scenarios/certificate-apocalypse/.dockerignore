@@ -1,0 +1,4 @@
+# the image needs cfr_range.py and scripts/ only: no state, no tests, no keys, no history
+*
+!cfr_range.py
+!scripts

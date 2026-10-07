@@ -5,11 +5,13 @@ on:
   push:
     branches:
       - feat/evidence-graph-v0.1
+      - main
 
 permissions:
   contents: read
 
 env:
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
   OLA_LLM_PROVIDER: ollama
   OLA_LLM_MODE: required
   OLLAMA_MODEL: qwen2.5:0.5b-instruct
@@ -24,6 +26,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Set up Ollama
         shell: bash
@@ -56,6 +59,23 @@ jobs:
       - name: Build OLA image
         run: docker build --tag ola-ollama-e2e --file Dockerfile .
 
+      - name: Issue fresh anti-replay challenge
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPLAY_NONCE="$(openssl rand -hex 32)"
+          echo "REPLAY_NONCE=$REPLAY_NONCE" >> "$GITHUB_ENV"
+          cat > run-challenge.json <<EOF
+          {
+            "schema": "ola-run-challenge/v1",
+            "challenge_id": "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
+            "run_id": "",
+            "source_commit": "${SOURCE_SHA}",
+            "replay_nonce": "${REPLAY_NONCE}",
+            "issued_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
       - name: Start OLA against live Ollama
         shell: bash
         run: |
@@ -64,7 +84,9 @@ jobs:
             --name ola-ollama-e2e \
             --network host \
             -e OLA_EG_DB_PATH=/data/ola.db \
-            -e OLA_RUNTIME_COMMIT="$GITHUB_SHA" \
+            -e OLA_SOURCE_COMMIT="$SOURCE_SHA" \
+            -e OLA_REPLAY_NONCE="$REPLAY_NONCE" \
+            -e OLA_RUNTIME_COMMIT="$SOURCE_SHA" \
             -e OLA_LLM_PROVIDER="$OLA_LLM_PROVIDER" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
             -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
@@ -85,10 +107,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The gate is unchanged. What is new: a red step says WHY as an annotation (job logs are not always readable,
+          # annotations are), because this step failed once on a commit that changed no application code and passed on
+          # the rerun, and nothing recorded the reason.
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then cat ollama-runtime-stderr.txt >&2 2>/dev/null; bash scripts/ci_annotate_runtime_failure.sh "$rc" "real six-agent LLM runtime failed" ollama-runtime-stderr.txt; fi' EXIT
+          docker exec -i ola-ollama-e2e sh -c 'cat > /data/run-challenge.json' < run-challenge.json
           docker exec -i \
-            -e EXPECTED_COMMIT="$GITHUB_SHA" \
+            -e EXPECTED_COMMIT="$SOURCE_SHA" \
+            -e REPLAY_NONCE="$REPLAY_NONCE" \
             -e OLLAMA_MODEL="$OLLAMA_MODEL" \
-            ola-ollama-e2e python - <<'PY' > ollama-runtime-proof.json
+            ola-ollama-e2e python - <<'PY' > ollama-runtime-proof.json 2> ollama-runtime-stderr.txt
           import hashlib
           import json
           import os
@@ -128,7 +156,8 @@ jobs:
           assert all(item["provider"]=="ollama" for item in result["execution"]), result
           assert all(item["model"]==os.environ["OLLAMA_MODEL"] for item in result["execution"]), result
           assert all(item["invocation_type"]=="real_llm" for item in result["execution"]), result
-          assert all(item.get("response_id") for item in result["execution"]), result
+          assert result["replay_nonce"]==os.environ["REPLAY_NONCE"], result
+          assert all(item.get("response_id") or item.get("response_digest") for item in result["execution"]), result
 
           proof={
               "gate":"REAL_OLLAMA_LLM_E2E",
@@ -140,30 +169,41 @@ jobs:
               "final_result":result["final_result"],
               "evidence_count":result["evidence_count"],
               "commit":os.environ["EXPECTED_COMMIT"],
+              "source_commit":result["source_commit"],
               "run_id":result["run_id"],
+              "replay_nonce":result["replay_nonce"],
           }
           print(json.dumps(proof,sort_keys=True))
+          with open("/data/run-challenge.json","r",encoding="utf-8") as challenge_stream:
+              challenge=json.load(challenge_stream)
+          challenge["run_id"]=result["run_id"]
+          with open("/data/run-challenge.json","w",encoding="utf-8") as challenge_stream:
+              json.dump(challenge,challenge_stream,sort_keys=True,indent=2)
           with open("/data/ollama-proof-context.json","w",encoding="utf-8") as stream:
               json.dump({"tenant_id":tenant_id,"run_id":result["run_id"],"task":task},stream,sort_keys=True)
 
           PY
+          cat ollama-runtime-stderr.txt >&2
+          docker cp ola-ollama-e2e:/data/run-challenge.json run-challenge.json
 
       - name: Standalone verifier over captured runtime evidence
         shell: bash
         run: |
           set -euo pipefail
+          trap 'rc=$?; [ "$rc" -eq 0 ] || bash scripts/ci_annotate_failure.sh verifier-output.txt "standalone verifier failed"' EXIT
           TENANT_ID=$(docker exec ola-ollama-e2e python -c 'import json; print(json.load(open("/data/ollama-proof-context.json"))["tenant_id"])')
           RUN_ID=$(docker exec ola-ollama-e2e python -c 'import json; print(json.load(open("/data/ollama-proof-context.json"))["run_id"])')
           docker exec ola-ollama-e2e \
             python scripts/verify_agent_runtime.py \
               --tenant-id "$TENANT_ID" \
               --run-id "$RUN_ID" \
-              --expected-commit "$GITHUB_SHA" \
+              --expected-commit "$SOURCE_SHA" \
               --expected-task "Calculate 17 * 23 and return the exact verified result 391." \
               --expected-result "391" \
               --expected-provider "ollama" \
               --expected-model "$OLLAMA_MODEL" \
-              --expected-invocation-type "real_llm"
+              --expected-invocation-type "real_llm" \
+              --expected-nonce "$REPLAY_NONCE" 2>&1 | tee verifier-output.txt
 
       - name: Capture Ollama provider evidence
         shell: bash
@@ -176,11 +216,12 @@ jobs:
       - name: Upload Ollama LLM evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ollama-real-llm-proof-${{ github.sha }}
+          name: ollama-real-llm-proof-${{ env.SOURCE_SHA }}
           path: |
             ollama-tags-before-pull.json
             ollama-models.json
             ollama-runtime-proof.json
+            run-challenge.json
             ola-ollama-runtime.log
 
       - name: Capture OLA logs on runtime failure
@@ -195,7 +236,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ollama-real-llm-failure-${{ github.sha }}
+          name: ollama-real-llm-failure-${{ env.SOURCE_SHA }}
           path: |
             ola-ollama-runtime-failure.log
 

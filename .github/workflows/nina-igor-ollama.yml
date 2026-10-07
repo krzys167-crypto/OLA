@@ -7,11 +7,13 @@ on:
   push:
     branches:
       - feat/evidence-graph-v0.1
+      - main
 
 permissions:
   contents: read
 
 env:
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
   OLA_LLM_PROVIDER: ollama
   OLA_LLM_MODE: required
   OLLAMA_MODEL: qwen2.5:0.5b-instruct
@@ -45,6 +47,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Set up Ollama
         shell: bash
@@ -64,6 +67,23 @@ jobs:
       - name: Build OLA
         run: docker build --tag ola-nina-ollama --file Dockerfile .
 
+      - name: Issue fresh anti-replay challenge
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPLAY_NONCE="$(openssl rand -hex 32)"
+          echo "REPLAY_NONCE=$REPLAY_NONCE" >> "$GITHUB_ENV"
+          cat > run-challenge.json <<EOF
+          {
+            "schema": "ola-run-challenge/v1",
+            "challenge_id": "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
+            "run_id": "",
+            "source_commit": "${SOURCE_SHA}",
+            "replay_nonce": "${REPLAY_NONCE}",
+            "issued_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
       - name: Start OLA
         shell: bash
         run: |
@@ -72,7 +92,9 @@ jobs:
             --name ola-nina-ollama \
             --network host \
             -e OLA_EG_DB_PATH=/data/ola.db \
-            -e OLA_RUNTIME_COMMIT="$GITHUB_SHA" \
+            -e OLA_SOURCE_COMMIT="$SOURCE_SHA" \
+            -e OLA_REPLAY_NONCE="$REPLAY_NONCE" \
+            -e OLA_RUNTIME_COMMIT="$SOURCE_SHA" \
             -e OLA_LLM_PROVIDER="$OLA_LLM_PROVIDER" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
             -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
@@ -93,9 +115,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker exec -i ola-nina-ollama python - <<'PY' > nina-igor-ollama-proof.json
+          docker exec -i ola-nina-ollama sh -c 'cat > /data/run-challenge.json' < run-challenge.json
+          docker exec -i -e SOURCE_SHA="$SOURCE_SHA" -e REPLAY_NONCE="$REPLAY_NONCE" ola-nina-ollama python - <<'PY' > nina-igor-ollama-proof.json
           import hashlib
           import json
+          import os
           import sqlite3
           import urllib.request
           import uuid
@@ -142,12 +166,14 @@ jobs:
           assert body["igor"]["checks"]["provider"] is True, body
           assert body["igor"]["checks"]["model"] is True, body
           assert body["provenance"]["status"]=="VERIFIED", body
-          assert body["provenance"]["commit"]=="${{ github.sha }}", body
+          assert body["provenance"]["commit"]==os.environ["SOURCE_SHA"], body
+          assert body["provenance"]["source_commit"]==os.environ["SOURCE_SHA"], body
+          assert body["provenance"]["replay_nonce"]==os.environ["REPLAY_NONCE"], body
           assert body["provenance"]["provider"]=="ollama", body
           assert body["provenance"]["model"]=="qwen2.5:0.5b-instruct", body
           assert body["provenance"]["invocation_type"]=="real_llm", body
           assert body["provenance"]["llm_invocations"]==6, body
-          assert len(body["provenance"]["response_ids"])==6, body
+          assert len(body["provenance"]["response_ids"]) + len(body["provenance"].get("response_digests", []))==6, body
           assert body["replay_verification"]["status"]=="VERIFIED", body
           assert body["replay_verification"]["event_count"]==7, body
           assert len(body["replay"])==7, body
@@ -173,12 +199,18 @@ jobs:
               "human_gate_status":body["human_gate"]["status"],
               "run_id":body["run_id"],
               "tenant_id":tenant_id,
-              "commit":"${{ github.sha }}",
+              "commit":os.environ["SOURCE_SHA"],
           }
           print(json.dumps(proof,sort_keys=True))
+          with open("/data/run-challenge.json","r",encoding="utf-8") as stream:
+              challenge=json.load(stream)
+          challenge["run_id"]=body["run_id"]
+          with open("/data/run-challenge.json","w",encoding="utf-8") as stream:
+              json.dump(challenge,stream,sort_keys=True,indent=2)
           with open("/data/nina-ollama-proof-context.json","w",encoding="utf-8") as stream:
               json.dump({"tenant_id":tenant_id,"run_id":body["run_id"],"task":task},stream,sort_keys=True)
           PY
+          docker cp ola-nina-ollama:/data/run-challenge.json run-challenge.json
 
       - name: Standalone verifier
         shell: bash
@@ -190,12 +222,13 @@ jobs:
             python scripts/verify_agent_runtime.py \
               --tenant-id "$TENANT_ID" \
               --run-id "$RUN_ID" \
-              --expected-commit "$GITHUB_SHA" \
+              --expected-commit "$SOURCE_SHA" \
               --expected-task "Calculate 17 * 23 and return the exact verified result 391." \
               --expected-result "391" \
               --expected-provider "ollama" \
               --expected-model "$OLLAMA_MODEL" \
-              --expected-invocation-type "real_llm"
+              --expected-invocation-type "real_llm" \
+              --expected-nonce "$REPLAY_NONCE"
 
       - name: Capture OLA flow evidence
         shell: bash
@@ -206,10 +239,11 @@ jobs:
       - name: Upload full-flow evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nina-igor-ollama-full-flow-${{ github.sha }}
+          name: nina-igor-ollama-full-flow-${{ env.SOURCE_SHA }}
           path: |
             ollama-models.json
             nina-igor-ollama-proof.json
+            run-challenge.json
             ola-nina-ollama-runtime.log
 
       - name: Stop OLA

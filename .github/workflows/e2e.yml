@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   e2e:
     runs-on: ubuntu-latest
@@ -23,6 +26,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ env.SOURCE_SHA }}
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -40,11 +45,11 @@ jobs:
         run: python scripts/verify_readme_claims.py
 
       - name: Build deployment image
-        run: docker build --tag ola:${GITHUB_SHA} .
+        run: docker build --tag ola:${SOURCE_SHA} .
 
       - name: Run deployment image
         run: |
-          docker run --detach --rm --name ola-e2e --publish 8000:8000 -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola:${GITHUB_SHA}
+          docker run --detach --rm --name ola-e2e --publish 8000:8000 -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola:${SOURCE_SHA}
           for i in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
               exit 0
@@ -56,7 +61,7 @@ jobs:
 
       - name: Independent runtime E2E proof
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.SOURCE_SHA }}
         run: |
           docker exec -i -e EXPECTED_COMMIT="$EXPECTED_COMMIT" ola-e2e python - <<'PY'
           import hashlib, json, os, sqlite3, urllib.request, uuid
@@ -82,9 +87,10 @@ jobs:
           assert [r[0] for r in rows] == result["evidence_ids"], (rows, result)
           expected_prev = "0" * 64
           for expected_seq, row in enumerate(rows):
-              _, row_tenant, seq, _, payload_json, prev_hash, record_hash = row
+              _, row_tenant, seq, rtype, payload_json, prev_hash, record_hash = row
               assert row_tenant == tenant_id; assert seq == expected_seq; assert prev_hash == expected_prev
-              expected_hash = hashlib.sha256(f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")).hexdigest()
+              # independent recomputation of hash v2 (the record type is bound into the hash)
+              expected_hash = hashlib.sha256(f"ola.chain/2|{tenant_id}|{seq}|{prev_hash}|{len(rtype)}:{rtype}|{payload_json}".encode("utf-8")).hexdigest()
               assert record_hash == expected_hash, (seq, record_hash, expected_hash); expected_prev = record_hash
           print(json.dumps({"gate":"INDEPENDENT_RUNTIME_E2E","status":"VERIFIED","container_health":"PASS","http_audit":"PASS","evidence_count":len(rows),"hash_chain":"PASS","result_ids_match_db":True,"commit":os.environ["EXPECTED_COMMIT"]}, sort_keys=True))
           PY
@@ -122,7 +128,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OLA_LLM_MODE: required
           OLA_LLM_MODEL: gpt-5.6-luna
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.SOURCE_SHA }}
           EXPECTED_TASK: Calculate 17 * 23 and return the verified result.
           EXPECTED_RESULT: "391"
         run: |
@@ -158,9 +164,10 @@ jobs:
           assert payloads[-1]["final_result"] == expected_result, payloads[-1]
           expected_prev = "0" * 64
           for expected_seq, row in enumerate(rows):
-              _, row_tenant, seq, _, payload_json, prev_hash, record_hash = row
+              _, row_tenant, seq, rtype, payload_json, prev_hash, record_hash = row
               assert row_tenant == tenant_id; assert seq == expected_seq; assert prev_hash == expected_prev
-              expected_hash = hashlib.sha256(f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")).hexdigest()
+              # independent recomputation of hash v2 (the record type is bound into the hash)
+              expected_hash = hashlib.sha256(f"ola.chain/2|{tenant_id}|{seq}|{prev_hash}|{len(rtype)}:{rtype}|{payload_json}".encode("utf-8")).hexdigest()
               assert record_hash == expected_hash; expected_prev = record_hash
           verifier = subprocess.run(
               ["python", "scripts/verify_agent_runtime.py", "--tenant-id", tenant_id,
@@ -253,14 +260,14 @@ jobs:
           docker inspect ola-e2e > docker-inspect.json 2>&1 || true
           docker logs ola-e2e > docker-runtime.log 2>&1 || true
           sha256sum docker-inspect.json docker-runtime.log agent-runtime-proof.json business-invoice-proof.json > runtime-file-hashes.txt || true
-          printf '%s\n' "commit=${GITHUB_SHA}" "run=${GITHUB_RUN_ID}" > provenance.txt
+          printf '%s\n' "commit=${SOURCE_SHA}" "run=${GITHUB_RUN_ID}" > provenance.txt
           sha256sum provenance.txt >> runtime-file-hashes.txt || true
 
       - name: Upload runtime evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ola-runtime-e2e-${{ github.sha }}
+          name: ola-runtime-e2e-${{ env.SOURCE_SHA }}
           path: |
             docker-inspect.json
             docker-runtime.log

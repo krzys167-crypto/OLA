@@ -31,7 +31,9 @@ document.querySelector("form").onsubmit=async e=>{
  const d=await r.json();
  const answer=d.message||("NINA BLOCK: "+(d.detail||d.reason||"unknown"));
  messages.push({role:"assistant",content:answer});
- add("nina",answer);
+ // only an independent-judge ACCEPT earns "verified"; otherwise say plainly that nobody checked the answer
+ const mark=d.verification==="INDEPENDENT_JUDGE_ACCEPTED"?" [zweryfikowane przez niezależnego sędziego]":(d.message?" [niezweryfikowane]":"");
+ add("nina",answer+mark);
 };
 add("nina","Cześć. Jestem NINA.");
 </script>
