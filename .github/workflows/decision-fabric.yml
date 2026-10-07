@@ -31,6 +31,9 @@ jobs:
 
   live-jev:
     runs-on: ubuntu-latest
+    environment:
+      name: ci-openai
+      deployment: false
     outputs:
       configured: ${{ steps.key.outputs.configured }}
     steps:
@@ -94,6 +97,9 @@ jobs:
     # Measures how often Jev lets through a bundle that needed review or a block (scripts/jev_eval.py).
     # Without the credential nothing is measured: JEV_QUALITY=NOT_PROVEN, never a pass.
     runs-on: ubuntu-latest
+    environment:
+      name: ci-openai
+      deployment: false
     outputs:
       verdict: ${{ steps.eval.outputs.verdict }}
     steps:
