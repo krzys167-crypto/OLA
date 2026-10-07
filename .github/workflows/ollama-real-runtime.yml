@@ -16,7 +16,7 @@ env:
   OLA_LLM_MODE: required
   OLLAMA_MODEL: qwen2.5:0.5b-instruct
   OLA_LLM_MODEL: qwen2.5:0.5b-instruct
-  OLA_LLM_TIMEOUT: "60"
+  OLA_LLM_TIMEOUT: "180"
 
 jobs:
   ollama-real-runtime:
