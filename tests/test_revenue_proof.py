@@ -488,3 +488,18 @@ def test_an_execution_that_names_another_stripe_event_is_not_bound_to_the_paymen
     _synth(tenant_id, payments=(True,), exec_over={"stripe_event_id": "evt_other"})
     one = _only(revenue_proof(tenant_id))
     assert one["missing"] == ["EVIDENCE_BOUND", "RESULT_SERVED"]
+
+
+# ------------------------------------------------------------------ the CLI
+def test_cli_exits_3_without_a_proof_and_0_with_one(env, capsys):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("revenue_proof_cli", "scripts/revenue_proof.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    tenant_id, _ = make_tenant()
+    _paid(env, tenant_id, live=False)
+    assert cli.main(["--tenant", tenant_id]) == 3
+    assert json.loads(capsys.readouterr().out)["proven"] == []
+    _paid(env, tenant_id, live=True)
+    assert cli.main(["--tenant", tenant_id]) == 0
+    assert json.loads(capsys.readouterr().out)["proven"] == [tenant_id]
