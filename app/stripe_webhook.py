@@ -335,11 +335,11 @@ def _summarise(runtime: dict) -> dict:
 def stripe_livemode(event: dict, session: dict):
     """True (a live payment), False (a test payment) or None (Stripe did not say, or said two different things).
 
-    Stripe puts the boolean `livemode` on the event and on the object inside it. A value that is missing, is not a
+    Stripe puts the boolean `livemode` on the event and on the object inside it. A value that is missing from either, is not a
     boolean (the string "true", the number 1) or differs between the two is None, because the revenue proof counts
     only an explicit True: a payment whose mode is not known is never counted as live revenue."""
     values = [source["livemode"] for source in (event, session) if "livemode" in source]
-    if all(isinstance(value, bool) for value in values) and len(set(values)) == 1:
+    if len(values) == 2 and all(isinstance(value, bool) for value in values) and len(set(values)) == 1:
         return values[0]
     return None
 
