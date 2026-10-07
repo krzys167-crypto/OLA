@@ -6,8 +6,8 @@ RUN apt-get update     && apt-get upgrade -y     && apt-get install -y --no-inst
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN python3.13 -m venv /opt/venv     && python -m pip install --no-cache-dir --upgrade pip     && python -m pip install --no-cache-dir --force-reinstall -r requirements.txt     && python -m pip check     && python -c "import msgpack, setuptools, urllib3, wheel; print('DEPENDENCY_VERSIONS', msgpack.__version__, setuptools.__version__, urllib3.__version__, wheel.__version__)" \
+COPY requirements.txt requirements.lock ./
+RUN python3.13 -m venv /opt/venv     && python -m pip install --no-cache-dir --upgrade pip     && python -m pip install --no-cache-dir --force-reinstall --require-hashes -r requirements.lock     && python -m pip check     && python -c "import msgpack, setuptools, urllib3, wheel; print('DEPENDENCY_VERSIONS', msgpack.__version__, setuptools.__version__, urllib3.__version__, wheel.__version__)" \
     && rm -rf /opt/venv/lib/python3.13/site-packages/pip \
               /opt/venv/lib/python3.13/site-packages/pip-*.dist-info \
               /opt/venv/lib/python3.13/site-packages/setuptools \
