@@ -1,0 +1,1 @@
+{"canary":true,"decision":"BLOCK","expected":"anything but PASS","judge_status":"OK","output":"5","quality_score":5,"task":"What is 2 + 2? Answer with the number only.","verdict":"REJECTED"}

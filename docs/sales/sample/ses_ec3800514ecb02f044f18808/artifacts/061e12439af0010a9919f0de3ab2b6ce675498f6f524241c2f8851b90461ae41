@@ -1,0 +1,1 @@
+{"decision": "PASS", "quality_score": 90, "findings": [], "required_corrections": [], "reason": "SCRIPTED verdict of the test double; it says nothing about the quality of the map."}

@@ -1,0 +1,32 @@
+{
+  "agent_id": "igor-canary",
+  "binding": "aed5b26955080be0f6c2b0722fcaaa8cb1bee8548bbbab70ed7c00c4ef269208",
+  "detail": "",
+  "endpoint": "http://127.0.0.1:44893",
+  "envelope_hash": "48bbd04ad678c8316e001ff30500e03a537f4f35b2a9ecc37479d27d35d4e577",
+  "execution_status": "EXECUTED",
+  "gate_state": "CANARY_REJECTED",
+  "input_hash": "4d76469fafeea3f6cede11e54d8df884e22c32ceac814de45585a2849ece7dc0",
+  "iteration": 1,
+  "model": "sample-igor",
+  "model_digest": "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4abcd",
+  "output_hash": "45c049c55447caacae1df4aa3288e86252ea7bcfe49598f64c7b072bf2193d8a",
+  "parent_run_id": "run_3c3ae9cc40ef9a376e70440ba3adae05",
+  "prev_envelope_hash": "5125994371d526cba933804b3f6d8ad61017b7718b6197a9986d5ec471f6926c",
+  "prompt_hash": "f5772d98e1daafe8ccf1578c9b0669c4ed7675e3128af1fa69919aadd823a393",
+  "provider": "ollama-local",
+  "refs": {
+    "canary_verdict": "REJECTED",
+    "evaluation_hash": "d35fa5ecfb675d4b7a6f50e76c122d0647d50a9069d3bac99136d9fdb7ea9d53",
+    "verifies_run_id": "run_3c3ae9cc40ef9a376e70440ba3adae05"
+  },
+  "run_id": "run_ad5f34f1be789c034c57adef6b75a59f",
+  "runtime_kind": "TEST_DOUBLE",
+  "runtime_proof_hash": "400f5ae9a04c2d985741e08e2eaae179a4339134f2990bcdfeb9843a1dcad687",
+  "schema_version": "ola.envelope/1",
+  "seq": 3,
+  "session_id": "ses_ec3800514ecb02f044f18808",
+  "source_sha": "559cb1d055cc32b7a65e8848312518588d1d6130",
+  "source_sha_kind": "git-clean",
+  "timestamp": "2026-10-08T16:24:31.324+00:00"
+}
