@@ -3,6 +3,7 @@ name: Nina Igor Gate
 on:
   push:
     branches:
+      - main
       - nina-igor-execution-chain
   pull_request:
 
