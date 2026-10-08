@@ -19,7 +19,7 @@ def _copy(tmp_path):
     dest = tmp_path / SESSION.name
     shutil.copytree(SESSION, dest)
     for p in [dest, *dest.rglob("*")]:
-        os.chmod(p, 0o755 if p.is_dir() else 0o644)     # what a git checkout gives: writable files
+        os.chmod(p, 0o700 if p.is_dir() else 0o600)     # writable files, as after a git checkout (owner-only)
     return dest
 
 
