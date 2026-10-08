@@ -1,0 +1,45 @@
+{
+  "anti_replay": {
+    "binding": "146529ec6f0552aae9877bc971f12d2bec3f6489b1c4a94c4501efc9c6186576",
+    "final_nonce": "67193bd0a14e5d8efd6d93ff563e6580"
+  },
+  "chain_head": "48bbd04ad678c8316e001ff30500e03a537f4f35b2a9ecc37479d27d35d4e577",
+  "evidence": {
+    "evaluation_hash": "f89c90d8336cb7266fcc14686811c9a1d0db8b8ebc2f4c56e8ee3ab06ee776d6",
+    "input_hash": "4eb6e7fe25b6585a91f5802ad8a9b92674b06a3e408aab75ef1f6010214e450c",
+    "output_hash": "9435a2649d666e3de487f35621113366c0f9d0fadc1857bd1755d80289a8292a"
+  },
+  "evidence_class": "TEST_DOUBLE",
+  "gate_reasons": [],
+  "gate_state": "PASS",
+  "igor_status": "PASS_UNATTESTED",
+  "iterations": 1,
+  "model": "sample-nina",
+  "model_digest": "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4",
+  "nina_status": "EXECUTED",
+  "policy": {
+    "allow_same_model_igor": false,
+    "allow_test_double": true,
+    "max_iterations": 3,
+    "min_quality_score": 70,
+    "require_igor_calibration": true,
+    "require_model_digest": true
+  },
+  "provider": "ollama-local",
+  "run_id": "run_3c3ae9cc40ef9a376e70440ba3adae05",
+  "runs": [
+    {
+      "igor_decision": "PASS",
+      "igor_run_id": "run_0b6364222e3eb65a6d65a5631f59a0b1",
+      "iteration": 1,
+      "nina_run_id": "run_3c3ae9cc40ef9a376e70440ba3adae05",
+      "nina_status": "EXECUTED"
+    }
+  ],
+  "schema_version": "ola.final/1",
+  "session_id": "ses_ec3800514ecb02f044f18808",
+  "source_sha": "559cb1d055cc32b7a65e8848312518588d1d6130",
+  "source_sha_end": "559cb1d055cc32b7a65e8848312518588d1d6130",
+  "source_sha_kind": "git-clean",
+  "warnings": []
+}

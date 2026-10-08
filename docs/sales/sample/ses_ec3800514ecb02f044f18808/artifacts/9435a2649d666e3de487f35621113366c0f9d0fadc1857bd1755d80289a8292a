@@ -1,0 +1,9 @@
+QUICK MAP - SYNTHETIC SAMPLE (text scripted by the author; no model wrote it)
+
+Process: rental-application e-mails at a fictional agency. Sample: 3 invented e-mails.
+
+Could be automated (on the sample): sorting by property reference; extracting name, requested date, attached document types; flagging e-mails with a missing attachment.
+Must stay with a person: judging an applicant; any reply that promises a viewing or a price; anything that touches an applicant's personal documents beyond checking that they are present.
+Not decided on this sample: how often attachments are missing in real life (3 e-mails say nothing about that).
+
+Next step in a real engagement: a larger sample set from the customer, and a fixed-price quote for the automatable part.

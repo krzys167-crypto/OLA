@@ -1,0 +1,33 @@
+{
+  "agent_id": "igor",
+  "binding": "adcb0be2b13618e639b8301c0b80846a704060972f2fbe07eb38ccbb25981cdd",
+  "detail": "",
+  "endpoint": "http://127.0.0.1:44893",
+  "envelope_hash": "5125994371d526cba933804b3f6d8ad61017b7718b6197a9986d5ec471f6926c",
+  "execution_status": "EXECUTED",
+  "gate_state": "PASS",
+  "input_hash": "35f8f3f6b05df6735e768c3322ddfd794a8bdd02de84dc0a8562cc1ebbec95e0",
+  "iteration": 1,
+  "model": "sample-igor",
+  "model_digest": "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4abcd",
+  "output_hash": "061e12439af0010a9919f0de3ab2b6ce675498f6f524241c2f8851b90461ae41",
+  "parent_run_id": "run_3c3ae9cc40ef9a376e70440ba3adae05",
+  "prev_envelope_hash": "54461f16c0850fbc9af797fb3d31c73ab7e4bf18eeadbd6e4e910df94d055491",
+  "prompt_hash": "cccdf9534fbcc5d203b1200599dbbb2c321ed4de234e05f46a58f151288a1c80",
+  "provider": "ollama-local",
+  "refs": {
+    "evaluation_hash": "f89c90d8336cb7266fcc14686811c9a1d0db8b8ebc2f4c56e8ee3ab06ee776d6",
+    "independence": "DIFFERENT_MODEL",
+    "verifies_envelope_hash": "54461f16c0850fbc9af797fb3d31c73ab7e4bf18eeadbd6e4e910df94d055491",
+    "verifies_run_id": "run_3c3ae9cc40ef9a376e70440ba3adae05"
+  },
+  "run_id": "run_0b6364222e3eb65a6d65a5631f59a0b1",
+  "runtime_kind": "TEST_DOUBLE",
+  "runtime_proof_hash": "400f5ae9a04c2d985741e08e2eaae179a4339134f2990bcdfeb9843a1dcad687",
+  "schema_version": "ola.envelope/1",
+  "seq": 2,
+  "session_id": "ses_ec3800514ecb02f044f18808",
+  "source_sha": "559cb1d055cc32b7a65e8848312518588d1d6130",
+  "source_sha_kind": "git-clean",
+  "timestamp": "2026-10-08T16:24:31.251+00:00"
+}

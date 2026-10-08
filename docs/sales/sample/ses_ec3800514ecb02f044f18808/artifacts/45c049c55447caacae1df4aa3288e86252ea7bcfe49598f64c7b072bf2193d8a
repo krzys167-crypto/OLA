@@ -1,0 +1,1 @@
+{"decision": "BLOCK", "quality_score": 5, "findings": ["2 + 2 is 4, not 5"], "required_corrections": ["answer 4"], "reason": "wrong"}
