@@ -5,8 +5,10 @@ It describes a path that needs no Stripe account in live mode. Prices are the hy
 
 **Correction, 2026-10-08.** The first version of this file treated the owner's *personal* Revolut account as a possible
 receiving account and listed its permitted use as an open question. Revolut's own terms answer that question (below): a
-personal account is not the account to invoice to. The path itself (invoice, transfer, owner attests the credit) is unchanged;
-only the receiving account changes.
+personal account is not the account to invoice to. Later the same day the owner pointed out that the account has a Polish
+address, so the Polish-region documents were read too: the conclusion holds there (Section 2), and one clause cited at first
+(Section 24, "non-personal purposes") is in the Belgian text only. The path itself (invoice, transfer, owner attests the
+credit) is unchanged; only the receiving account changes.
 
 ## Why this path
 The paid tiers in `offer.md` (Quick Map, Process Audit, Monthly Watch) are already **invoiced by hand**. They never ran
@@ -14,36 +16,44 @@ through the automatic Stripe flow, which accepts exactly EUR 99 and is a test. S
 directly to a bank account of the owner, and the product does not have to wait for a live Stripe set-up or a public webhook.
 
 ## What Revolut's own terms say (read by the author on 2026-10-08; not legal advice)
-The quotes below were returned by a page-reading tool, which summarises; open the pages (listed at the end) before relying
-on them.
-- **Personal Terms, Revolut Bank UAB Belgian Branch, Section 2:** "You must not use it for business purposes." The following
-  sentence says that a customer who wants to use the account for business must apply for a Revolut Pro account or a Revolut
-  Business account (Section 4: "you will need to apply for a Revolut Pro account under the Revolut Pro account terms").
-  The same sentence is in the version that applies from 31 March 2026 (PDF) and in the version the web page says applies
-  from 2 December 2026.
-- **Section 24** lists "your personal account is used for non-personal purposes" among the circumstances in which Revolut
-  may suspend or close the account.
-- **Revolut.Me:** "You cannot use Revolut.Me to receive payments unless you first enter into a Payment Processing Services
-  Agreement with us." The page calls it "an easy way to accept payments from your customers" and does not say which account
-  types may use it. Limits and fee are not stated there ("which we will show you in the app"; the fee is "set out in our
-  Fees Page").
-- **Revolut Pro** (help centre, Belgium): "Pro is made for freelancers, side-hustlers, sole traders, and those who are
-  self-employed"; "Pro isn't for legal entities or partnerships."; "You can use Pro if you're not registered in your local
-  business registry (depending on regional requirements)." Whether Belgian rules let the owner invoice without a registered
-  activity is **UNKNOWN** here and is a question for the accountant, not something Revolut's page decides.
-- **Revolut Pro Account terms** (Belgium page, "This version of the Terms applies from 13 June 2025"): Section 3 "are a
-  self-employed natural person (not a company);" and Section 4 "Revolut Pro is only available to self-employed natural persons
-  (not companies)" and requires an existing Revolut Personal account. Section 5: "it's a separate account. It has its own
-  separate balance, its own account number". Section 6: "It can only be used for business purposes."; accepting payments
-  from "people who purchase your goods or services" is tied to a payment processing product and only "If we accept you can use
-  this product". Section 7: "There is no fee to open or hold a Revolut Pro account." and the fees for using it "are the same
-  as the fees that apply for using your Personal account."
-- **Revolut Pro features** (help centre): "It comes with a separate IBAN, payment acceptance tools," listing Payment Links,
-  Revolut Reader, Tap to Pay on iPhone and a Shopify plugin. That page does **not** describe incoming SEPA transfers and does not
-  say what country code the Pro IBAN has: both **UNKNOWN**. **Payment Links** (Pro help page): customers can "complete
-  purchases or settle invoices"; fees shown: "1.0% + £0.20 (or currency equivalent)" for domestic personal Visa/Mastercard
-  and "2.8% + £0.20 (or currency equivalent)" for international and commercial cards (the page shows £). The page does not say
-  who may use Payment Links.
+**Which terms apply.** The owner says the Revolut account has a **Polish address**, so the Polish-region documents most likely
+govern it (in both regions the provider named is Revolut Bank UAB, Lithuania). Which version applies to this account:
+**UNKNOWN**; the owner can see it in the app. The author read the Polish and the Belgian pages. The quotes were returned by
+a page-reading tool, which summarises; open the pages (listed at the end) before relying on them.
+
+**Personal Terms, Polish region** ("Regulamin kont osobistych"; the page says "Ta wersja Regulaminu będzie obowiązywać od
+9 października 2023 roku" and shows no newer version):
+- Section 2: "Nie możesz używać go do celów biznesowych." (English page of the same document: "You must not use it for
+  business purposes.") The next sentence says that anyone who wants to use the account for business must apply for a Revolut
+  Pro or a Revolut Business account. Section 4 repeats the restriction.
+- Section 24 (suspension, closure) in this version has no item about "non-personal purposes"; it lists cases and "other
+  reasons". The wording "your personal account is used for non-personal purposes" is in the **Belgian** text that applies from
+  31 March 2026 (Section 24), not in the Polish text read.
+- Section 16: "You may be able to send or receive payments from others using Revolut.Me links."
+
+**Revolut.Me Payment Terms** (Belgian page; the Polish page was not read): "You cannot use Revolut.Me to receive payments
+unless you first enter into a Payment Processing Services Agreement with us." The page calls it "an easy way to accept payments
+from your customers" and does not say which account types may use it. Limits and fee are not stated there ("which we will show
+you in the app"; the fee is "set out in our Fees Page").
+
+**Revolut Pro, Polish region.** Pro Account terms (page: "This version of the terms applies from 26 December 2023"):
+Section 3 "are a self-employed natural person (not a company);"; Section 4 requires an existing Personal account; Section 5
+"it's a separate account", "its own separate balance, its own account number"; Section 6 "It can only be used for business
+purposes." and accepting payments from "people who purchase your goods or services" only "If we accept you can use this
+product"; Section 7 "There is no fee to open or hold a Revolut Pro account", fees "the same as" the Personal account and
+"will depend on what type of Personal account you have", except a different fee for ordering a Pro card. Help centre (Polish):
+"Konto Pro możesz założyć nawet wtedy, gdy nie jesteś zarejestrowany w lokalnym rejestrze przedsiębiorstw" followed by
+"(wymagania mogą różnić się w zależności od regionu)"; the page does not mention CEIDG, NIP or REGON; Revolut "możemy poprosić o
+potwierdzenie prowadzenia działalności gospodarczej" (a business URL, or "dowodu rejestracji"); the application asks for a
+business category and a description. Whether the owner's own country's rules require registering before the first invoice is
+**UNKNOWN** here: a question for the accountant, not something Revolut's page decides.
+
+**Revolut Pro features and Payment Links** (English pages of the Belgian region; Polish equivalents not read): "It comes with a
+separate IBAN, payment acceptance tools," listing Payment Links, Revolut Reader, Tap to Pay on iPhone and a Shopify plugin.
+That page does **not** describe incoming SEPA transfers and does not say what country code the Pro IBAN has: both **UNKNOWN**.
+Payment Links: customers can "complete purchases or settle invoices"; fees shown: "1.0% + £0.20 (or currency equivalent)" for
+domestic personal Visa/Mastercard and "2.8% + £0.20 (or currency equivalent)" for international and commercial cards (the page
+shows £). The page does not say who may use Payment Links.
 
 Reading of the author: fee income for services is business use, so it does not belong on a personal account. Whether a
 transfer would technically arrive is a different question from whether the terms allow it, and the terms are what count.
@@ -57,24 +67,28 @@ This document does not claim that Revolut would block any particular transfer.
 - **B. Payment link** (Revolut Pro Payment Links, or Revolut.Me where the account type has it): it needs Revolut's acceptance
   for payment processing (Pro Terms Section 6; Payment Processing Services Agreement for Revolut.Me). The fees shown are card
   fees (above). Fees and limits for an ordinary incoming transfer to Pro: **UNKNOWN** (not on the pages read).
-- **Not recommended: payment to the personal account** (SEPA or Revolut.Me). It conflicts with Section 2 as read above and
-  puts the account at risk under Section 24.
+- **Not recommended: payment to the personal account** (SEPA or Revolut.Me). It conflicts with Section 2 as read above (and the
+  Belgian text lists such use among the grounds to suspend or close the account).
 
 **Never put an IBAN, a payment link, a token or a card detail in this repository, in issues, in PR comments or in CI.**
 They go only into the invoice or the message the owner sends to the customer. The repository is public.
 
 ## What the owner has to settle first (none of it was decided by the author)
-- With the **accountant:** whether the activity must be registered (BCE/KBO) before the first invoice, which status or
-  entity invoices, VAT treatment in Belgium for this service, invoice content and numbering.
+- With the **accountant:** in which country the activity is (or will be) registered and which country's rules apply to the
+  invoice (the Revolut account has a Polish address, the prospects are in Brussels: this document does not decide that);
+  whether registration is needed before the first invoice, which status or entity invoices, VAT treatment for a service sold
+  to a company in another EU country, invoice content, numbering and any e-invoicing rule in force.
 - With **Revolut** (in the app chat), questions worth asking verbatim:
-  1. "I live in Belgium and want to open Revolut Pro as a self-employed natural person. Is a Belgian BCE/KBO enterprise
-     number mandatory before my Pro account can be approved?"
-  2. "Your Belgian Pro help page says I can use Pro without registration in the local business registry 'depending on regional
-     requirements'. What exactly are the regional requirements for Belgium?"
-  3. "Can a Belgian Revolut Pro IBAN receive ordinary EUR SEPA bank transfers directly from companies paying my invoices?"
-  4. "Will my Pro account get a BE IBAN? Are there incoming-transfer fees or limits specific to Pro?"
+  1. "I have a Revolut account with a Polish address. I want to open Revolut Pro as a self-employed natural person to invoice
+     companies in other EU countries. Is registration in a business register (CEIDG or other) mandatory before my Pro account
+     can be approved?"
+  2. "Your Polish Pro help page says I can open Pro even if I am not registered in the local business registry, and that the
+     requirements may differ by region. What exactly are the requirements for Poland?"
+  3. "Can a Polish Revolut Pro IBAN receive ordinary EUR SEPA transfers from companies paying my invoices, and what is the
+     IBAN's country code?"
+  4. "Are there incoming-transfer fees or limits specific to Pro?"
 - Whether to take the full amount up front (simplest for EUR 490) or a deposit (an option for EUR 1 500).
-- Cold-mail rules for B2B in Belgium before any bulk sending (already listed in `offer.md`).
+- Cold-mail rules for B2B (recipients in Belgium, sender elsewhere) before any bulk sending (listed in `offer.md`).
 
 ## Flow
 1. The call ends with scope and price confirmed **in writing** (`offer.md`, process step 2).
@@ -131,15 +145,16 @@ filled in this repository.
 > evidence record and a walkthrough slot by e-mail.
 
 ## Pages the quotes come from (opened 2026-10-08)
-- Personal Terms, Belgian branch, web page (text applying from 2 December 2026): <https://www.revolut.com/en-BE/legal/terms/>
-- Personal Terms, same branch, version applying from 31 March 2026 (PDF):
+- Personal Terms, Polish region (Polish and English pages): <https://www.revolut.com/pl-PL/legal/terms/> and
+  <https://www.revolut.com/en-PL/legal/terms/>
+- Revolut Pro Account terms, Polish region: <https://www.revolut.com/pl-PL/legal/pro/>
+- Revolut Pro eligibility, Polish help centre: <https://help.revolut.com/pl-PL/help/more/revolut-pro/who-can-use-pro-and-how-to-get-started/>
+- Personal Terms, Belgian region, web page (text applying from 2 December 2026): <https://www.revolut.com/en-BE/legal/terms/>
+- Personal Terms, Belgian region, version applying from 31 March 2026 (PDF):
   <https://cdn.revolut.com/terms_and_conditions/pdf/personal_terms_5b72a354_1.8.0_1775130881_en.pdf>
-- Payment Terms - Revolut.Me: <https://www.revolut.com/en-BE/legal/payment-terms-revme/>
-- Revolut Pro eligibility (help centre):
-  <https://help.revolut.com/en-BE/help/more/revolut-pro/who-can-use-pro-and-how-to-get-started/>
-- Revolut Pro Account terms: <https://www.revolut.com/en-BE/legal/pro/>
-- Revolut Pro features: <https://help.revolut.com/en-BE/help/more/revolut-pro/features-available-with-revpro/>
-- Revolut Pro Payment Links:
+- Payment Terms - Revolut.Me (Belgian page): <https://www.revolut.com/en-BE/legal/payment-terms-revme/>
+- Revolut Pro features and Payment Links (English, Belgian region):
+  <https://help.revolut.com/en-BE/help/more/revolut-pro/features-available-with-revpro/> and
   <https://help.revolut.com/en-BE/help/more/revolut-pro/accepting-customer-payments/payment-links-and-how-to-use-them-for-pro/>
 
 ## What this document does not claim
