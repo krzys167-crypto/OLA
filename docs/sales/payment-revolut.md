@@ -31,16 +31,32 @@ on them.
   self-employed"; "Pro isn't for legal entities or partnerships."; "You can use Pro if you're not registered in your local
   business registry (depending on regional requirements)." Whether Belgian rules let the owner invoice without a registered
   activity is **UNKNOWN** here and is a question for the accountant, not something Revolut's page decides.
+- **Revolut Pro Account terms** (Belgium page, "This version of the Terms applies from 13 June 2025"): Section 3 "are a
+  self-employed natural person (not a company);" and Section 4 "Revolut Pro is only available to self-employed natural persons
+  (not companies)" and requires an existing Revolut Personal account. Section 5: "it's a separate account. It has its own
+  separate balance, its own account number". Section 6: "It can only be used for business purposes."; accepting payments
+  from "people who purchase your goods or services" is tied to a payment processing product and only "If we accept you can use
+  this product". Section 7: "There is no fee to open or hold a Revolut Pro account." and the fees for using it "are the same
+  as the fees that apply for using your Personal account."
+- **Revolut Pro features** (help centre): "It comes with a separate IBAN, payment acceptance tools," listing Payment Links,
+  Revolut Reader, Tap to Pay on iPhone and a Shopify plugin. That page does **not** describe incoming SEPA transfers and does not
+  say what country code the Pro IBAN has: both **UNKNOWN**. **Payment Links** (Pro help page): customers can "complete
+  purchases or settle invoices"; fees shown: "1.0% + £0.20 (or currency equivalent)" for domestic personal Visa/Mastercard
+  and "2.8% + £0.20 (or currency equivalent)" for international and commercial cards (the page shows £). The page does not say
+  who may use Payment Links.
 
 Reading of the author: fee income for services is business use, so it does not belong on a personal account. Whether a
 transfer would technically arrive is a different question from whether the terms allow it, and the terms are what count.
 This document does not claim that Revolut would block any particular transfer.
 
 ## Ways for the customer to pay
-- **A. SEPA transfer to a business-capable account:** Revolut Pro or Revolut Business, or an account at another bank that
-  accepts business income. The payee and IBAN on the invoice must match the person or entity that invoices.
-- **B. Revolut.Me link:** only after the owner accepts the Payment Processing Services Agreement; whether the owner's
-  account type is offered it: UNKNOWN until seen in the app or confirmed by Revolut.
+- **A. SEPA transfer to a business-capable account:** a Revolut Pro account (it has its own IBAN), Revolut Business, or an
+  account at another bank that accepts business income. Whether the Pro IBAN accepts ordinary SEPA transfers from company
+  clients, and which country code it has: **UNKNOWN** on the pages read; ask Revolut. The payee and IBAN on the invoice must
+  match the person or entity that invoices.
+- **B. Payment link** (Revolut Pro Payment Links, or Revolut.Me where the account type has it): it needs Revolut's acceptance
+  for payment processing (Pro Terms Section 6; Payment Processing Services Agreement for Revolut.Me). The fees shown are card
+  fees (above). Fees and limits for an ordinary incoming transfer to Pro: **UNKNOWN** (not on the pages read).
 - **Not recommended: payment to the personal account** (SEPA or Revolut.Me). It conflicts with Section 2 as read above and
   puts the account at risk under Section 24.
 
@@ -50,9 +66,13 @@ They go only into the invoice or the message the owner sends to the customer. Th
 ## What the owner has to settle first (none of it was decided by the author)
 - With the **accountant:** whether the activity must be registered (BCE/KBO) before the first invoice, which status or
   entity invoices, VAT treatment in Belgium for this service, invoice content and numbering.
-- With **Revolut** (in the app chat): which product fits (Pro or Business) and what it requires from this owner, and whether
-  Revolut.Me is offered on it. Suggested question: "I am a Belgian customer on a personal account. I want to invoice
-  companies for services. Which Revolut product do I need, and what registration details does it require?"
+- With **Revolut** (in the app chat), questions worth asking verbatim:
+  1. "I live in Belgium and want to open Revolut Pro as a self-employed natural person. Is a Belgian BCE/KBO enterprise
+     number mandatory before my Pro account can be approved?"
+  2. "Your Belgian Pro help page says I can use Pro without registration in the local business registry 'depending on regional
+     requirements'. What exactly are the regional requirements for Belgium?"
+  3. "Can a Belgian Revolut Pro IBAN receive ordinary EUR SEPA bank transfers directly from companies paying my invoices?"
+  4. "Will my Pro account get a BE IBAN? Are there incoming-transfer fees or limits specific to Pro?"
 - Whether to take the full amount up front (simplest for EUR 490) or a deposit (an option for EUR 1 500).
 - Cold-mail rules for B2B in Belgium before any bulk sending (already listed in `offer.md`).
 
@@ -117,6 +137,10 @@ filled in this repository.
 - Payment Terms - Revolut.Me: <https://www.revolut.com/en-BE/legal/payment-terms-revme/>
 - Revolut Pro eligibility (help centre):
   <https://help.revolut.com/en-BE/help/more/revolut-pro/who-can-use-pro-and-how-to-get-started/>
+- Revolut Pro Account terms: <https://www.revolut.com/en-BE/legal/pro/>
+- Revolut Pro features: <https://help.revolut.com/en-BE/help/more/revolut-pro/features-available-with-revpro/>
+- Revolut Pro Payment Links:
+  <https://help.revolut.com/en-BE/help/more/revolut-pro/accepting-customer-payments/payment-links-and-how-to-use-them-for-pro/>
 
 ## What this document does not claim
 No customer, no conversion rate, no revenue forecast and no fee figure: none was measured. It says nothing about tax or
