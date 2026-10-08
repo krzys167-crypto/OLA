@@ -125,6 +125,20 @@ def _mcp_tool_call(name, arguments):
     return tools[name](arguments["value"])
 
 
+DEFAULT_OLLAMA_MAX_TOKENS = 1024
+
+
+def _ollama_max_tokens() -> int:
+    """Cap on generated tokens for one Ollama call (OLA_LLM_MAX_TOKENS; invalid or non-positive -> default).
+
+    Without a cap a small model at temperature 0 can keep generating; CI saw the Ollama server answer HTTP 500 after ~39 s
+    of one such request (n_gen >= 1698). Whether the cap removes those failures is measured over later CI runs, not assumed."""
+    try:
+        value = int(os.getenv("OLA_LLM_MAX_TOKENS", str(DEFAULT_OLLAMA_MAX_TOKENS)))
+    except ValueError:
+        return DEFAULT_OLLAMA_MAX_TOKENS
+    return value if value > 0 else DEFAULT_OLLAMA_MAX_TOKENS
+
 
 def _invoke_llm(agent, task, context):
     """Invoke the configured real LLM provider; fail closed when required but unavailable."""
@@ -198,7 +212,7 @@ def _invoke_llm(agent, task, context):
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
-            "options": {"temperature": 0},
+            "options": {"temperature": 0, "num_predict": _ollama_max_tokens()},
         }
         response = httpx.post(
             f"{base_url}/api/chat",
