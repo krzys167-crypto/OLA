@@ -20,6 +20,9 @@ The automated Stripe flow accepts exactly EUR 99 (`/checkout`, strict amount che
 **invoiced by hand** until a deliberate change makes the flow accept them. Do not describe the EUR 1 500 tier as running
 through the automatic flow.
 
+Payment of an invoice directly to the owner's Revolut account (link or SEPA transfer), and how it may be called, is in
+`payment-revolut.md`. It needs no live Stripe set-up. Nothing has been paid yet.
+
 ## What may be claimed (and what may not)
 May: the analysis is run on the customer's samples; the run is recorded in a hash-chained evidence record that can be
 re-verified; scope and price are fixed in advance.
@@ -43,4 +46,5 @@ Human by design: sending any message, adding a contact, the call, the price, the
 - Price points above (test them: if 0 of the first 10 conversations object to EUR 1 500, raise it).
 - VAT/invoicing set-up and the company entity that invoices.
 - Whether to make the Stripe flow accept the paid tiers.
+- Which Revolut account (legal entity) receives the invoice payments, and the invoice/VAT format (`payment-revolut.md`).
 - B2B cold e-mail rules in Belgium (legitimate interest, opt-out, language): check with a lawyer before sending in bulk.
