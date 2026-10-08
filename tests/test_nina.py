@@ -129,6 +129,44 @@ def test_ollama_without_provider_id_keeps_response_digest(monkeypatch):
     assert evidence["response_digest"]
 
 
+def _capture_ollama_options(monkeypatch):
+    monkeypatch.setenv("OLA_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OLA_LLM_MODE", "required")
+    monkeypatch.setenv("OLA_LLM_MODEL", "qwen2.5:0.5b-instruct")
+    monkeypatch.setenv("OLA_REPLAY_NONCE", "ab" * 32)
+    seen = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"model": "qwen2.5:0.5b-instruct", "message": {"content": '{"action":"safe_expression","result":"391"}'}}
+
+    def fake_post(*args, **kwargs):
+        seen.update(kwargs["json"]["options"])
+        return FakeResponse()
+
+    import httpx
+    monkeypatch.setattr(httpx, "post", fake_post)
+    return seen
+
+
+def test_ollama_request_is_capped_and_stays_at_temperature_zero(monkeypatch):
+    monkeypatch.delenv("OLA_LLM_MAX_TOKENS", raising=False)
+    seen = _capture_ollama_options(monkeypatch)
+    _invoke_llm("codeact", "Calculate 17 * 23", {})
+    assert seen == {"temperature": 0, "num_predict": 1024}
+
+
+def test_ollama_token_cap_is_configurable_and_bad_values_fall_back(monkeypatch):
+    seen = _capture_ollama_options(monkeypatch)
+    for raw, expected in (("256", 256), ("abc", 1024), ("0", 1024), ("-5", 1024), ("", 1024)):
+        monkeypatch.setenv("OLA_LLM_MAX_TOKENS", raw)
+        _invoke_llm("codeact", "Calculate 17 * 23", {})
+        assert seen["num_predict"] == expected, raw
+
+
 from scripts.forensic_gate import evaluate_forensic_bundle
 
 
