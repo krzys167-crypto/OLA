@@ -9,16 +9,23 @@ through the automatic Stripe flow, which accepts exactly EUR 99 and is a test. S
 directly to the owner's Revolut account, and the product does not have to wait for a live Stripe set-up or a public
 webhook.
 
-## Two ways for the customer to pay
-- **A. Revolut payment link.** The owner creates it in the Revolut Business app (amount, description, invoice number).
-  The customer pays by card or wallet. Fees and limits are set by Revolut: UNKNOWN here, read them in the app.
-- **B. SEPA transfer** to the owner's Revolut Business IBAN, with the invoice number as the payment reference.
+## Ways for the customer to pay
+The owner has a **personal Revolut account, not Revolut Business** (stated by the owner). Whether such an account may be
+used for invoice income is **UNKNOWN** and must be settled before the first invoice (see below).
+- **A. SEPA transfer** to the owner's Revolut IBAN, with the invoice number as the payment reference. It works technically
+  with any account, but see the open question on business income and the invoice.
+- **B. Revolut.me payment link.** Revolut says Revolut.me can only be used to receive payments after the owner accepts its
+  Payment Processing Services Agreement (<https://www.revolut.com/legal/payment-terms-revme/>); fees and limits are shown
+  in the app. Whether it is offered on this account, and for business purposes: UNKNOWN until seen in the app.
+- **C. A business account** (Revolut Business or another bank). It needs a registered activity, as Stripe live would.
+  Only if A or B turns out not to be allowed or not advisable.
 
 **Never put an IBAN, a payment link, a token or a card detail in this repository, in issues, in PR comments or in CI.**
 They go only into the invoice or the message the owner sends to the customer. The repository is public.
 
 ## What the owner has to settle first (not legal advice; none of it was checked by the author)
-- Which legal entity invoices, and that the receiving Revolut account is in that entity's name and accepts business payments.
+- Whether Revolut's terms allow a **personal** account to receive payment for services (ask in the Revolut app chat; the author did not find an answer on the Revolut.me terms page), and whether the accountant accepts a personal IBAN on an invoice for this income.
+- Which legal entity or status invoices (the invoice must carry the payee and IBAN that match it).
 - Invoice content, numbering and VAT treatment in Belgium for this service: ask the accountant.
 - Whether to take the full amount up front (simplest for EUR 490) or a deposit (an option for EUR 1 500).
 - Cold-mail rules for B2B in Belgium before any bulk sending (already listed in `offer.md`).

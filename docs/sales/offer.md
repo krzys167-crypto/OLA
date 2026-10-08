@@ -20,7 +20,7 @@ The automated Stripe flow accepts exactly EUR 99 (`/checkout`, strict amount che
 **invoiced by hand** until a deliberate change makes the flow accept them. Do not describe the EUR 1 500 tier as running
 through the automatic flow.
 
-Payment of an invoice directly to the owner's Revolut account (link or SEPA transfer), and how it may be called, is in
+Payment of an invoice directly to the owner's Revolut account (SEPA transfer or Revolut.me link; the account is personal, so its permitted use for invoice income is an open question), and how it may be called, is in
 `payment-revolut.md`. It needs no live Stripe set-up. Nothing has been paid yet.
 
 ## What may be claimed (and what may not)
