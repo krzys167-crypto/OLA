@@ -1,7 +1,4 @@
 name: OLA DI-OS Product Gate
-env:
-  OLA_API_KEY_PEPPER: "CI-ONLY-OLA-API-KEY-PEPPER-DO-NOT-USE-IN-PRODUCTION-20261012"
-
 on:
   push:
     branches: [main, integration/full-ola-dios-product-gate]
@@ -55,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-          docker run --detach --rm --name ola-product -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" --publish 8000:8000 \
+          docker run --detach --rm --name ola-product --publish 8000:8000 \
             -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" \
             -e OPENAI_API_KEY="$OPENAI_API_KEY" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
