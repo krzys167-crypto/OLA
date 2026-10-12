@@ -18,6 +18,7 @@ jobs:
       name: ci-openai
       deployment: false
     env:
+      OLA_API_KEY_PEPPER: CI-ONLY-OLA-API-KEY-PEPPER-DO-NOT-USE-IN-PRODUCTION-20261012
       OPENAI_AVAILABLE: ${{ secrets.OPENAI_API_KEY != '' }}
       OLA_LLM_MODE: deterministic
       OLA_LLM_MODEL: deterministic-runtime-v1
@@ -64,6 +65,7 @@ jobs:
           docker exec -i -e EXPECTED_COMMIT="$EXPECTED_COMMIT" ola-e2e python - <<'PY'
           from app.api_key_crypto import hash_api_key
           import hashlib, json, os, sqlite3, urllib.request, uuid
+          from app.api_key_crypto import hash_api_key
           db_path = "/data/ola.db"
           tenant_id = str(uuid.uuid4())
           raw_key = "ci-runtime-key"
@@ -104,6 +106,7 @@ jobs:
           docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola-e2e python - <<'PY'
           from app.api_key_crypto import hash_api_key
           import hashlib, json, os, sqlite3, urllib.request, uuid
+          from app.api_key_crypto import hash_api_key
           db_path="/data/ola.db"; tenant_id=str(uuid.uuid4()); raw_key="ci-real-llm-key"
           db=sqlite3.connect(db_path)
           db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tenant_id,"ci-real-llm"))
@@ -135,6 +138,7 @@ jobs:
           docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" -e EXPECTED_COMMIT="$EXPECTED_COMMIT" -e EXPECTED_TASK="$EXPECTED_TASK" -e EXPECTED_RESULT="$EXPECTED_RESULT" ola-e2e python - <<'PY' > agent-runtime-proof.json
           from app.api_key_crypto import hash_api_key
           import hashlib, json, os, sqlite3, subprocess, urllib.request, uuid
+          from app.api_key_crypto import hash_api_key
           db_path = "/data/ola.db"
           tenant_id = str(uuid.uuid4())
           raw_key = "ci-agent-key"
@@ -196,6 +200,7 @@ jobs:
           raw_key = "ci-business-key"
           tenant_id = str(uuid.uuid4())
           import hashlib
+          from app.api_key_crypto import hash_api_key
           key_hash = hash_api_key(raw_key)
           db = sqlite3.connect(db_path)
           db.execute("INSERT INTO tenants(id, name) VALUES (?, ?)", (tenant_id, "ci-business-invoice"))
