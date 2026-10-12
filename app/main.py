@@ -7,6 +7,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from starlette.responses import FileResponse
 from sqlalchemy import select
 from .database import Base, engine, SessionLocal, install_append_only_triggers
+from .api_key_crypto import hash_api_key
 from .models import Tenant, ApiKey, EvidenceRecord, StripeEvent
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
 from .agent_runtime import run_agent_task
@@ -29,7 +30,10 @@ install_append_only_triggers()
 def identity_from_key(raw_key):
     if not raw_key:
         raise HTTPException(status_code=401, detail="missing API key")
-    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    try:
+        key_hash = hash_api_key(raw_key)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="invalid API key") from None
     with SessionLocal() as db:
         key = db.scalar(select(ApiKey).where(ApiKey.key_hash == key_hash))
         if key is None:
