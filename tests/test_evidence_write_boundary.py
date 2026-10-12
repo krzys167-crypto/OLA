@@ -5,6 +5,7 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api_key_crypto import hash_api_key
 from app.database import SessionLocal
 from app.main import app
 from app.models import ApiKey, Tenant
@@ -19,8 +20,8 @@ def _tenant_keys():
         db.add(Tenant(id=tenant, name="evidence-adversarial"))
         db.flush()
         db.add_all((
-            ApiKey(id=owner_id, tenant_id=tenant, key_hash=hashlib.sha256(owner_key.encode()).hexdigest()),
-            ApiKey(id=reviewer_id, tenant_id=tenant, key_hash=hashlib.sha256(reviewer_key.encode()).hexdigest()),
+            ApiKey(id=owner_id, tenant_id=tenant, key_hash=hash_api_key(owner_key)),
+            ApiKey(id=reviewer_id, tenant_id=tenant, key_hash=hash_api_key(reviewer_key)),
         ))
         db.commit()
     return owner_key, reviewer_key, owner_id
