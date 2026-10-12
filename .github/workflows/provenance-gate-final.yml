@@ -1,9 +1,6 @@
 name: Provenance Gate Final
 env:
-  OLA_API_KEY_PEPPER: CI-ONLY-OLA-API-KEY-PEPPER-DO-NOT-USE-IN-PRODUCTION-20261012
-env:
   OLA_API_KEY_PEPPER: "CI-ONLY-OLA-API-KEY-PEPPER-DO-NOT-USE-IN-PRODUCTION-20261012"
-
 
 on:
   pull_request:
@@ -31,7 +28,7 @@ jobs:
       - name: Start deployment image with source provenance
         run: |
           set -euo pipefail
-          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" --name ola-provenance -p 8000:8000 \
+          docker run --detach --rm --name ola-provenance -p 8000:8000 \
             -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" \
             -e OLA_RUNTIME_COMMIT="${GITHUB_SHA}" \
             ola:${GITHUB_SHA}
