@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Request
 from starlette.responses import FileResponse
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from .database import Base, engine, SessionLocal, install_append_only_triggers
 from .api_key_crypto import hash_api_key
 from .models import Tenant, ApiKey, EvidenceRecord, StripeEvent
@@ -494,90 +495,109 @@ def approve_nina_run(
     if not isinstance(tip_hash, str) or not tip_hash:
         raise HTTPException(status_code=400, detail="tip_hash is required")
 
+    # SQLite transaction obtains a write reservation BEFORE inspecting any
+    # evidence. Otherwise parallel reviewers may both pass eligibility and
+    # race in the non-atomic append_record() helper.
     with SessionLocal() as db:
+        try:
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        except OperationalError as exc:
+            raise HTTPException(status_code=409, detail="approval transaction busy") from exc
+
         rows = db.scalars(
             select(EvidenceRecord)
             .where(EvidenceRecord.tenant_id == approver_tenant_id)
             .order_by(EvidenceRecord.seq.asc())
         ).all()
 
-    if not rows:
-        raise HTTPException(status_code=404, detail="run evidence not found")
+        if not rows:
+            raise HTTPException(status_code=404, detail="run evidence not found")
 
-    # The caller knows the current tip, but a tip alone is not integrity proof.
-    chain = [
-        {
-            "tenant_id": row.tenant_id,
-            "seq": row.seq,
-            "prev_hash": row.prev_hash,
-            "record_hash": row.record_hash,
-            "payload_json": row.payload_json,
-        }
-        for row in rows
-    ]
-    chain_ok, _ = verify_chain(chain)
-    if not chain_ok:
-        raise HTTPException(status_code=409, detail="evidence chain verification failed")
-    if rows[-1].record_hash != tip_hash:
-        raise HTTPException(status_code=409, detail="tip_hash is stale or does not match current chain tip")
+        chain = [
+            {
+                "tenant_id": row.tenant_id,
+                "seq": row.seq,
+                "prev_hash": row.prev_hash,
+                "record_hash": row.record_hash,
+                "payload_json": row.payload_json,
+            }
+            for row in rows
+        ]
+        chain_ok, _ = verify_chain(chain)
+        if not chain_ok:
+            raise HTTPException(status_code=409, detail="evidence chain verification failed")
+        if rows[-1].record_hash != tip_hash:
+            raise HTTPException(status_code=409, detail="tip_hash is stale or does not match current chain tip")
 
-    # Inspect every approval record before selecting the most recent candidate.
-    for row in rows:
-        if row.record_type != "human.approval":
-            continue
-        try:
-            payload = json.loads(row.payload_json)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if isinstance(payload, dict) and payload.get("run_id") == run_id:
-            raise HTTPException(status_code=409, detail="run already approved")
+        for row in rows:
+            if row.record_type != "human.approval":
+                continue
+            try:
+                payload = json.loads(row.payload_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and payload.get("run_id") == run_id:
+                raise HTTPException(status_code=409, detail="run already approved")
 
-    candidate = None
-    for row in reversed(rows):
-        if row.record_type != "decision.candidate":
-            continue
-        try:
-            payload = json.loads(row.payload_json)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if isinstance(payload, dict) and payload.get("run_id") == run_id:
-            candidate = payload
-            break
+        candidate = None
+        for row in reversed(rows):
+            if row.record_type != "decision.candidate":
+                continue
+            try:
+                payload = json.loads(row.payload_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and payload.get("run_id") == run_id:
+                candidate = payload
+                break
 
-    if candidate is None:
-        raise HTTPException(status_code=404, detail="decision candidate not found")
-    requester_id = candidate.get("requester_id")
-    if not requester_id:
-        raise HTTPException(status_code=409, detail="requester identity missing from decision candidate")
-    if approver_id == requester_id:
-        raise HTTPException(status_code=403, detail="approver must differ from requester")
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="decision candidate not found")
+        requester_id = candidate.get("requester_id")
+        if not requester_id:
+            raise HTTPException(status_code=409, detail="requester identity missing from decision candidate")
+        if approver_id == requester_id:
+            raise HTTPException(status_code=403, detail="approver must differ from requester")
 
-    candidate_fields = candidate.get("status_fields")
-    if not isinstance(candidate_fields, dict):
-        raise HTTPException(status_code=409, detail="decision candidate status fields are invalid")
-    approved_fields = dict(candidate_fields)
-    approved_fields["HUMAN_GATE"] = "VERIFIED"
-    if NinaIgorChain.derive_status(approved_fields) != "VERIFIED":
-        raise HTTPException(status_code=409, detail="candidate is not eligible for human approval")
+        candidate_fields = candidate.get("status_fields")
+        if not isinstance(candidate_fields, dict):
+            raise HTTPException(status_code=409, detail="decision candidate status fields are invalid")
+        approved_fields = dict(candidate_fields)
+        approved_fields["HUMAN_GATE"] = "VERIFIED"
+        if NinaIgorChain.derive_status(approved_fields) != "VERIFIED":
+            raise HTTPException(status_code=409, detail="candidate is not eligible for human approval")
 
-    record = append_record(
-        approver_tenant_id,
-        "human.approval",
-        {
+        approval_payload = {
             "run_id": run_id,
             "tip_hash": tip_hash,
             "requester_id": requester_id,
             "approver_id": approver_id,
             "reason": str(body.get("reason", "")),
             "status": "VERIFIED",
-        },
-    )
+        }
+        payload_json = canonical_json(approval_payload)
+        record_id = str(uuid.uuid4())
+        new_seq = rows[-1].seq + 1
+        record_hash = compute_record_hash(
+            approver_tenant_id, new_seq, tip_hash, payload_json
+        )
+        db.add(EvidenceRecord(
+            id=record_id,
+            tenant_id=approver_tenant_id,
+            seq=new_seq,
+            record_type="human.approval",
+            payload_json=payload_json,
+            prev_hash=tip_hash,
+            record_hash=record_hash,
+        ))
+        db.commit()
+
     return {
         "status": "VERIFIED",
         "run_id": run_id,
-        "tip_hash": record["record_hash"],
+        "tip_hash": record_hash,
         "approved_tip_hash": tip_hash,
-        "record_id": record["id"],
+        "record_id": record_id,
         "record_type": "human.approval",
         "approver_id": approver_id,
     }
