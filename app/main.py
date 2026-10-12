@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import uuid
 from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -229,11 +230,27 @@ def payment_success(session_id: str):
 @app.post("/evidence")
 def create_evidence(body: dict, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
-    return append_record(
-        tenant_id,
-        body.get("record_type", "generic"),
-        body.get("payload", {}),
-    )
+    record_type = body.get("record_type", "generic")
+    if not isinstance(record_type, str) or not (
+        record_type == "generic"
+        or re.fullmatch(r"user\.[A-Za-z][A-Za-z0-9_.-]{0,90}", record_type)
+    ):
+        raise HTTPException(status_code=400, detail="record_type must be generic or user.*")
+    payload = body.get("payload", {})
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="evidence payload must be an object")
+    # Caller-generated metadata cannot impersonate NINA/IGOR runtime provenance.
+    reserved = {
+        "run_id", "commit", "task", "result", "tool_output",
+        "provider", "model", "invocation_type", "response_ids",
+        "status_fields", "requester_id", "approver_id",
+        "candidate_status", "human_approved", "record_hash", "prev_hash",
+    }
+    if reserved.intersection(payload):
+        raise HTTPException(status_code=400, detail="reserved system evidence field")
+    if len(canonical_json(payload).encode("utf-8")) > 65536:
+        raise HTTPException(status_code=413, detail="evidence payload too large")
+    return append_record(tenant_id, record_type, payload)
 
 
 @app.post("/audit")
@@ -467,18 +484,44 @@ def approve_nina_run(
 
     if not rows:
         raise HTTPException(status_code=404, detail="run evidence not found")
+
+    # The caller knows the current tip, but a tip alone is not integrity proof.
+    chain = [
+        {
+            "tenant_id": row.tenant_id,
+            "seq": row.seq,
+            "prev_hash": row.prev_hash,
+            "record_hash": row.record_hash,
+            "payload_json": row.payload_json,
+        }
+        for row in rows
+    ]
+    chain_ok, _ = verify_chain(chain)
+    if not chain_ok:
+        raise HTTPException(status_code=409, detail="evidence chain verification failed")
     if rows[-1].record_hash != tip_hash:
         raise HTTPException(status_code=409, detail="tip_hash is stale or does not match current chain tip")
 
-    candidate = None
+    # Inspect every approval record before selecting the most recent candidate.
     for row in rows:
+        if row.record_type != "human.approval":
+            continue
+        try:
+            payload = json.loads(row.payload_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(payload, dict) and payload.get("run_id") == run_id:
+            raise HTTPException(status_code=409, detail="run already approved")
+
+    candidate = None
+    for row in reversed(rows):
         if row.record_type != "decision.candidate":
             continue
         try:
             payload = json.loads(row.payload_json)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError):
             continue
-        if payload.get("run_id") == run_id:
+        if isinstance(payload, dict) and payload.get("run_id") == run_id:
             candidate = payload
             break
 

@@ -1,0 +1,44 @@
+name: OLA Signed Commit Gate Trusted
+on: # zizmor: ignore[dangerous-triggers] Intentional trusted-base verification; read-only; no PR checkout/code, only same-repo PRs.
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+permissions: {}
+jobs:
+  signed-commits:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    timeout-minutes: 10
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+      OLA_ALLOWED_SIGNER_FPRS: ${{ vars.OLA_ALLOWED_SIGNER_FPRS }}
+    steps:
+      - name: Fail closed for fork or unexpected repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "krzysztofcieciwa07-ship-it/OLA"
+          test "${HEAD_REPOSITORY}" = "${GITHUB_REPOSITORY}"
+      - name: Checkout trusted base only (never PR code)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Verify frozen PR commit signatures and signer identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_github_signatures.py
+      - name: Preserve fail-closed signature evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-commit-evidence-${{ github.event.pull_request.number }}-${{ github.run_id }}
+          path: signature-gate-result.json
+          if-no-files-found: error
