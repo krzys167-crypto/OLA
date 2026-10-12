@@ -16,6 +16,7 @@ permissions:
   contents: read
 
 env:
+  OLA_API_KEY_PEPPER: CI-ONLY-OLA-API-KEY-PEPPER-DO-NOT-USE-IN-PRODUCTION-20261012
   OLA_LLM_PROVIDER: ollama
   OLA_LLM_MODE: required
   OLLAMA_MODEL: qwen2.5:0.5b-instruct
@@ -74,7 +75,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --detach --rm \
+          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" \
             -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" \
             --name ola-nina-ollama \
             --network host \
