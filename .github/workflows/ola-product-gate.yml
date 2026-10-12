@@ -1,4 +1,7 @@
 name: OLA DI-OS Product Gate
+env:
+  OLA_API_KEY_PEPPER: "CI-ONLY-OLA-API-KEY-PEPPER-DO-NOT-USE-IN-PRODUCTION-20261012"
+
 on:
   push:
     branches: [main, integration/full-ola-dios-product-gate]
@@ -52,6 +55,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
           docker run --detach --rm --name ola-product --publish 8000:8000 \
+            -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" \
             -e OPENAI_API_KEY="$OPENAI_API_KEY" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
             -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
@@ -71,10 +75,11 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola-product python - <<'PY'
+          from app.api_key_crypto import hash_api_key
           import hashlib,json,os,sqlite3,urllib.request,uuid
           tid=str(uuid.uuid4()); key="product-gate-key"; db=sqlite3.connect("/data/ola.db")
           db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tid,"product-gate"))
-          db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tid,hashlib.sha256(key.encode()).hexdigest()))
+          db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tid,hash_api_key(key)))
           db.commit(); db.close()
           task="Calculate 17 * 23 and return the verified result."
           req=urllib.request.Request("http://127.0.0.1:8000/agent-run",data=json.dumps({"task":task}).encode(),headers={"Content-Type":"application/json","X-API-Key":key},method="POST")
@@ -93,10 +98,11 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" -e OLA_RUNTIME_COMMIT="${GITHUB_SHA}" ola-product python - <<'PY'
+          from app.api_key_crypto import hash_api_key
           import hashlib,json,sqlite3,urllib.request,uuid
           tid=str(uuid.uuid4()); key="nina-chain-key"; db=sqlite3.connect("/data/ola.db")
           db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tid,"nina-chain"))
-          db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tid,hashlib.sha256(key.encode()).hexdigest()))
+          db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tid,hash_api_key(key)))
           db.commit(); db.close()
           req=urllib.request.Request("http://127.0.0.1:8000/nina-run",data=json.dumps({"task":"Calculate 17 * 23 and return the verified result.","requested_tools":["safe_expression"],"human_approved":False}).encode(),headers={"Content-Type":"application/json","X-API-Key":key},method="POST")
           with urllib.request.urlopen(req,timeout=120) as r: d=json.load(r)
