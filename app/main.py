@@ -201,15 +201,34 @@ def payment_success(session_id: str):
     if not task:
         return {"status": "BLOCK", "reason": "paid session has no task", "session_id": session_id}
 
+    # Task text is NOT a payment/session identifier: identical customer tasks
+    # can exist across tenants. Return execution proof only for this checkout.
+    completed_run_id = None
+    completed_result = None
     with SessionLocal() as db:
-        completed = db.scalar(
+        candidates = db.scalars(
             select(StripeEvent).where(
                 StripeEvent.status == "COMPLETED",
                 StripeEvent.task == task,
             )
-        )
+        ).all()
+        for candidate in candidates:
+            if not candidate.result_json or not candidate.run_id:
+                continue
+            try:
+                stored = json.loads(candidate.result_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if (
+                isinstance(stored, dict)
+                and stored.get("checkout_session_id") == session_id
+                and stored.get("ola_run_id") == candidate.run_id
+            ):
+                completed_run_id = candidate.run_id
+                completed_result = stored
+                break
 
-    if completed is None:
+    if completed_run_id is None:
         return {
             "status": "PAYMENT_CONFIRMED_EXECUTION_PENDING",
             "session_id": session_id,
@@ -222,8 +241,8 @@ def payment_success(session_id: str):
         "session_id": session_id,
         "task": task,
         "execution": "STRIPE_WEBHOOK",
-        "run_id": completed.run_id,
-        "result": json.loads(completed.result_json) if completed.result_json else None,
+        "run_id": completed_run_id,
+        "result": completed_result,
     }
 
 
