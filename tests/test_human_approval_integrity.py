@@ -5,6 +5,7 @@ import uuid
 
 from fastapi.testclient import TestClient
 
+from app.api_key_crypto import hash_api_key
 from app.database import SessionLocal
 from app.hashchain import GENESIS_HASH
 from app.main import app, append_record
@@ -21,8 +22,8 @@ def setup_review():
         db.add(Tenant(id=tenant_id, name="human-gate-security"))
         db.flush()
         db.add_all([
-            ApiKey(id=requester_id, tenant_id=tenant_id, key_hash=hashlib.sha256(requester_key.encode()).hexdigest()),
-            ApiKey(id=approver_id, tenant_id=tenant_id, key_hash=hashlib.sha256(approver_key.encode()).hexdigest()),
+            ApiKey(id=requester_id, tenant_id=tenant_id, key_hash=hash_api_key(requester_key)),
+            ApiKey(id=approver_id, tenant_id=tenant_id, key_hash=hash_api_key(approver_key)),
         ])
         db.commit()
     return tenant_id, requester_id, approver_key
