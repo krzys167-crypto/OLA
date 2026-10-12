@@ -17,6 +17,8 @@ import secrets
 import sqlite3
 import sys
 
+# Keep direct `python scripts/reissue_api_keys_v2.py` invocation independent of PYTHONPATH.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.api_key_crypto import hash_api_key
 
 class RotationBlocked(RuntimeError):
