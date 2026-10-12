@@ -17,6 +17,7 @@ jobs:
       name: ci-openai
       deployment: false
     env:
+      OLA_API_KEY_PEPPER: CI-ONLY-OLA-API-KEY-PEPPER-DO-NOT-USE-IN-PRODUCTION-20261012
       OPENAI_AVAILABLE: ${{ secrets.OPENAI_API_KEY != '' }}
       OLA_LLM_MODE: deterministic
       OLA_LLM_MODEL: gpt-5.6-luna
@@ -54,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-          docker run --detach --rm --name ola-product --publish 8000:8000 \
+          docker run --detach --rm --name ola-product -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" --publish 8000:8000 \
             -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" \
             -e OPENAI_API_KEY="$OPENAI_API_KEY" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
@@ -77,6 +78,7 @@ jobs:
           docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola-product python - <<'PY'
           from app.api_key_crypto import hash_api_key
           import hashlib,json,os,sqlite3,urllib.request,uuid
+          from app.api_key_crypto import hash_api_key
           tid=str(uuid.uuid4()); key="product-gate-key"; db=sqlite3.connect("/data/ola.db")
           db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tid,"product-gate"))
           db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tid,hash_api_key(key)))
@@ -100,6 +102,7 @@ jobs:
           docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" -e OLA_RUNTIME_COMMIT="${GITHUB_SHA}" ola-product python - <<'PY'
           from app.api_key_crypto import hash_api_key
           import hashlib,json,sqlite3,urllib.request,uuid
+          from app.api_key_crypto import hash_api_key
           tid=str(uuid.uuid4()); key="nina-chain-key"; db=sqlite3.connect("/data/ola.db")
           db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tid,"nina-chain"))
           db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tid,hash_api_key(key)))
