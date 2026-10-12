@@ -100,6 +100,7 @@ jobs:
           import sqlite3
           import urllib.request
           import uuid
+          from app.api_key_crypto import hash_api_key
 
           tenant_id=str(uuid.uuid4())
           raw_key="ci-ollama-real-llm-key"
