@@ -4,6 +4,7 @@ import uuid
 
 from fastapi.testclient import TestClient
 
+from app.api_key_crypto import hash_api_key
 from app.database import SessionLocal
 from app.main import app
 from app.models import ApiKey, Tenant
@@ -25,7 +26,7 @@ def test_nina_run_executes_chain_but_does_not_self_approve():
         db.add(ApiKey(
             id=str(uuid.uuid4()),
             tenant_id=tenant_id,
-            key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
+            key_hash=hash_api_key(api_key),
         ))
         db.commit()
 
