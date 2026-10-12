@@ -1,8 +1,4 @@
 name: NINA IGOR Ollama Full Flow
-env:
-  OLA_API_KEY_PEPPER: "CI-ONLY-OLA-API-KEY-PEPPER-DO-NOT-USE-IN-PRODUCTION-20261012"
-
-
 on:
   pull_request:
   workflow_dispatch:
@@ -75,7 +71,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" \
+          docker run --detach --rm \
             -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" \
             --name ola-nina-ollama \
             --network host \
