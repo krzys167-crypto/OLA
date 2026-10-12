@@ -1,0 +1,33 @@
+name: AI Studio 3.6 Archive Bridge
+on:
+  pull_request:
+    paths:
+      - 'scripts/ai_studio_archive.py'
+      - 'tests/test_ai_studio_archive.py'
+      - 'workstation/RUN-OLA-AI-STUDIO-360.ps1'
+      - 'docs/AI_STUDIO_360_INTEGRATION.md'
+      - '.github/workflows/ai-studio-360-bridge.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - name: Install complete OLA test dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Archive safety regression
+        run: python -m pytest tests/test_ai_studio_archive.py -q
+      - name: Compile adapter
+        run: python -m py_compile scripts/ai_studio_archive.py

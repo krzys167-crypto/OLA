@@ -1,0 +1,47 @@
+name: OLA AURORA End-to-End
+
+on:
+  pull_request:
+    paths:
+      - 'web/index.html'
+      - 'tests/test_aurora_contract.py'
+      - 'tests/browser_aurora_real_api.py'
+      - '.github/workflows/aurora-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  aurora-api-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OLA_LLM_MODE: deterministic
+      OLA_LLM_PROVIDER: openai
+      AURORA_EVIDENCE_DIR: aurora-evidence
+    steps:
+      - name: Checkout exact PR source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - name: Install project and browser dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install playwright==1.57.0
+          python -m playwright install --with-deps chromium
+      - name: AURORA source contract
+        run: python -m pytest tests/test_aurora_contract.py -q
+      - name: Browser to real OLA Core routes
+        run: python tests/browser_aurora_real_api.py
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aurora-e2e-${{ github.sha }}
+          path: aurora-evidence/
+          if-no-files-found: warn

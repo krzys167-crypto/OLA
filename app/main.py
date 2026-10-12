@@ -1,12 +1,15 @@
 import hashlib
 import json
 import os
+import re
 import uuid
 from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Request
 from starlette.responses import FileResponse
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from .database import Base, engine, SessionLocal, install_append_only_triggers
+from .api_key_crypto import hash_api_key
 from .models import Tenant, ApiKey, EvidenceRecord, StripeEvent
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
 from .agent_runtime import run_agent_task
@@ -29,7 +32,10 @@ install_append_only_triggers()
 def identity_from_key(raw_key):
     if not raw_key:
         raise HTTPException(status_code=401, detail="missing API key")
-    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    try:
+        key_hash = hash_api_key(raw_key)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="invalid API key") from None
     with SessionLocal() as db:
         key = db.scalar(select(ApiKey).where(ApiKey.key_hash == key_hash))
         if key is None:
@@ -196,15 +202,34 @@ def payment_success(session_id: str):
     if not task:
         return {"status": "BLOCK", "reason": "paid session has no task", "session_id": session_id}
 
+    # Task text is NOT a payment/session identifier: identical customer tasks
+    # can exist across tenants. Return execution proof only for this checkout.
+    completed_run_id = None
+    completed_result = None
     with SessionLocal() as db:
-        completed = db.scalar(
+        candidates = db.scalars(
             select(StripeEvent).where(
                 StripeEvent.status == "COMPLETED",
                 StripeEvent.task == task,
             )
-        )
+        ).all()
+        for candidate in candidates:
+            if not candidate.result_json or not candidate.run_id:
+                continue
+            try:
+                stored = json.loads(candidate.result_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if (
+                isinstance(stored, dict)
+                and stored.get("checkout_session_id") == session_id
+                and stored.get("ola_run_id") == candidate.run_id
+            ):
+                completed_run_id = candidate.run_id
+                completed_result = stored
+                break
 
-    if completed is None:
+    if completed_run_id is None:
         return {
             "status": "PAYMENT_CONFIRMED_EXECUTION_PENDING",
             "session_id": session_id,
@@ -217,19 +242,35 @@ def payment_success(session_id: str):
         "session_id": session_id,
         "task": task,
         "execution": "STRIPE_WEBHOOK",
-        "run_id": completed.run_id,
-        "result": json.loads(completed.result_json) if completed.result_json else None,
+        "run_id": completed_run_id,
+        "result": completed_result,
     }
 
 
 @app.post("/evidence")
 def create_evidence(body: dict, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
-    return append_record(
-        tenant_id,
-        body.get("record_type", "generic"),
-        body.get("payload", {}),
-    )
+    record_type = body.get("record_type", "generic")
+    if not isinstance(record_type, str) or not (
+        record_type == "generic"
+        or re.fullmatch(r"user\.[A-Za-z][A-Za-z0-9_.-]{0,90}", record_type)
+    ):
+        raise HTTPException(status_code=400, detail="record_type must be generic or user.*")
+    payload = body.get("payload", {})
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="evidence payload must be an object")
+    # Caller-generated metadata cannot impersonate NINA/IGOR runtime provenance.
+    reserved = {
+        "run_id", "commit", "task", "result", "tool_output",
+        "provider", "model", "invocation_type", "response_ids",
+        "status_fields", "requester_id", "approver_id",
+        "candidate_status", "human_approved", "record_hash", "prev_hash",
+    }
+    if reserved.intersection(payload):
+        raise HTTPException(status_code=400, detail="reserved system evidence field")
+    if len(canonical_json(payload).encode("utf-8")) > 65536:
+        raise HTTPException(status_code=413, detail="evidence payload too large")
+    return append_record(tenant_id, record_type, payload)
 
 
 @app.post("/audit")
@@ -454,64 +495,117 @@ def approve_nina_run(
     if not isinstance(tip_hash, str) or not tip_hash:
         raise HTTPException(status_code=400, detail="tip_hash is required")
 
+    # SQLite transaction obtains a write reservation BEFORE inspecting any
+    # evidence. Otherwise parallel reviewers may both pass eligibility and
+    # race in the non-atomic append_record() helper.
     with SessionLocal() as db:
+        try:
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        except OperationalError as exc:
+            raise HTTPException(status_code=409, detail="approval transaction busy") from exc
+
         rows = db.scalars(
             select(EvidenceRecord)
             .where(EvidenceRecord.tenant_id == approver_tenant_id)
             .order_by(EvidenceRecord.seq.asc())
         ).all()
 
-    if not rows:
-        raise HTTPException(status_code=404, detail="run evidence not found")
-    if rows[-1].record_hash != tip_hash:
-        raise HTTPException(status_code=409, detail="tip_hash is stale or does not match current chain tip")
+        if not rows:
+            raise HTTPException(status_code=404, detail="run evidence not found")
 
-    candidate = None
-    for row in rows:
-        if row.record_type != "decision.candidate":
-            continue
-        try:
-            payload = json.loads(row.payload_json)
-        except json.JSONDecodeError:
-            continue
-        if payload.get("run_id") == run_id:
-            candidate = payload
-            break
+        chain = [
+            {
+                "tenant_id": row.tenant_id,
+                "seq": row.seq,
+                "prev_hash": row.prev_hash,
+                "record_hash": row.record_hash,
+                "payload_json": row.payload_json,
+            }
+            for row in rows
+        ]
+        chain_ok, _ = verify_chain(chain)
+        if not chain_ok:
+            raise HTTPException(status_code=409, detail="evidence chain verification failed")
+        if rows[-1].record_hash != tip_hash:
+            raise HTTPException(status_code=409, detail="tip_hash is stale or does not match current chain tip")
 
-    if candidate is None:
-        raise HTTPException(status_code=404, detail="decision candidate not found")
-    requester_id = candidate.get("requester_id")
-    if not requester_id:
-        raise HTTPException(status_code=409, detail="requester identity missing from decision candidate")
-    if approver_id == requester_id:
-        raise HTTPException(status_code=403, detail="approver must differ from requester")
+        for row in rows:
+            if row.record_type != "human.approval":
+                continue
+            try:
+                payload = json.loads(row.payload_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and payload.get("run_id") == run_id:
+                raise HTTPException(status_code=409, detail="run already approved")
 
-    candidate_fields = candidate.get("status_fields")
-    if not isinstance(candidate_fields, dict):
-        raise HTTPException(status_code=409, detail="decision candidate status fields are invalid")
-    approved_fields = dict(candidate_fields)
-    approved_fields["HUMAN_GATE"] = "VERIFIED"
-    if NinaIgorChain.derive_status(approved_fields) != "VERIFIED":
-        raise HTTPException(status_code=409, detail="candidate is not eligible for human approval")
+        candidate = None
+        for row in reversed(rows):
+            if row.record_type != "decision.candidate":
+                continue
+            try:
+                payload = json.loads(row.payload_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and payload.get("run_id") == run_id:
+                candidate = payload
+                break
 
-    record = append_record(
-        approver_tenant_id,
-        "human.approval",
-        {
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="decision candidate not found")
+        requester_id = candidate.get("requester_id")
+        if not requester_id:
+            raise HTTPException(status_code=409, detail="requester identity missing from decision candidate")
+        if approver_id == requester_id:
+            raise HTTPException(status_code=403, detail="approver must differ from requester")
+
+        candidate_fields = candidate.get("status_fields")
+        # EXECUTION_ALLOWED is a derived report field, not an input status.
+        # Reject missing, extra, or forged fields before making any approval.
+        required_fields = {"RUNTIME", "EVIDENCE", "REPLAY_INTEGRITY", "POLICY", "HUMAN_GATE"}
+        if not isinstance(candidate_fields, dict) or set(candidate_fields) != required_fields | {"EXECUTION_ALLOWED"}:
+            raise HTTPException(status_code=409, detail="decision candidate status fields are invalid")
+        gate_fields = {name: candidate_fields[name] for name in required_fields}
+        derived = NinaIgorChain.derive_status(gate_fields)
+        if (candidate_fields["EXECUTION_ALLOWED"] != derived
+                or candidate.get("candidate_status") != derived
+                or gate_fields["HUMAN_GATE"] != "REVIEW"):
+            raise HTTPException(status_code=409, detail="decision candidate status is inconsistent")
+        approved_fields = {**gate_fields, "HUMAN_GATE": "VERIFIED"}
+        if derived != "REVIEW" or NinaIgorChain.derive_status(approved_fields) != "VERIFIED":
+            raise HTTPException(status_code=409, detail="candidate is not eligible for human approval")
+
+        approval_payload = {
             "run_id": run_id,
             "tip_hash": tip_hash,
             "requester_id": requester_id,
             "approver_id": approver_id,
             "reason": str(body.get("reason", "")),
             "status": "VERIFIED",
-        },
-    )
+        }
+        payload_json = canonical_json(approval_payload)
+        record_id = str(uuid.uuid4())
+        new_seq = rows[-1].seq + 1
+        record_hash = compute_record_hash(
+            approver_tenant_id, new_seq, tip_hash, payload_json
+        )
+        db.add(EvidenceRecord(
+            id=record_id,
+            tenant_id=approver_tenant_id,
+            seq=new_seq,
+            record_type="human.approval",
+            payload_json=payload_json,
+            prev_hash=tip_hash,
+            record_hash=record_hash,
+        ))
+        db.commit()
+
     return {
         "status": "VERIFIED",
         "run_id": run_id,
-        "tip_hash": record["record_hash"],
+        "tip_hash": record_hash,
         "approved_tip_hash": tip_hash,
-        "record_id": record["id"],
+        "record_id": record_id,
         "record_type": "human.approval",
         "approver_id": approver_id,
     }

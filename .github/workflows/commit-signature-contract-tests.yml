@@ -1,0 +1,26 @@
+name: OLA Signature Gate Contract Tests
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  signature-gate-contract-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout test source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Test fail-closed policy and real GPG fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p test_signature_gate_contract.py -v
+          python3 -m unittest discover -s tests -p test_signature_gpg.py -v
+          python3 -m unittest discover -s tests -p test_main_push_signatures.py -v
+          python3 -m unittest discover -s tests -p test_main_push_git_range.py -v
+          python3 -m unittest discover -s tests -p test_manifest_policy.py -v
+          python3 -m py_compile scripts/verify_github_signatures.py scripts/verify_main_push_signatures.py scripts/assert_manifest_policy.py

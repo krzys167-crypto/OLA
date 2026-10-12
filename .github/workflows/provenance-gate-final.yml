@@ -1,4 +1,6 @@
 name: Provenance Gate Final
+env:
+  OLA_API_KEY_PEPPER: "CI-ONLY-OLA-API-KEY-PEPPER-DO-NOT-USE-IN-PRODUCTION-20261012"
 
 on:
   pull_request:
@@ -27,6 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run --detach --rm --name ola-provenance -p 8000:8000 \
+            -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" \
             -e OLA_RUNTIME_COMMIT="${GITHUB_SHA}" \
             ola:${GITHUB_SHA}
           for i in $(seq 1 30); do
@@ -44,11 +47,13 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i -e EXPECTED_COMMIT="$EXPECTED_COMMIT" -e EXPECTED_TASK="$EXPECTED_TASK" -e EXPECTED_RESULT="$EXPECTED_RESULT" ola-provenance python - <<'PY'
+          from app.api_key_crypto import hash_api_key
           import hashlib, json, os, sqlite3, subprocess, urllib.request, uuid
+          from app.api_key_crypto import hash_api_key
           db_path = "/data/ola.db"
           tenant_id = str(uuid.uuid4())
           raw_key = "final-clean-key"
-          key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+          key_hash = hash_api_key(raw_key)
           db = sqlite3.connect(db_path)
           db.execute("INSERT INTO tenants(id, name) VALUES (?, ?)", (tenant_id, "final-clean"))
           db.execute("INSERT INTO api_keys(id, tenant_id, key_hash) VALUES (?, ?, ?)", (str(uuid.uuid4()), tenant_id, key_hash))
@@ -80,12 +85,14 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i -e EXPECTED_COMMIT="$EXPECTED_COMMIT" -e EXPECTED_TASK="$EXPECTED_TASK" -e EXPECTED_RESULT="$EXPECTED_RESULT" ola-provenance python - <<'PY'
+          from app.api_key_crypto import hash_api_key
           import hashlib, json, os, shutil, sqlite3, subprocess, urllib.request, uuid
+          from app.api_key_crypto import hash_api_key
           source_db = "/data/ola.db"
           tampered_db = "/tmp/tampered-evidence.db"
           tenant_id = str(uuid.uuid4())
           raw_key = "final-tamper-key"
-          key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+          key_hash = hash_api_key(raw_key)
           db = sqlite3.connect(source_db)
           db.execute("INSERT INTO tenants(id, name) VALUES (?, ?)", (tenant_id, "final-tamper"))
           db.execute("INSERT INTO api_keys(id, tenant_id, key_hash) VALUES (?, ?, ?)", (str(uuid.uuid4()), tenant_id, key_hash))
@@ -131,11 +138,13 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i -e EXPECTED_TASK="$EXPECTED_TASK" -e EXPECTED_RESULT="$EXPECTED_RESULT" ola-provenance python - <<'PY'
+          from app.api_key_crypto import hash_api_key
           import hashlib, json, os, sqlite3, subprocess, urllib.request, uuid
+          from app.api_key_crypto import hash_api_key
           db_path = "/data/ola.db"
           tenant_id = str(uuid.uuid4())
           raw_key = "final-commit-key"
-          key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+          key_hash = hash_api_key(raw_key)
           db = sqlite3.connect(db_path)
           db.execute("INSERT INTO tenants(id, name) VALUES (?, ?)", (tenant_id, "final-commit"))
           db.execute("INSERT INTO api_keys(id, tenant_id, key_hash) VALUES (?, ?, ?)", (str(uuid.uuid4()), tenant_id, key_hash))

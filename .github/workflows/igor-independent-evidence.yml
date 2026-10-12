@@ -1,4 +1,6 @@
 name: IGOR Independent Evidence Gate
+env:
+  OLA_API_KEY_PEPPER: CI-ONLY-OLA-API-KEY-PEPPER-DO-NOT-USE-IN-PRODUCTION-20261012
 
 on:
   workflow_call:
@@ -66,6 +68,7 @@ jobs:
         run: |
           python - <<'PY'
           import hashlib, json, pathlib, os
+          from app.api_key_crypto import hash_api_key
           import subprocess
           root=pathlib.Path(subprocess.check_output(["bash","-lc","find nina-evidence -type f -name runtime-proof.json -print -quit"],text=True).strip()).parent
           d=json.loads((root/"runtime-proof.json").read_text())
@@ -107,7 +110,7 @@ jobs:
 
       - name: Start runtime
         run: |
-          docker run --detach --rm --name ola-igor-e2e --publish 8001:8000 "ola-igor:${SOURCE_COMMIT}"
+          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" --name ola-igor-e2e --publish 8001:8000 "ola-igor:${SOURCE_COMMIT}"
           for i in $(seq 1 30); do curl --fail --silent http://127.0.0.1:8001/health >/dev/null && exit 0; sleep 1; done
           docker logs ola-igor-e2e
           exit 1
@@ -117,12 +120,13 @@ jobs:
           set -euo pipefail
           docker exec -i -e SOURCE_COMMIT="${SOURCE_COMMIT}" ola-igor-e2e python - <<'PY' > igor-replay.json
           import hashlib,json,sqlite3,urllib.request,uuid,os
+          from app.api_key_crypto import hash_api_key
           db_path="/data/ola.db"
           tenant_id=str(uuid.uuid4())
           raw_key="igor-independent-key"
           db=sqlite3.connect(db_path)
           db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tenant_id,"igor-independent-replay"))
-          db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tenant_id,hashlib.sha256(raw_key.encode()).hexdigest()))
+          db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tenant_id,hash_api_key(raw_key)))
           db.commit(); db.close()
           task="Calculate 17 * 23 and return the verified result."
           req=urllib.request.Request("http://127.0.0.1:8000/agent-run",data=json.dumps({"task":task}).encode(),headers={"Content-Type":"application/json","X-API-Key":raw_key},method="POST")
@@ -161,6 +165,7 @@ jobs:
           sha256sum evidence-bundle/verification/igor-result.json > evidence-bundle/hashes/igor-result.sha256
           python - <<'PY'
           import hashlib,json,pathlib,os
+          from app.api_key_crypto import hash_api_key
           root=pathlib.Path("evidence-bundle")
           manifest={
             "schema":"evidence-bundle/v1",

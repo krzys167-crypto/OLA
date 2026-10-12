@@ -36,6 +36,49 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ steps.target.outputs.sha }}
+
+      - name: Verify checked out source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ steps.target.outputs.sha }}"
+          test -z "$(git status --porcelain=v1)"
+          echo "SOURCE_SHA_BINDING=PASS"
+
+      # Defense in depth for PRs; the independent gate lives on trusted base.
+      - name: Verify all PR commit signatures
+        id: signatures
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          OLA_ALLOWED_SIGNER_FPRS: ${{ vars.OLA_ALLOWED_SIGNER_FPRS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_github_signatures.py
+
+      - name: Verify every newly introduced main commit signature
+        id: main_signatures
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.target.outputs.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          OLA_ALLOWED_SIGNER_FPRS: ${{ vars.OLA_ALLOWED_SIGNER_FPRS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_main_push_signatures.py
+
+      - name: Block unaudited manual production dispatch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "BLOCKED: requires PR signature gate or main push signature check" >&2
+          exit 1
 
       - name: Verify required evidence gates
         env:
@@ -173,25 +216,30 @@ jobs:
         run: docker build -t ola-final:${{ steps.target.outputs.sha }} .
 
       - name: Export release image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: docker save "ola-final:${{ steps.target.outputs.sha }}" -o ola-release-image.tar
 
       - name: Create source snapshot subjects
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           git archive --format=tar.gz --output=ola-source-${{ steps.target.outputs.sha }}.tar.gz "${{ steps.target.outputs.sha }}"
           sha256sum "ola-source-${{ steps.target.outputs.sha }}.tar.gz" | tee source-sha256.txt
           sha256sum ola-release-image.tar | tee image-sha256.txt
 
       - name: Attest source snapshot
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: "ola-source-${{ steps.target.outputs.sha }}.tar.gz"
 
       - name: Attest release image archive
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: ola-release-image.tar
 
       - name: Independently verify source and image attestations
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -214,20 +262,56 @@ jobs:
         run: |
           set -euo pipefail
           status="BLOCKED"
-          if [ "${{ job.status }}" = "success" ]; then status="VERIFIED"; fi
+          signature_gate="BLOCKED"
+          attestation_status="NOT_PERFORMED"
+          source_snapshot_json="null"
+          release_image_json="null"
+          human_gate="PENDING"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            if [ "${{ steps.signatures.outcome }}" = "success" ]; then
+              signature_gate="AUTHORIZED_GPG_VERIFIED"
+              if [ "${{ job.status }}" = "success" ]; then status="PREMERGE_CI_PASSED"; fi
+            fi
+            if [ "$status" = "PREMERGE_CI_PASSED" ]; then attestation_status="PR_ONLY_NOT_RELEASE"; fi
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            if [ "${{ steps.main_signatures.outcome }}" = "success" ]; then
+              signature_gate="GITHUB_COMMIT_VERIFIED"
+              if [ "${{ job.status }}" = "success" ]; then
+                status="ATTESTED_PENDING_HUMAN"
+                attestation_status="VERIFIED"
+                source_snapshot_json='"ola-source-${{ steps.target.outputs.sha }}.tar.gz"'
+                release_image_json='"ola-release-image.tar"'
+              fi
+            fi
+          fi
           cat > production-manifest.json <<EOF
           {
             "schema": "ola-production-evidence-v1",
             "commit": "${{ steps.target.outputs.sha }}",
-            "source_snapshot": "ola-source-${{ steps.target.outputs.sha }}.tar.gz",
-            "release_image": "ola-release-image.tar",
-            "source_attestation": "verified-by-github-actions-attestation",
-            "image_attestation": "verified-by-github-actions-attestation",
+            "workflow_event": "${GITHUB_EVENT_NAME}",
+            "workflow_event_sha": "${GITHUB_SHA}",
+            "commit_signature_gate": "${signature_gate}",
+            "source_snapshot": ${source_snapshot_json},
+            "release_image": ${release_image_json},
+            "source_attestation": "${attestation_status}",
+            "image_attestation": "${attestation_status}",
             "required_gates": ["ci","state-continuity","stability","provenance","signatures","real-runtime","stress","tamper","replay","human-gate"],
+            "human_gate": "${human_gate}",
+            "production_deployment": "NOT_PERFORMED",
+            "go_no_go": "NO-GO",
             "final_status": "${status}"
           }
           EOF
           sha256sum production-manifest.json | tee production-manifest-sha256.txt
+
+      - name: Validate production manifest claims independently
+        if: always()
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/assert_manifest_policy.py | tee manifest-policy-result.log
 
       - name: Publish final production evidence
         if: always()
@@ -240,6 +324,9 @@ jobs:
             gate-status.json
             production-manifest.json
             production-manifest-sha256.txt
+            manifest-policy-result.log
+            signature-gate-result.json
+            main-signature-result.json
             source-sha256.txt
             image-sha256.txt
             ola-source-${{ steps.target.outputs.sha }}.tar.gz

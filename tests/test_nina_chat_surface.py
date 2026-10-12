@@ -4,6 +4,7 @@ import uuid
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.api_key_crypto import hash_api_key
 from app.database import SessionLocal
 from app.models import ApiKey, Tenant
 from app.main import app
@@ -18,7 +19,7 @@ def _seed_tenant():
         ApiKey(
             id=str(uuid.uuid4()),
             tenant_id=tenant.id,
-            key_hash=hashlib.sha256(f"product-key-{tenant.id}".encode()).hexdigest(),
+            key_hash=hash_api_key(f"product-key-{tenant.id}"),
         )
     )
     db.commit()
