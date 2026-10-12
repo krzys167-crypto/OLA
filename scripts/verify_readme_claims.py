@@ -20,6 +20,7 @@ import tempfile
 import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from app.api_key_crypto import hash_api_key
 
 TEST_DIR = tempfile.mkdtemp(prefix="ola_readme_claims_")
 TEST_DB = os.path.join(TEST_DIR, "claims.db")
@@ -118,8 +119,8 @@ def _c3():
     db.add_all([tA, tB]); db.commit()
     kA_raw, kB_raw = "key-a", "key-b"
     db.add_all([
-        ApiKey(id=str(uuid.uuid4()), tenant_id=tA.id, key_hash=hashlib.sha256(kA_raw.encode()).hexdigest()),
-        ApiKey(id=str(uuid.uuid4()), tenant_id=tB.id, key_hash=hashlib.sha256(kB_raw.encode()).hexdigest()),
+        ApiKey(id=str(uuid.uuid4()), tenant_id=tA.id, key_hash=hash_api_key(kA_raw)),
+        ApiKey(id=str(uuid.uuid4()), tenant_id=tB.id, key_hash=hash_api_key(kB_raw)),
     ])
     db.commit()
 
