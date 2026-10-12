@@ -40,6 +40,7 @@ def _prepare():
             "RUNTIME": "VERIFIED", "EVIDENCE": "VERIFIED",
             "REPLAY_INTEGRITY": "VERIFIED", "POLICY": "VERIFIED",
             "HUMAN_GATE": "REVIEW",
+            "EXECUTION_ALLOWED": "REVIEW",
         }, "candidate_status": "REVIEW",
     })["record_hash"]
     return tenant, run, tip, (key_one, key_two)

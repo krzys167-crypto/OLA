@@ -4,7 +4,6 @@ Only the external LLM response is stubbed. All auth, tenant checks, NINA,
 IGOR, evidence, replay and Human Gate execute the real OLA Python code.
 This test proves CI integration, not a remote production server.
 """
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,9 +22,12 @@ os.environ['OLA_RUNTIME_COMMIT'] = 'AURORA_E2E_COMMIT'
 os.environ['OLA_LLM_MODE'] = 'deterministic'
 os.environ['OLA_LLM_PROVIDER'] = 'openai'
 os.environ.pop('OPENAI_API_KEY', None)
+# Disposable CI-only pepper, never use this public fixture value in production.
+os.environ.setdefault('OLA_API_KEY_PEPPER', 'CI-ONLY-OLA-API-KEY-PEPPER-DO-NOT-USE-IN-PRODUCTION-20261012')
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app.database import SessionLocal  # noqa: E402
+from app.api_key_crypto import hash_api_key  # noqa: E402
 from app.models import ApiKey, Tenant  # noqa: E402
 from app import main as core  # noqa: E402
 
@@ -41,7 +43,7 @@ def seed(tenant_name: str, count: int = 1):
         db.add(Tenant(id=tenant_id, name=tenant_name))
         db.flush()
         for token in raw_keys:
-            db.add(ApiKey(id=str(uuid.uuid4()), tenant_id=tenant_id, key_hash=hashlib.sha256(token.encode()).hexdigest()))
+            db.add(ApiKey(id=str(uuid.uuid4()), tenant_id=tenant_id, key_hash=hash_api_key(token)))
         db.commit()
     return tenant_id, raw_keys
 

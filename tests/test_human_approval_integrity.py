@@ -36,6 +36,7 @@ def candidate(tenant_id, requester_id, run_id, policy="VERIFIED"):
             "RUNTIME": "VERIFIED", "EVIDENCE": "VERIFIED",
             "REPLAY_INTEGRITY": "VERIFIED", "POLICY": policy,
             "HUMAN_GATE": "REVIEW",
+            "EXECUTION_ALLOWED": "REVIEW",
         },
         "candidate_status": "REVIEW",
     })
