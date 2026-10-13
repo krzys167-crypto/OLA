@@ -145,7 +145,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          docker buildx imagetools inspect "krzysztof1678/ola${DIGEST}"
+          docker buildx imagetools inspect "krzysztof1678/ola@${DIGEST}"
           echo "IMAGE_PUBLISHED_BY_DIGEST=SUCCESS, PRODUCTION_DEPLOYMENT=NOT_PERFORMED" >> "$GITHUB_STEP_SUMMARY"
           echo "SOURCE_SHA=${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
-          echo "IMAGE=krzysztof1678/ola${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
+          echo "IMAGE=krzysztof1678/ola@${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
