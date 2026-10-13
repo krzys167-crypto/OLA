@@ -55,6 +55,24 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
 @media(max-width:1100px){.cc-grid{grid-template-columns:minmax(0,1fr) minmax(240px,.8fr)}.cc-agents{grid-column:1/-1;flex-direction:row;flex-wrap:wrap}.cc-agents .cc-title{width:100%}.cc-agent{flex:1 1 30%}.cc-note{width:100%;margin:0}}
 @media(max-width:720px){.cc-grid{grid-template-columns:1fr}.cc-agents{display:none}.cc-mapsvg{min-height:240px}.cc-portrait{min-height:390px}}
 
+
+/* Local Executor panel. No arbitrary command input is permitted. */
+.cc-local{margin:0 0 20px;padding:16px 18px;border:1px solid rgba(39,229,170,.3);border-radius:12px;background:linear-gradient(110deg,rgba(3,35,28,.94),rgba(3,17,19,.92))}
+.cc-localhead{display:flex;gap:12px;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-bottom:11px}
+.cc-localhead h2{font-size:15px;letter-spacing:.02em}
+.cc-localstate{font:700 11px ui-monospace,monospace;color:#efbd78;border:1px solid rgba(221,160,89,.4);padding:4px 9px;border-radius:20px}
+.cc-localstate.connected{color:#71ffd2;border-color:rgba(67,229,169,.5)}
+.cc-localform{display:grid;grid-template-columns:minmax(130px,1fr) minmax(230px,1.4fr) auto auto auto;gap:9px;align-items:end}
+.cc-localform label{display:block;font-size:11px;color:#b5e0d0;margin-bottom:4px}
+.cc-localform input,.cc-localform select{display:block;width:100%;height:39px;min-width:0;border-radius:7px;border:1px solid rgba(37,207,164,.36);color:#ebfff5;background:#051b1c;padding:7px 10px;font:12px ui-monospace,monospace}
+.cc-localform button{height:39px;border-radius:7px;padding:0 12px;font-size:12px;font-weight:700;color:#dfffee;border:1px solid rgba(54,227,170,.44);background:rgba(10,117,83,.28)}
+.cc-localform button:hover:not(:disabled){background:rgba(21,169,119,.3)}
+.cc-localform button:disabled{opacity:.45}
+.cc-localout{white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto;margin:12px 0 0;padding:11px 12px;border:1px solid rgba(32,171,135,.2);border-radius:7px;background:rgba(0,0,0,.25);color:#bde9d9;font:11px/1.5 ui-monospace,monospace}
+.cc-localnote{color:#8bbbab;font-size:11px;margin:10px 0 0}
+@media(max-width:1120px){.cc-localform{grid-template-columns:1fr 1.4fr auto auto}.cc-localform button:last-child{grid-column:4}}
+@media(max-width:700px){.cc-localform{grid-template-columns:1fr 1fr}.cc-localform>div{grid-column:1/-1}.cc-localform button{grid-column:auto!important}}
+
 </style>
 </head>
 <body>
@@ -106,6 +124,19 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
    <div class="cc-portrait" role="img" aria-label="Portret OLA z holograficznym celownikiem na jednym oku"><div class="cc-reticle" aria-hidden="true"></div><div class="cc-facecaption"><b>OLA</b> ANALYSE · REASON · VERIFY</div></div>
    <div class="cc-actions"><button type="button" data-view="chat">NINA CHAT</button><button type="button" data-view="operations">EXECUTE</button></div>
   </section>
+ </section>
+
+ <section class="cc-local" aria-label="OLA Local Executor — kontrolowane komendy na tym ZBooku">
+  <div class="cc-localhead"><div><h2>LOCAL EXECUTOR / ZBOOK</h2><small>Tylko zatwierdzone polecenia Windows · bez dostępu do dowolnego PowerShella</small></div><span class="cc-localstate" id="localState" role="status" aria-live="polite">NIEPODŁĄCZONE</span></div>
+  <div class="cc-localform">
+   <div><label for="localToken">Token lokalny (z okna wykonawcy)</label><input type="password" id="localToken" autocomplete="off" spellcheck="false" aria-describedby="localNote" placeholder="Wklej token, nie publikuj go"></div>
+   <div><label for="localAction">Polecenie z zatwierdzonej listy</label><select id="localAction" disabled aria-label="Dostępne lokalne polecenia"><option value="">Najpierw połącz wykonawcę</option></select></div>
+   <button type="button" id="localConnect">Połącz</button>
+   <button type="button" id="localRun" disabled>Wykonaj</button>
+   <button type="button" id="localDisconnect">Rozłącz</button>
+  </div>
+  <p class="cc-localnote" id="localNote">Usługa na 127.0.0.1:18110 działa oddzielnie od Dockera. Zmiany systemowe wymagają wyraźnego potwierdzenia i jednorazowej zgody.</p>
+  <pre class="cc-localout" id="localResult" role="log" aria-live="polite">Brak połączenia. Żadne polecenie nie zostało uruchomione.</pre>
  </section>
  <div class="layout">
   <div class="column-main">
@@ -226,6 +257,125 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
       const found = Object.keys(paths).some(path => path.startsWith('/evidence/') && !!paths[path].get);
       node('ccEvidence').textContent = found ? 'ROUTE READY' : 'UNKNOWN';
    }).catch(() => {node('ccEvidence').textContent = 'UNKNOWN';});
+})();
+</script>
+
+
+<script>
+/* AURORA local-host bridge. No shell input, no secrets in storage, no automatic execution. */
+(() => {
+ 'use strict';
+ const $ = id => document.getElementById(id);
+ const originAllowed = location.protocol === 'http:' &&
+   ['127.0.0.1','localhost'].includes(location.hostname) &&
+   ['18080','18081'].includes(location.port);
+ const apiBase = 'http://127.0.0.1:18110';
+ let actions = new Map();
+ let epoch = 0;
+ const inflight = new Set();
+ let busy = false;
+ const state = (message, online=false) => {
+   $('localState').textContent = message;
+   $('localState').classList.toggle('connected', online);
+ };
+ const result = text => { $('localResult').textContent = String(text); };
+ const forget = () => {
+   epoch += 1;
+   for(const controller of inflight) controller.abort();
+   inflight.clear(); actions = new Map();
+   $('localToken').value = '';
+   $('localAction').replaceChildren(new Option('Najpierw połącz wykonawcę',''));
+   $('localAction').disabled = true;
+   $('localRun').disabled = true;
+   state('NIEPODŁĄCZONE');
+   result('Token wyczyszczony z pola. Aby zatrzymać usługę lokalną, naciśnij Ctrl+C w jej oknie.');
+ };
+ async function call(path, payload, expectedEpoch) {
+   const controller = new AbortController(); inflight.add(controller);
+   const timer = setTimeout(() => controller.abort(), 22000);
+   try {
+     const response = await fetch(apiBase+path, {
+       method: payload === undefined ? 'GET' : 'POST',
+       mode: 'cors', cache: 'no-store', credentials: 'omit',
+       headers: {'Authorization': 'Bearer '+$('localToken').value.trim(), 'Content-Type': 'application/json'},
+       body: payload === undefined ? undefined : JSON.stringify(payload),
+       signal: controller.signal
+     });
+     let data;
+     try { data = await response.json(); } catch { throw new Error('Lokalny wykonawca nie zwrócił JSON'); }
+     if(!response.ok) throw new Error('LOCAL '+response.status+': '+String(data.error||'REQUEST_FAILED'));
+     if(expectedEpoch !== epoch) throw new Error('Sesja wykonawcy została zmieniona');
+     return data;
+   } finally { clearTimeout(timer); inflight.delete(controller); }
+ }
+ function showResult(data) {
+   const output = typeof data.output === 'string' ? data.output : '';
+   result([
+     'STATUS: '+String(data.status||'UNKNOWN'),
+     'ACTION: '+String(data.action||'UNKNOWN'),
+     'EXIT CODE: '+String(data.exit_code??'UNKNOWN'),
+     'SCOPE: '+String(data.scope||'UNKNOWN'),
+     'PRODUCTION: '+String(data.production||'NOT_VERIFIED'),
+     '',
+     output
+   ].join('\n'));
+ }
+ if(!originAllowed) {
+   $('localConnect').disabled = true;
+   result('BLOCKED: Local Executor działa tylko w lokalnym Command Center na porcie 18080/18081.');
+   return;
+ }
+ $('localConnect').addEventListener('click', async () => {
+   if(busy) return;
+   const token = $('localToken').value.trim();
+   if(!token) { result('Najpierw uruchom wykonawcę na ZBooku i wklej lokalny token.'); return; }
+   busy=true; $('localConnect').disabled=true;
+   const before=epoch;
+   try {
+     const info=await call('/v1/actions',undefined,before);
+     if(info.status!=='BRIDGE_ONLINE'||!Array.isArray(info.actions)) throw new Error('Niepoprawny kontrakt wykonawcy');
+     const allowed=new Map();
+     const options=[];
+     for(const item of info.actions) {
+       if(typeof item.id!=='string'||!['read','confirm'].includes(item.mode)) continue;
+       allowed.set(item.id,{label:String(item.label),mode:item.mode});
+       options.push(new Option(String(item.label),item.id));
+     }
+     if(!options.length) throw new Error('Wykonawca nie udostępnił akcji');
+     actions=allowed;
+     $('localAction').replaceChildren(...options);
+     $('localAction').disabled=false; $('localRun').disabled=false;
+     state('POŁĄCZONO Z ZBOOKIEM',true);
+     result('LOCAL EXECUTOR ONLINE. Wybierz polecenie. Akcje zmieniające stan wymagają dodatkowego potwierdzenia.');
+   } catch(err) { state('NIEPODŁĄCZONE');result('BŁĄD POŁĄCZENIA: '+err.message); }
+   finally { busy=false; $('localConnect').disabled=false; }
+ });
+ $('localDisconnect').addEventListener('click', forget);
+ $('localToken').addEventListener('input', () => {
+   if(actions.size){epoch++;for(const c of inflight)c.abort();inflight.clear();actions.clear();$('localRun').disabled=true;$('localAction').disabled=true;state('NIEPODŁĄCZONE');}
+ });
+ $('localRun').addEventListener('click', async () => {
+   if(busy || $('localRun').disabled) return;
+   const action=$('localAction').value;
+   const spec=actions.get(action);
+   if(!spec){result('Nie wybrano zatwierdzonej akcji');return;}
+   busy=true;$('localRun').disabled=true;
+   const before=epoch;
+   result('Wykonywanie: '+spec.label+' …');
+   try{
+     let answer;
+     if(spec.mode==='confirm'){
+       const draft=await call('/v1/prepare',{action},before);
+       const permitted=window.confirm('Potwierdź wykonanie na ZBooku:\n'+draft.command+'\n\nZmiana stanu systemu. Kontynuować?');
+       if(!permitted){result('Anulowano. Żadna komenda nie została wysłana do wykonania.');return;}
+       answer=await call('/v1/execute',{action,approval:draft.approval},before);
+     }else{
+       answer=await call('/v1/run',{action},before);
+     }
+     showResult(answer);
+   }catch(err){result('BŁĄD: '+err.message);}
+   finally{busy=false;$('localRun').disabled=actions.size===0;}
+ });
 })();
 </script>
 
