@@ -1,0 +1,151 @@
+name: OLA Docker Cloud - signed evidence release
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: "Exact reviewed, signed main SHA approved for registry distribution"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ola-docker-cloud-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  # PR/main CI does NOT authenticate to Docker Hub or publish anything.
+  build-only:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact source without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Bind source SHA
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain=v1)"
+          echo "DOCKER_SOURCE_BINDING=PASS"
+      - name: Test release policy (negative fail-closed contracts)
+        run: python3 -m unittest discover -s tests -p test_docker_cloud_release_gate.py -v
+      - name: Configure local Buildx (no cloud or credentials on PR)
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Build only - no registry output
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          tags: ola-local:ci-${{ github.event.pull_request.head.sha || github.sha }}
+          push: false
+          outputs: type=cacheonly
+
+  # Manual release from trusted main, after independent Environment approval.
+  publish-reviewed-image:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout EXACT main SHA without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Assert checked-out SHA and run trusted gate contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test -z "$(git status --porcelain=v1)"
+          python3 -m unittest discover -s tests -p test_docker_cloud_release_gate.py -v
+      - name: Verify main rules, trusted signer and independent production review
+        id: preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          OLA_ALLOWED_SIGNER_FPRS: ${{ vars.OLA_ALLOWED_SIGNER_FPRS }}
+          OLA_RELEASE_ENABLED: ${{ vars.OLA_DOCKER_RELEASE_ENABLED }}
+          DOCKER_USER: ${{ vars.DOCKER_USER }}
+        run: python3 scripts/docker_cloud_release_gate.py preflight
+      - name: Download source-bound FINAL PRODUCTION GATE evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh run download "${{ steps.preflight.outputs.gate_run_id }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "ola-final-production-${GITHUB_SHA}" \
+            --dir release-evidence
+      - name: Independently validate signed release evidence and source digests
+        env:
+          OLA_ALLOWED_SIGNER_FPRS: ${{ vars.OLA_ALLOWED_SIGNER_FPRS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/docker_cloud_release_gate.py artifact --artifact-dir release-evidence
+          (
+            cd release-evidence
+            sha256sum -c production-manifest-sha256.txt
+            env GITHUB_EVENT_NAME=push GITHUB_SHA="$GITHUB_SHA" \
+              GITHUB_REF=refs/heads/main EXPECTED_SOURCE_SHA="$GITHUB_SHA" \
+              python3 ../scripts/assert_manifest_policy.py
+          )
+      - name: Authenticate to Docker Hub after all policy checks
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          username: ${{ vars.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PAT }}
+      - name: Select reviewed Docker Build Cloud builder
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: cloud
+          endpoint: krzysztof1678/ola
+      - name: Verify Buildx cloud-driver support
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx version
+          docker buildx version | python3 -c 'import re,sys; t=sys.stdin.read(); v=re.search(r"v(\d+)\.(\d+)\.(\d+)",t); sys.exit(0 if v and tuple(map(int,v.groups())) >= (0,37,0) else 1)'
+      - name: Build and push immutable, SHA-scoped image with SBOM and provenance
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: krzysztof1678/ola:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/krzysztofcieciwa07-ship-it/OLA
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+      - name: Verify pushed image digest in registry
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker buildx imagetools inspect "krzysztof1678/ola${DIGEST}"
+          echo "IMAGE_PUBLISHED_BY_DIGEST=SUCCESS, PRODUCTION_DEPLOYMENT=NOT_PERFORMED" >> "$GITHUB_STEP_SUMMARY"
+          echo "SOURCE_SHA=${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          echo "IMAGE=krzysztof1678/ola${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
