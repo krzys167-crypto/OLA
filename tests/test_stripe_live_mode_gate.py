@@ -53,3 +53,39 @@ def test_test_mode_rejects_live_key_even_for_test_session(monkeypatch):
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_dummy_test_only")
     with pytest.raises(StripeModeError):
         validate_stripe_mode(False)
+
+from fastapi import HTTPException
+from app.stripe_webhook import _validate_checkout
+from app.revenue import payment_verified
+
+
+def _paid_checkout(livemode):
+    return {
+        "livemode": livemode,
+        "metadata": {"tenant_id": "tenant-test", "offer": "ola-execution-audit",
+                     "product": "OLA Execution Audit", "task": "safe GO regression"},
+        "payment_status": "paid", "status": "complete", "amount_total": 9900,
+        "currency": "eur",
+    }
+
+
+def test_live_webhook_rejects_paid_sandbox_checkout(monkeypatch):
+    monkeypatch.setenv("OLA_STRIPE_MODE", "live")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_dummy_test_only")
+    with pytest.raises(HTTPException) as exc:
+        _validate_checkout(_paid_checkout(False))
+    assert exc.value.status_code == 400
+
+
+def test_live_payment_success_never_promotes_paid_sandbox(monkeypatch):
+    monkeypatch.setenv("OLA_STRIPE_MODE", "live")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_dummy_test_only")
+    assert payment_verified(_paid_checkout(False)) is False
+    assert payment_verified(_paid_checkout(True)) is True
+
+
+def test_live_webhook_rejects_missing_livemode(monkeypatch):
+    monkeypatch.setenv("OLA_STRIPE_MODE", "live")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_dummy_test_only")
+    with pytest.raises(HTTPException):
+        _validate_checkout(_paid_checkout(None))
