@@ -6,6 +6,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from .stripe_mode import StripeModeError, validate_stripe_mode
+
 PRODUCT_NAME = "OLA Execution Audit"
 OFFER = "ola-execution-audit"
 
@@ -14,6 +16,10 @@ def _stripe_request(path: str, fields: dict[str, Any]) -> dict[str, Any]:
     secret = os.getenv("STRIPE_SECRET_KEY")
     if not secret:
         raise RuntimeError("STRIPE_SECRET_KEY is not configured")
+    try:
+        validate_stripe_mode(os.getenv("OLA_STRIPE_MODE", "test").strip().lower() == "live")
+    except StripeModeError as exc:
+        raise RuntimeError(str(exc)) from exc
     req = urllib.request.Request(
         "https://api.stripe.com/v1/" + path,
         data=urllib.parse.urlencode(fields).encode(),
@@ -24,7 +30,12 @@ def _stripe_request(path: str, fields: dict[str, Any]) -> dict[str, Any]:
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as response:
-        return json.load(response)
+        result = json.load(response)
+    try:
+        validate_stripe_mode(result.get("livemode"), allow_missing_test_fixture=True)
+    except StripeModeError as exc:
+        raise RuntimeError(str(exc)) from exc
+    return result
 
 
 def create_checkout(task, success_url, cancel_url, tenant_id):
@@ -52,16 +63,29 @@ def retrieve_checkout(session_id):
     secret = os.getenv("STRIPE_SECRET_KEY")
     if not secret:
         raise RuntimeError("STRIPE_SECRET_KEY is not configured")
+    try:
+        validate_stripe_mode(os.getenv("OLA_STRIPE_MODE", "test").strip().lower() == "live")
+    except StripeModeError as exc:
+        raise RuntimeError(str(exc)) from exc
     req = urllib.request.Request(
         "https://api.stripe.com/v1/checkout/sessions/" + urllib.parse.quote(session_id, safe=""),
         headers={"Authorization": f"Bearer {secret}"},
         method="GET",
     )
     with urllib.request.urlopen(req, timeout=30) as response:
-        return json.load(response)
+        result = json.load(response)
+    try:
+        validate_stripe_mode(result.get("livemode"), allow_missing_test_fixture=True)
+    except StripeModeError as exc:
+        raise RuntimeError(str(exc)) from exc
+    return result
 
 
 def payment_verified(session):
+    try:
+        validate_stripe_mode(session.get("livemode"), allow_missing_test_fixture=True)
+    except StripeModeError:
+        return False
     metadata = session.get("metadata", {})
     return (
         session.get("payment_status") == "paid"
