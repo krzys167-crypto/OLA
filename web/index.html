@@ -13,6 +13,48 @@
 @media(max-width:1160px){.layout{grid-template-columns:1fr}.column-side{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.column-side>*:last-child{grid-column:1/-1}.horizon{left:22%;top:19%}}@media(max-width:780px){.app-shell{grid-template-columns:1fr}.sidebar{position:static;height:auto;min-height:0;padding:12px 15px;gap:12px;border-right:0;border-bottom:1px solid var(--stroke)}.sidebar-bottom{display:none}.nav{flex-direction:row;overflow:auto;gap:4px}.nav-btn{min-width:max-content;font-size:12px;padding:8px 10px;min-height:38px}.nav-btn .sym{font-size:15px;width:18px;flex-basis:18px}.workspace{padding:14px 15px 95px}.topbar{padding-bottom:17px}.top-controls .top-chip,.identity{display:none}.column-side{grid-template-columns:1fr 1fr}.horizon{left:0;top:24%;width:100%}.dock{left:50%;bottom:8px}.dock-btn{width:39px;height:39px;font-size:19px}.dock{gap:5px}.window-body{padding:16px}.core-row{gap:9px}}@media(max-width:520px){.core-row,.column-side,.two-col{grid-template-columns:1fr}.column-side>*:last-child{grid-column:auto}.topbar{gap:8px}.search-form{min-width:0}.top-chip{display:none}.greeting{padding:7px 4px}.glass.pad{padding:16px}.core-visual{max-width:130px}.window-body::after{right:-160px}.dock{width:max-content;max-width:96vw;padding:8px;overflow:auto}.dock-btn{width:35px;height:38px}.quick-grid{grid-template-columns:repeat(3,1fr)}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001ms!important;transition-duration:.001ms!important;scroll-behavior:auto!important}}
 @media(max-width:780px){.app-shell{grid-template-columns:minmax(0,1fr)}.sidebar,.workspace,.topbar,.column-main,.column-side,.layout,.glass{min-width:0;max-width:100%}.nav{width:100%;min-width:0;max-width:100%;overflow-x:auto}.search-form{max-width:none;min-width:0;flex:1}.core-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
 @media(max-width:520px){.core-row,.column-side,.two-col{grid-template-columns:minmax(0,1fr)}.search-form{width:100%}.topbar{min-width:0}.dock{max-width:calc(100vw - 12px)}.glass.pad{min-width:0}}
+
+/* OLA COMMAND CENTER: skin only; operational controls use existing AURORA handlers */
+:root{--ink:#e7fff3;--muted:#9bbfb3;--dim:#69988a;--cyan:#25f3bb;--violet:#19cda7;--glass:rgba(3,20,20,.82);--stroke:rgba(36,224,167,.25);--soft:rgba(17,200,143,.13);--good:#55efb3;--warn:#fabb70;--bad:#fc798a;--radius:12px}
+body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(0,146,100,.15),transparent 50%),#030a0b}.horizon{opacity:.08;filter:hue-rotate(80deg)}
+.sidebar{background:linear-gradient(160deg,#030b0c,#061c1b)}
+.glass{background:linear-gradient(150deg,rgba(3,20,20,.93),rgba(2,13,14,.92))}
+.brand-mark{background:radial-gradient(circle,#003528 43%,transparent 47%),conic-gradient(#18dca5,#1ee7c9,#56dfff,#18dca5);box-shadow:0 0 18px rgba(20,224,169,.24)}
+.nav-btn.active,.nav-btn:hover{background:rgba(6,130,99,.16);border-color:rgba(45,217,157,.4)}.nav-btn.active{box-shadow:inset 3px 0 var(--cyan)}a{color:#64f2c2}
+.cc-grid{display:grid;grid-template-columns:minmax(155px,.67fr) minmax(300px,1.7fr) minmax(220px,1fr);gap:12px;margin-bottom:20px}
+.cc-panel{min-width:0;overflow:hidden;border:1px solid rgba(31,223,163,.28);border-radius:11px;background:#031313;position:relative}
+.cc-title{font:700 11px/1.4 ui-monospace,monospace;color:#bdf9e2;letter-spacing:.09em;padding:14px 13px;border-bottom:1px solid rgba(33,220,164,.21)}
+.cc-agents{display:flex;flex-direction:column}
+.cc-agent{display:flex;justify-content:space-between;gap:5px;width:100%;background:transparent;color:#e3fff2;font-size:11px;padding:12px;border:0;border-bottom:1px solid rgba(41,204,157,.13);text-align:left}
+.cc-agent:hover{background:rgba(17,170,118,.11)}
+.cc-agent b{font:600 9px ui-monospace,monospace;color:#eab66f}
+.cc-agent b.verified{color:#6bf4bb}
+.cc-note{font-size:10px;color:#90b5a7;line-height:1.5;padding:12px;margin-top:auto}
+.cc-map{background:radial-gradient(ellipse at 50% 47%,rgba(0,106,87,.17),transparent 57%),#031014;display:flex;flex-direction:column}
+.cc-maphead{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:12px 14px}
+.cc-live{border:1px solid rgba(45,217,157,.3);border-radius:25px;padding:5px 9px;font:700 10px ui-monospace,monospace;color:#efbd71}
+.cc-live.online{color:#60efb5;background:rgba(15,176,123,.13)}
+.cc-mapsvg{display:block;width:100%;max-height:340px;flex:1;min-height:290px}
+.cc-label{fill:#d7ffec;font:12px ui-monospace,monospace;letter-spacing:1.1px}
+.cc-ring{transform-origin:50% 50%;animation:cc-rotate 80s linear infinite}
+.cc-ring-rev{animation-direction:reverse;animation-duration:125s}
+.cc-foot{padding:9px 12px;border-top:1px solid rgba(45,217,157,.2);font:10px ui-monospace,monospace;color:#91bcaf}
+.cc-identity{display:flex;flex-direction:column}
+.cc-portrait{min-height:333px;flex:1;position:relative;background:linear-gradient(0deg,#031313 0%,transparent 45%),linear-gradient(90deg,rgba(0,16,13,.18),rgba(0,12,13,.26)),url(data:image/webp;base64,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) center top /cover no-repeat}
+.cc-reticle{position:absolute;left:14%;top:24%;width:38%;aspect-ratio:1;border:2px solid rgba(78,251,184,.72);border-radius:50%;box-shadow:0 0 22px rgba(0,239,160,.43),inset 0 0 18px rgba(0,239,160,.25);pointer-events:none}
+.cc-reticle:before,.cc-reticle:after{content:"";position:absolute;background:#81ffd6}
+.cc-reticle:before{height:1px;left:-18%;right:-18%;top:50%}
+.cc-reticle:after{width:1px;top:-18%;bottom:-18%;left:50%}
+.cc-facecaption{position:absolute;bottom:13px;left:14px;text-shadow:0 2px 5px #000;font-size:11px;color:#a1f0ce}
+.cc-facecaption b{font-size:28px;color:#f6fffb;display:block;letter-spacing:.07em}
+.cc-actions{display:flex;gap:7px;padding:10px}
+.cc-actions button{flex:1;border:1px solid rgba(49,218,167,.35);border-radius:7px;background:rgba(6,89,67,.2);color:#c7ffe7;font-size:11px;padding:9px 3px}
+.cc-actions button:hover{background:rgba(17,170,118,.2)}
+@keyframes cc-rotate{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.cc-ring{animation:none}}
+@media(max-width:1100px){.cc-grid{grid-template-columns:minmax(0,1fr) minmax(240px,.8fr)}.cc-agents{grid-column:1/-1;flex-direction:row;flex-wrap:wrap}.cc-agents .cc-title{width:100%}.cc-agent{flex:1 1 30%}.cc-note{width:100%;margin:0}}
+@media(max-width:720px){.cc-grid{grid-template-columns:1fr}.cc-agents{display:none}.cc-mapsvg{min-height:240px}.cc-portrait{min-height:390px}}
+
 </style>
 </head>
 <body>
@@ -36,6 +78,35 @@
   <form class="search-form" id="searchForm" role="search"><label class="sr-only" for="searchInput">Znajdź funkcję</label><span class="search-icon" aria-hidden="true">⌕</span><input id="searchInput" type="search" autocomplete="off" placeholder="Znajdź funkcję lub moduł…"><span class="keycap">↵</span></form>
   <div class="top-controls"><span class="top-chip" id="clock">--:--</span><span class="top-chip" title="Stan sprawdzany z API">API <span id="topLed" class="led wait"></span></span><span class="avatar" aria-hidden="true">O</span><span class="identity">OLA<small>Operator</small></span></div>
  </header>
+
+ <section class="cc-grid" aria-label="OLA Command Center — podłączone do istniejącego AURORA API">
+  <aside class="cc-panel cc-agents" aria-label="Moduły systemu">
+   <div class="cc-title">AGENT CORE / STATUS</div>
+   <button type="button" data-view="operations" class="cc-agent">NINA <b id="ccNina">UNKNOWN</b></button>
+   <button type="button" data-view="chat" class="cc-agent">OLA CORE <b id="ccCore">UNKNOWN</b></button>
+   <button type="button" data-view="evidence" class="cc-agent">EVIDENCE <b id="ccEvidence">UNKNOWN</b></button>
+   <button type="button" data-view="operations" class="cc-agent">IGOR <b id="ccIgor">UNKNOWN</b></button>
+   <button type="button" data-view="operations" class="cc-agent">HUMAN GATE <b id="ccGate">UNKNOWN</b></button>
+   <button type="button" data-view="audit" class="cc-agent">REPLAY <b id="ccReplay">UNKNOWN</b></button>
+   <p class="cc-note">ROUTE READY oznacza obecność endpointu, a nie wykonanie. VERIFIED wyświetlamy tylko z rzeczywistej odpowiedzi backendu.</p>
+  </aside>
+  <section class="cc-panel cc-map" aria-label="Schemat przepływu dowodowego">
+   <div class="cc-maphead"><div><div class="cc-title" style="border:0;padding:0">OLA / GLOBAL INTELLIGENCE</div><small>MODEL PRZEPŁYWU · NIE TELEMETRIA</small></div><span class="cc-live" id="ccLive" aria-live="polite">API UNKNOWN</span></div>
+   <svg class="cc-mapsvg" viewBox="0 0 600 400" role="img" aria-label="Schemat SOURCE, NINA, EVIDENCE, IGOR, HUMAN GATE, REPLAY — nie rzeczywisty ruch sieciowy">
+    <g fill="none" stroke="#30cda8" stroke-opacity=".28" stroke-width="1"><circle cx="300" cy="200" r="170"/><circle cx="300" cy="200" r="131"/><circle cx="300" cy="200" r="95"/><ellipse cx="300" cy="200" rx="175" ry="61"/><ellipse cx="300" cy="200" rx="70" ry="172"/><path d="M120 200H480M300 25V375"/></g>
+    <g class="cc-ring" style="transform-origin:300px 200px" fill="none" stroke="#3ef3c0" stroke-opacity=".48" stroke-dasharray="12 24"><circle cx="300" cy="200" r="192"/></g>
+    <g class="cc-ring cc-ring-rev" style="transform-origin:300px 200px" fill="none" stroke="#7df6d4" stroke-opacity=".32" stroke-dasharray="4 16"><circle cx="300" cy="200" r="145"/></g>
+    <path d="M300 40L438 120 438 280 300 360 162 280 162 120Z M300 40V200 M438 120L300 200 M438 280L300 200 M300 360V200 M162 280L300 200 M162 120L300 200" fill="none" stroke="#2fe7b8" stroke-opacity=".57" stroke-width="1.5"/>
+    <g fill="#65ffcd" stroke="#061713" stroke-width="4"><circle cx="300" cy="40" r="7"/><circle cx="438" cy="120" r="7"/><circle cx="438" cy="280" r="7"/><circle cx="300" cy="360" r="7"/><circle cx="162" cy="280" r="7"/><circle cx="162" cy="120" r="7"/><circle cx="300" cy="200" r="12"/></g>
+    <g class="cc-label"><text x="300" y="22" text-anchor="middle">SOURCE</text><text x="455" y="111">NINA</text><text x="446" y="307">EVIDENCE</text><text x="300" y="390" text-anchor="middle">IGOR</text><text x="66" y="305">GATE</text><text x="88" y="105">REPLAY</text><text x="300" y="227" text-anchor="middle">OLA</text></g>
+   </svg>
+   <div class="cc-foot">NINA → EVIDENCE → IGOR → GATE → REPLAY · podgląd schematu, nie dowód produkcyjny</div>
+  </section>
+  <section class="cc-panel cc-identity" aria-label="OLA — zatwierdzony portret">
+   <div class="cc-portrait" role="img" aria-label="Portret OLA z holograficznym celownikiem na jednym oku"><div class="cc-reticle" aria-hidden="true"></div><div class="cc-facecaption"><b>OLA</b> ANALYSE · REASON · VERIFY</div></div>
+   <div class="cc-actions"><button type="button" data-view="chat">NINA CHAT</button><button type="button" data-view="operations">EXECUTE</button></div>
+  </section>
+ </section>
  <div class="layout">
   <div class="column-main">
    <section class="greeting" aria-label="Powitanie"><p class="eyebrow">Centrum dowodowego wykonania,</p><h1>OLA AURORA</h1><p>Jeden interfejs. Istniejący OLA Core i AI STUDIO — bez fikcyjnych wyników.</p></section>
@@ -130,5 +201,33 @@
  updateClock();setInterval(updateClock,1000);refreshHealth();
 })();
 </script>
+
+<script>
+(() => {
+ 'use strict';
+ const node = id => document.getElementById(id);
+ const map = [['healthStatus','ccCore'],['ninaStatus','ccNina'],['igorStatus','ccIgor'],['replayStatus','ccReplay'],['humanStatus','ccGate']];
+ function reflect(){
+   for (const [origin, dest] of map) {
+     const value = node(origin).textContent.trim() || 'UNKNOWN';
+     node(dest).textContent = value;
+     node(dest).classList.toggle('verified', value === 'VERIFIED');
+   }
+   const live = node('healthStatus').textContent.trim() === 'ONLINE';
+   node('ccLive').textContent = live ? 'API ONLINE' : 'API UNKNOWN';
+   node('ccLive').classList.toggle('online', live);
+ }
+ for(const [origin] of map) new MutationObserver(reflect).observe(node(origin), {childList:true,subtree:true,characterData:true});
+ reflect();
+ fetch('/openapi.json',{cache:'no-store',credentials:'same-origin'})
+   .then(response => {if(!response.ok)throw new Error('No OpenAPI');return response.json();})
+   .then(spec => {
+      const paths = spec && spec.paths || {};
+      const found = Object.keys(paths).some(path => path.startsWith('/evidence/') && !!paths[path].get);
+      node('ccEvidence').textContent = found ? 'ROUTE READY' : 'UNKNOWN';
+   }).catch(() => {node('ccEvidence').textContent = 'UNKNOWN';});
+})();
+</script>
+
 </body>
 </html>
