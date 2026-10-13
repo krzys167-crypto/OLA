@@ -13,6 +13,7 @@ from .agent_runtime import run_agent_task
 from .database import SessionLocal
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash
 from .models import EvidenceRecord, StripeEvent
+from .stripe_mode import StripeModeError, validate_stripe_mode
 
 
 STRIPE_SIGNATURE_TOLERANCE_SECONDS = 300
@@ -82,6 +83,10 @@ def _metadata_task(session: dict) -> str | None:
 
 
 def _validate_checkout(session: dict) -> str:
+    try:
+        validate_stripe_mode(session.get("livemode"), allow_missing_test_fixture=True)
+    except StripeModeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     metadata = session.get("metadata") or {}
     if metadata.get("offer") != OLA_OFFER:
         raise HTTPException(status_code=400, detail="unsupported Stripe offer")
@@ -116,6 +121,11 @@ def process_checkout_event(payload: bytes, signature_header: str) -> dict:
         event = json.loads(payload)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="invalid Stripe JSON") from exc
+
+    try:
+        validate_stripe_mode(event.get("livemode"), allow_missing_test_fixture=True)
+    except StripeModeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     event_id = event.get("id")
     event_type = event.get("type")
