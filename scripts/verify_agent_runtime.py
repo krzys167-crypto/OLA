@@ -29,14 +29,44 @@ def compute_record_hash(tenant_id, seq, prev_hash, payload_json):
 
 
 def verify_hash_chain(rows):
+    # Independent implementation; do not import runtime hashchain.py.
     expected_prev = GENESIS_HASH
+    highest_version = 1
+    seen_ids = set()
+    expected_tenant = None
     for expected_seq, row in enumerate(rows):
-        tenant_id, seq, _, payload_json, prev_hash, record_hash = row
+        tenant_id, seq, record_type, payload_json, prev_hash, record_hash, record_id, version = row
+        if expected_tenant is None:
+            expected_tenant = tenant_id
+        if tenant_id != expected_tenant:
+            return False, "tenant boundary mismatch"
         if seq != expected_seq or prev_hash != expected_prev:
             return False, "sequence or predecessor mismatch"
-        expected = compute_record_hash(tenant_id, seq, prev_hash, payload_json)
+        if type(version) is not int or version not in {1, 2} or version < highest_version:
+            return False, "hash version invalid or downgraded"
+        highest_version = version
+        if version == 2:
+            if not record_id or record_id in seen_ids or not record_type:
+                return False, "v2 record identity/type invalid"
+            try:
+                value = json.loads(payload_json, parse_constant=lambda v: (_ for _ in ()).throw(ValueError(v)))
+                raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+                if payload_json != raw:
+                    return False, "v2 canonical payload mismatch"
+                material = json.dumps({
+                    "hash_version": 2, "id": record_id,
+                    "tenant_id": tenant_id, "seq": seq,
+                    "prev_hash": prev_hash, "record_type": record_type,
+                    "payload_json": payload_json,
+                }, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+                expected = hashlib.sha256(b"OLA-EVIDENCE-RECORD-V2\\x00" + material).hexdigest()
+            except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
+                return False, "v2 evidence schema invalid"
+        else:
+            expected = compute_record_hash(tenant_id, seq, prev_hash, payload_json)
         if record_hash != expected:
             return False, "record hash mismatch"
+        seen_ids.add(record_id)
         expected_prev = record_hash
     return True, "ok"
 
@@ -54,7 +84,7 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
     }
     db = sqlite3.connect(db_path)
     rows = db.execute(
-        "SELECT tenant_id, seq, record_type, payload_json, prev_hash, record_hash "
+        "SELECT tenant_id, seq, record_type, payload_json, prev_hash, record_hash, id, hash_version "
         "FROM evidence_records WHERE tenant_id=? ORDER BY seq",
         (tenant_id,),
     ).fetchall()
