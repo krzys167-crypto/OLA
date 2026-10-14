@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   baseline:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       OLA_LLM_MODE: deterministic
       OLA_LLM_MODEL: deterministic-runtime-v1

@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   e2e:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: ci-openai
       deployment: false
@@ -236,12 +236,25 @@ jobs:
         if: ${{ always() }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          REQUIRE_REAL_OPENAI: ${{ vars.OLA_REQUIRE_REAL_OPENAI }}
         run: |
           set -euo pipefail
           if [ -n "$OPENAI_API_KEY" ]; then
             echo "REAL_LLM_CREDENTIAL=AVAILABLE"
+            echo "### ✅ Real OpenAI six-agent E2E EXECUTED" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "REAL_LLM_CREDENTIAL=SKIPPED — Ollama is the AUTO provider"
+            echo "::warning title=Real LLM E2E NOT EXECUTED::No OPENAI_API_KEY available. Real-LLM steps were skipped; this run proves only the deterministic/Ollama paths."
+            {
+              echo "### ⚠️ Real OpenAI six-agent E2E NOT EXECUTED"
+              echo
+              echo "No \`OPENAI_API_KEY\` available (fork PR or missing environment secret)."
+              echo "A green check proves only the deterministic / Ollama paths, **not** the real-LLM runtime."
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ "${REQUIRE_REAL_OPENAI:-}" = "true" ]; then
+              echo "::error title=Real LLM required::OLA_REQUIRE_REAL_OPENAI=true but no OPENAI_API_KEY is available."
+              exit 1
+            fi
           fi
 
       - name: Stripe integration status (non-blocking core)

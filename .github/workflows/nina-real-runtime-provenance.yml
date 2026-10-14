@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   runtime-proof:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       evidence_created: ${{ steps.detect-credential.outputs.available }}
     environment:
@@ -39,6 +39,10 @@ jobs:
         id: detect-credential
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Opt-in strict mode: set repo/environment variable
+          # OLA_REQUIRE_REAL_OPENAI=true (and make this check required) so that
+          # a missing credential FAILS instead of reporting a green no-op.
+          REQUIRE_REAL_OPENAI: ${{ vars.OLA_REQUIRE_REAL_OPENAI }}
         run: |
           set -euo pipefail
           if [ -n "$OPENAI_API_KEY" ]; then
@@ -47,6 +51,20 @@ jobs:
           else
             echo "REAL_OPENAI_CREDENTIAL=SKIPPED — Ollama is the AUTO provider"
             echo "available=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### ⚠️ Real-runtime proof NOT EXECUTED"
+              echo
+              echo "No \`OPENAI_API_KEY\` was available to this job (fork PR, missing environment secret, or secret not set)."
+              echo "All real-LLM assertions, hash-chain verification, replay and evidence upload were **skipped**."
+              echo "A green check on this job therefore proves **only** that the checkout resolved to the expected SHA."
+              echo
+              echo "Set \`vars.OLA_REQUIRE_REAL_OPENAI=true\` to make this condition a hard failure."
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ "${REQUIRE_REAL_OPENAI:-}" = "true" ]; then
+              echo "::error title=Real runtime proof required::OLA_REQUIRE_REAL_OPENAI=true but no OPENAI_API_KEY is available; refusing to report a green no-op."
+              exit 1
+            fi
+            echo "::warning title=Real runtime proof NOT EXECUTED::No OPENAI_API_KEY available. All real-LLM assertions were skipped; this green check does not prove the real runtime."
           fi
 
       - name: Setup Python
@@ -194,6 +212,19 @@ jobs:
             replay-proof.sha256
             provenance.txt
             provenance.sha256
+      - name: Stop runtime
+        if: ${{ always() && env.OPENAI_AVAILABLE == 'true' }}
+        run: docker stop ola-nina-e2e || true
+      - name: Summarize executed proof
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
+        run: |
+          {
+            echo "### ✅ Real-runtime proof EXECUTED"
+            echo
+            echo "- commit: \`${EXPECTED_COMMIT}\`"
+            echo "- provider/model: openai / \`${OLA_LLM_MODEL}\`"
+            echo "- artifact: \`nina-real-runtime-proof-${EXPECTED_COMMIT}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   igor-independent:
     if: ${{ github.event_name != 'pull_request' && needs.runtime-proof.outputs.evidence_created == 'true' }}

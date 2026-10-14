@@ -24,7 +24,7 @@ env:
 
 jobs:
   pr2-focused-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # These tests are in-process unit/contract tests; they must not depend on a live Ollama service.
       OLA_LLM_PROVIDER: deterministic
@@ -46,7 +46,7 @@ jobs:
         run: pytest -q tests/test_nina_igor_chain.py tests/test_nina_run_endpoint_contract.py tests/test_nina_igor_proof_policy.py
 
   nina-igor-ollama-full-flow:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:

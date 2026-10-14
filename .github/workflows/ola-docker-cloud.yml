@@ -23,7 +23,7 @@ jobs:
   # PR/main CI does NOT authenticate to Docker Hub or publish anything.
   build-only:
     if: github.event_name != 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout exact source without persisted credentials
@@ -56,7 +56,7 @@ jobs:
   # Manual release from trusted main, after independent Environment approval.
   publish-reviewed-image:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment: production
     permissions:

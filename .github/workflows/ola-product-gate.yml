@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   product-gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: ci-openai
       deployment: false
@@ -29,12 +29,25 @@ jobs:
       - name: Detect OpenAI credential
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          REQUIRE_REAL_OPENAI: ${{ vars.OLA_REQUIRE_REAL_OPENAI }}
         run: |
           set -euo pipefail
           if [ -n "$OPENAI_API_KEY" ]; then
             echo "REAL_OPENAI_CREDENTIAL=AVAILABLE"
+            echo "### ✅ Real six-agent runtime and NINA→IGOR→Human Gate checks EXECUTED" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "REAL_OPENAI_CREDENTIAL=SKIPPED — Ollama is the AUTO provider"
+            echo "::warning title=Real-LLM product checks NOT EXECUTED::No OPENAI_API_KEY available. 'Verify real six-agent runtime' and 'Verify NINA to IGOR to Human Gate' will be skipped; this run proves only the deterministic path."
+            {
+              echo "### ⚠️ Real six-agent runtime and NINA→IGOR→Human Gate checks NOT EXECUTED"
+              echo
+              echo "No \`OPENAI_API_KEY\` available (fork PR or missing environment secret)."
+              echo "The unit/contract suite, image build, UI surface and health window still ran in \`deterministic\` mode."
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ "${REQUIRE_REAL_OPENAI:-}" = "true" ]; then
+              echo "::error title=Real LLM required::OLA_REQUIRE_REAL_OPENAI=true but no OPENAI_API_KEY is available."
+              exit 1
+            fi
           fi
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

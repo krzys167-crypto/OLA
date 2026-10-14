@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   continuity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:

@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   jev-evaluation:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: ci-openai
       deployment: false

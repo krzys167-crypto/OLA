@@ -15,7 +15,7 @@ permissions:
 jobs:
   scorecard:
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write
@@ -42,7 +42,7 @@ jobs:
           path: scorecard-results.sarif
 
   zizmor:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       actions: read
@@ -59,7 +59,7 @@ jobs:
           min-severity: medium
 
   gitleaks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -76,7 +76,7 @@ jobs:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
 
   security-image:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       security-events: write
