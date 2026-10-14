@@ -41,6 +41,7 @@ def load_tenant_records(tenant_id: str):
             "prev_hash": row.prev_hash,
             "record_hash": row.record_hash,
             "record_type": row.record_type,
+            "hash_version": row.hash_version,
             "payload_json": row.payload_json,
         }
         for row in rows
