@@ -11,6 +11,7 @@ permissions:
   contents: read
 
 env:
+  SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   OLA_API_KEY_PEPPER: CI-ONLY-OLA-API-KEY-PEPPER-DO-NOT-USE-IN-PRODUCTION-20261012
   OLA_LLM_PROVIDER: ollama
   OLA_LLM_MODE: required
@@ -26,9 +27,12 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Assert exact candidate source checkout
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
       - name: Set up Ollama
         shell: bash
         run: |
@@ -68,7 +72,7 @@ jobs:
             --name ola-ollama-e2e \
             --network host \
             -e OLA_EG_DB_PATH=/data/ola.db \
-            -e OLA_RUNTIME_COMMIT="$GITHUB_SHA" \
+            -e OLA_RUNTIME_COMMIT="$SOURCE_SHA" \
             -e OLA_LLM_PROVIDER="$OLA_LLM_PROVIDER" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
             -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
@@ -91,7 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i \
-            -e EXPECTED_COMMIT="$GITHUB_SHA" \
+            -e EXPECTED_COMMIT="$SOURCE_SHA" \
             -e OLLAMA_MODEL="$OLLAMA_MODEL" \
             ola-ollama-e2e python - <<'PY' > ollama-runtime-proof.json
           import hashlib
@@ -164,7 +168,7 @@ jobs:
             python scripts/verify_agent_runtime.py \
               --tenant-id "$TENANT_ID" \
               --run-id "$RUN_ID" \
-              --expected-commit "$GITHUB_SHA" \
+              --expected-commit "$SOURCE_SHA" \
               --expected-task "Calculate 17 * 23 and return the exact verified result 391." \
               --expected-result "391" \
               --expected-provider "ollama" \
@@ -182,7 +186,7 @@ jobs:
       - name: Upload Ollama LLM evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ollama-real-llm-proof-${{ github.sha }}
+          name: ollama-real-llm-proof-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             ollama-tags-before-pull.json
             ollama-models.json
@@ -203,7 +207,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ollama-real-llm-failure-${{ github.sha }}
+          name: ollama-real-llm-failure-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             ola-ollama-runtime-failure.log
             ollama-service-failure.log
