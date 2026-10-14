@@ -63,6 +63,10 @@ def bearer_identity(authorization):
 def append_record(tenant_id, record_type, payload):
     payload_json = canonical_json(payload)
     with SessionLocal() as db:
+        # Reserve the SQLite writer before reading the hash-chain tip.
+        # Without this reservation concurrent agent/audit writes can choose
+        # the same sequence number and fail with an unhandled unique-key race.
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         last = db.scalar(
             select(EvidenceRecord)
             .where(EvidenceRecord.tenant_id == tenant_id)
@@ -105,15 +109,15 @@ def run_controlled_audit(tenant_id, task, scenario):
     for record_type, payload in events:
         evidence_ids.append(append_record(tenant_id, record_type, payload)["id"])
 
+    # Verify the *complete* tenant chain, not only the five new audit records:
+    # genesis/prev_hash validation must start at sequence zero even on repeated audits.
     with SessionLocal() as db:
         rows = db.scalars(
             select(EvidenceRecord)
-            .where(
-                EvidenceRecord.tenant_id == tenant_id,
-                EvidenceRecord.id.in_(evidence_ids),
-            )
+            .where(EvidenceRecord.tenant_id == tenant_id)
             .order_by(EvidenceRecord.seq.asc())
         ).all()
+    audit_rows = [row for row in rows if row.id in set(evidence_ids)]
 
     chain = [
         {
@@ -131,18 +135,20 @@ def run_controlled_audit(tenant_id, task, scenario):
             "audit_id": audit_id,
             "status": "FAILED",
             "outcome": "evidence_chain_invalid",
-            "evidence_count": len(rows),
+            "evidence_count": len(audit_rows),
             "evidence_ids": evidence_ids,
             "reason": reason,
+            "verification_scope": "CONTROLLED_SIMULATION",
         }
 
     return {
         "audit_id": audit_id,
         "status": "VERIFIED",
         "outcome": "recovered_and_verified",
-        "evidence_count": len(rows),
+        "evidence_count": len(audit_rows),
         "evidence_ids": evidence_ids,
         "reason": reason,
+        "verification_scope": "CONTROLLED_SIMULATION",
     }
 
 
