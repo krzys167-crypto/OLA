@@ -59,7 +59,7 @@ def verify_hash_chain(rows):
                     "prev_hash": prev_hash, "record_type": record_type,
                     "payload_json": payload_json,
                 }, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-                expected = hashlib.sha256(b"OLA-EVIDENCE-RECORD-V2\\x00" + material).hexdigest()
+                expected = hashlib.sha256(b"OLA-EVIDENCE-RECORD-V2\x00" + material).hexdigest()
             except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
                 return False, "v2 evidence schema invalid"
         else:
