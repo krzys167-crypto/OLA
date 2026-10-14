@@ -5,6 +5,7 @@ import operator
 import os
 import uuid
 
+import httpx
 from sqlalchemy import select
 
 from .database import SessionLocal
@@ -280,7 +281,32 @@ def run_agent_task(tenant_id, task):
     execution = []
     previous_output = {"task": task}
     for agent in AGENT_ROLES:
-        evidence_id, output = _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution)
+        try:
+            evidence_id, output = _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution)
+        except (httpx.HTTPError, RuntimeError, ValueError, TimeoutError, LookupError, json.JSONDecodeError) as exc:
+            # Never fall back silently to a deterministic model when real LLM is required.
+            # Preserve partial evidence, but mark the entire run BLOCK.
+            from .main import append_record
+            failure = append_record(tenant_id, "runtime.blocked", {
+                "run_id": run_id,
+                "agent": agent,
+                "status": "BLOCK",
+                "reason_code": "MODEL_OR_TOOL_UNAVAILABLE",
+                "error_type": type(exc).__name__,
+                "completed_agents": len(execution),
+            })
+            evidence_ids.append(failure["id"])
+            return {
+                "run_id": run_id,
+                "task": task,
+                "final_result": None,
+                "status": "BLOCK",
+                "reason": "MODEL_OR_TOOL_UNAVAILABLE",
+                "agents": AGENT_ROLES,
+                "evidence_count": len(evidence_ids),
+                "evidence_ids": evidence_ids,
+                "execution": execution,
+            }
         evidence_ids.append(evidence_id)
         execution.append(output)
         previous_output = output
