@@ -52,7 +52,7 @@ def verify_hash_chain(rows):
                 value = json.loads(payload_json, parse_constant=lambda v: (_ for _ in ()).throw(ValueError(v)))
                 raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
                 if payload_json != raw:
-                    return False, "v2 canonical payload mismatch"
+                    return False, "v2 record hash mismatch: non-canonical payload"
                 material = json.dumps({
                     "hash_version": 2, "id": record_id,
                     "tenant_id": tenant_id, "seq": seq,
