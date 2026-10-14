@@ -17,8 +17,11 @@ def chain_snapshot(tenant_id):
     with SessionLocal() as db:
         rows = db.query(EvidenceRecord).filter(EvidenceRecord.tenant_id == tenant_id).order_by(EvidenceRecord.seq.asc()).all()
         chain = [{
+            "id": r.id,
             "tenant_id": r.tenant_id,
             "seq": r.seq,
+            "record_type": r.record_type,
+            "hash_version": r.hash_version,
             "prev_hash": r.prev_hash,
             "record_hash": r.record_hash,
             "payload_json": r.payload_json,
