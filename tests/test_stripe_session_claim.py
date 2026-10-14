@@ -59,7 +59,8 @@ def _rows(tenant):
             .order_by(EvidenceRecord.seq)
         ).all()
     return [{
-        "tenant_id": r.tenant_id, "seq": r.seq,
+        "id": r.id, "tenant_id": r.tenant_id, "seq": r.seq,
+        "record_type": r.record_type, "hash_version": r.hash_version,
         "prev_hash": r.prev_hash, "record_hash": r.record_hash,
         "payload_json": r.payload_json,
     } for r in records]
