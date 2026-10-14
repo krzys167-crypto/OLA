@@ -57,3 +57,42 @@ The journal is at `D:\OLA-Control\local-executor.jsonl` (or LocalAppData fallbac
 - `ROUTE READY`, `API ONLINE` or `LOCAL_EXECUTED` do **not** imply NINA → IGOR → HUMAN GATE production verification.
 - The currently running local containers are **not** updated by GitHub commits; after approval, sync and rebuild the preview against a pinned, reviewed SHA, with database backup and rollback.
 - Production remains **NO-GO** pending original release gates and independent signing.
+
+
+## New ZBook preview from scratch — ONLY if no preview exists
+
+Existing data must take priority. First use the read-only check:
+
+```powershell
+$root = 'D:\OLA-Control\command-center-pr103'
+& "$root\workstation\OLA-Preview-Auth.ps1"
+```
+
+If the result is `PREVIEW_NOT_FOUND`, `workstation/OLA-Preview-Auth.ps1` now has a **separate explicit** `-CreatePreview` mode. It is deliberately refused when the container or named data volume is already present, source SHA is unknown, working tree is dirty, Docker/Git/Ollama are missing, or selected model is not listed by host Ollama.
+
+After the operator verifies that the local branch points to the **approved** full 40-hex source SHA:
+
+```powershell
+& "$root\workstation\OLA-Preview-Auth.ps1" -CreatePreview -ExpectedSha '<reviewed-source-sha>'
+```
+
+The command builds only a preview image locally, binds `127.0.0.1:18081:8000`, uses a new persistent named volume `ola-cc-preview-data` for `/data`, stores a fresh 48-byte cryptographic pepper in the current Windows account's restricted LocalAppData secret file, pins `OLA_RUNTIME_COMMIT`, and configures `OLLAMA_BASE_URL=http://host.docker.internal:11434`. It chooses an already-listed **local** Ollama model and sets `OLA_LLM_MODE=required` (errors BLOCK, no fake deterministic success). It does **not** pull a model or choose a cloud model automatically.
+
+For a cloud model, an operator must explicitly name an available model after reviewing provider account and usage:
+
+```powershell
+& "$root\workstation\OLA-Preview-Auth.ps1" -CreatePreview -ExpectedSha '<reviewed-source-sha>' -Model 'gemma4:cloud'
+```
+
+`GET /health` is checked before reporting the preview created. This **does not** prove real model inference or production readiness. Then execute `-IssueKey` once on the existing, configured preview and verify via `GET /auth/session`.
+
+**Never** use `-CreatePreview` to repair an existing preview. The earlier `--tmpfs /data` setup can contain important unexported database state; safe replacement requires operator-authorized snapshot/backup and a rollback plan. This script intentionally does not rename, delete, unpause, stop or overwrite an existing container or volume.
+
+## Updated read-only Control Plane and provider details
+
+- `GET /control/overview`: full tenant-local chain integrity, recent evidence events and run candidates, declared source SHA, configured LLM identity and explicit RELEASE NO-GO. **RECORDED** is not independently VERIFIED.
+- `GET /control/runs/{run_id}`: rechecks tenant isolation, stored evidence hashes and replay; returns scope `LOCAL_HASH_AND_REPLAY_ONLY`, not signed release evidence.
+- `/chat`: Ollama-first if configured, optional OpenAI via `OLA_CHAT_PROVIDER`; returns BLOCK when unavailable. `CHAT_ONLY` scope never authorizes a host command.
+- `/nina-run`: required provider failures now return BLOCK with a `runtime.blocked` evidence record instead of unhandled HTTP 500, without pretending that a partial agent run succeeded.
+- `LOCAL EXECUTOR`: 10 fixed Windows actions still require a separate local token and browser-origin checks; never substitute the OLA tenant key.
+
