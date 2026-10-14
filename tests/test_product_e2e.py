@@ -65,8 +65,11 @@ def test_product_e2e_task_fault_recovery_verification():
     ]
     chain = [
         {
+            "id": row.id,
             "tenant_id": row.tenant_id,
             "seq": row.seq,
+            "record_type": row.record_type,
+            "hash_version": row.hash_version,
             "prev_hash": row.prev_hash,
             "record_hash": row.record_hash,
             "payload_json": row.payload_json,
