@@ -83,16 +83,19 @@ jobs:
           assert result["outcome"] == "recovered_and_verified", result
           assert result["evidence_count"] == 5, result
           db = sqlite3.connect(db_path)
-          rows = db.execute("SELECT id, tenant_id, seq, record_type, payload_json, prev_hash, record_hash FROM evidence_records WHERE tenant_id=? ORDER BY seq", (tenant_id,)).fetchall(); db.close()
+          rows = db.execute("SELECT id, tenant_id, seq, record_type, payload_json, prev_hash, record_hash, hash_version FROM evidence_records WHERE tenant_id=? ORDER BY seq", (tenant_id,)).fetchall(); db.close()
           expected_types = ["task.received","execution.started","fault.detected","recovery.applied","verification.passed"]
           assert [r[3] for r in rows] == expected_types, rows
           assert [r[0] for r in rows] == result["evidence_ids"], (rows, result)
-          expected_prev = "0" * 64
-          for expected_seq, row in enumerate(rows):
-              _, row_tenant, seq, _, payload_json, prev_hash, record_hash = row
-              assert row_tenant == tenant_id; assert seq == expected_seq; assert prev_hash == expected_prev
-              expected_hash = hashlib.sha256(f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")).hexdigest()
-              assert record_hash == expected_hash, (seq, record_hash, expected_hash); expected_prev = record_hash
+          # Independent implementation (not the runtime hashchain) verifies
+          # both historical v1 and metadata-bound v2 evidence records.
+          from scripts.verify_agent_runtime import verify_hash_chain
+          chain_rows = [
+              (r[1], r[2], r[3], r[4], r[5], r[6], r[0], r[7])
+              for r in rows
+          ]
+          chain_ok, chain_reason = verify_hash_chain(chain_rows)
+          assert chain_ok, chain_reason
           print(json.dumps({"gate":"INDEPENDENT_RUNTIME_E2E","status":"VERIFIED","container_health":"PASS","http_audit":"PASS","evidence_count":len(rows),"hash_chain":"PASS","result_ids_match_db":True,"commit":os.environ["EXPECTED_COMMIT"]}, sort_keys=True))
           PY
 
@@ -160,19 +163,22 @@ jobs:
           assert result["execution"][0]["tool_output"] == expected_result, result
           assert result["execution"][-1]["final_result"] == expected_result, result
           db = sqlite3.connect(db_path)
-          rows = db.execute("SELECT id, tenant_id, seq, record_type, payload_json, prev_hash, record_hash FROM evidence_records WHERE tenant_id=? ORDER BY seq", (tenant_id,)).fetchall(); db.close()
+          rows = db.execute("SELECT id, tenant_id, seq, record_type, payload_json, prev_hash, record_hash, hash_version FROM evidence_records WHERE tenant_id=? ORDER BY seq", (tenant_id,)).fetchall(); db.close()
           assert [r[0] for r in rows] == result["evidence_ids"], (rows, result)
           assert [r[3] for r in rows] == ["agent.codeact","agent.react","agent.agentic_rag","agent.mcp_tool_use","agent.self_reflection","agent.multi_agent"], rows
           payloads = [json.loads(r[4]) for r in rows]
           assert all(p["task"] == task for p in payloads), payloads
           assert payloads[0]["tool_output"] == expected_result, payloads[0]
           assert payloads[-1]["final_result"] == expected_result, payloads[-1]
-          expected_prev = "0" * 64
-          for expected_seq, row in enumerate(rows):
-              _, row_tenant, seq, _, payload_json, prev_hash, record_hash = row
-              assert row_tenant == tenant_id; assert seq == expected_seq; assert prev_hash == expected_prev
-              expected_hash = hashlib.sha256(f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")).hexdigest()
-              assert record_hash == expected_hash; expected_prev = record_hash
+          # Independent implementation (not the runtime hashchain) verifies
+          # both historical v1 and metadata-bound v2 evidence records.
+          from scripts.verify_agent_runtime import verify_hash_chain
+          chain_rows = [
+              (r[1], r[2], r[3], r[4], r[5], r[6], r[0], r[7])
+              for r in rows
+          ]
+          chain_ok, chain_reason = verify_hash_chain(chain_rows)
+          assert chain_ok, chain_reason
           verifier = subprocess.run(
               ["python", "scripts/verify_agent_runtime.py", "--tenant-id", tenant_id,
                "--run-id", result["run_id"], "--expected-commit", os.environ["EXPECTED_COMMIT"],
