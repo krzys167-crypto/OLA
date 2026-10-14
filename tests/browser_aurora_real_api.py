@@ -102,6 +102,24 @@ def run():
         assert audit['status']=='VERIFIED' and audit['evidence_count']==5
         record_id=audit['evidence_ids'][0]
 
+        # Actual browser UI -> authenticated read-only five-layer control plane.
+        # The external LLM is stubbed; FastAPI, database, authorization and
+        # evidence verification are real in this isolated CI environment.
+        page.locator('[data-view="settings"]').first.click()
+        page.locator('#verifyApiKey').click()
+        page.locator('#keyState').get_by_text('UWIERZYTELNIONY').wait_for()
+        page.locator('[data-view="control"]').first.click()
+        page.locator('#ccRefresh').click()
+        page.locator('#ccL1').get_by_text('VERIFIED').wait_for()
+        snapshot=json.loads(page.locator('#ccMonitorDetails').text_content())
+        assert snapshot['tenant_id']==tenant
+        assert snapshot['evidence']['record_count']==5
+        assert snapshot['production']['status']=='NO-GO'
+        assert 'evidence_trust' in snapshot
+        assert requester not in page.locator('#ccMonitorDetails').text_content()
+        assert page.locator('#ccL2').text_content()=='UNKNOWN'
+        page.screenshot(path=str(OUT/'ola-control-plane-e2e.png'), animations='disabled')
+
         page.locator('[data-view="evidence"]').first.click()
         page.locator('#evidenceId').fill(record_id)
         page.locator('#evidenceForm button').click()
@@ -141,6 +159,23 @@ def run():
         assert approval['status']=='VERIFIED',approval
         assert approval['approved_tip_hash']==run['tip_hash']
 
+        # Run explorer reads stored hashes + independent replay, not fake stats.
+        page.locator('[data-view="settings"]').first.click()
+        page.locator('#verifyApiKey').click()
+        page.locator('#keyState').get_by_text('UWIERZYTELNIONY').wait_for()
+        page.locator('[data-view="control"]').first.click()
+        page.locator('#ccRefresh').click()
+        page.wait_for_function("() => document.getElementById('ccRunSelect').options.length > 1")
+        page.locator('#ccRunSelect').select_option(run['run_id'])
+        page.locator('#ccInspectRun').click()
+        page.wait_for_function("id => document.getElementById('ccMonitorDetails').textContent.includes(id) && document.getElementById('ccMonitorDetails').textContent.includes('LOCAL_HASH_AND_REPLAY_ONLY')", arg=run['run_id'])
+        replay_view=json.loads(page.locator('#ccMonitorDetails').text_content())
+        assert replay_view['run_id']==run['run_id']
+        assert replay_view['status']=='VERIFIED'
+        assert replay_view['production']=='NO-GO'
+        assert replay_view['independent_release_verification']=='UNKNOWN'
+        assert requester not in page.locator('#ccMonitorDetails').text_content()
+
         page.locator('[data-view="settings"]').first.click()
         page.locator('#forgetKey').click()
         assert page.locator('#apiKey').input_value()==''
@@ -152,7 +187,7 @@ def run():
         assert phone.evaluate('document.documentElement.scrollWidth <= window.innerWidth + 1')
         phone.screenshot(path=str(OUT/'aurora-mobile.png'), animations='disabled')
         browser.close()
-    statuses={path:sum(x['path']==path for x in calls) for path in ('/health','/chat','/audit','/nina-run','/nina-run/'+run['run_id']+'/approve')}
+    statuses={path:sum(x['path']==path for x in calls) for path in ('/health','/auth/session','/control/overview','/control/runs/'+run['run_id'],'/chat','/audit','/nina-run','/nina-run/'+run['run_id']+'/approve')}
     result={'status':'PASS','scope':'CI in-process actual FastAPI and real NINA/IGOR/REPLAY; LLM stubbed','routes':statuses,'tenant_isolation':'PASS','independent_approval':'PASS','html_injection':'BLOCKED','mobile':'PASS','production_live':'NOT_TESTED'}
     (OUT/'result.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     print(json.dumps(result,indent=2))
