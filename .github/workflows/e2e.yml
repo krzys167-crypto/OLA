@@ -15,6 +15,7 @@ jobs:
       name: ci-openai
       deployment: false
     env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       OLA_API_KEY_PEPPER: CI-ONLY-OLA-API-KEY-PEPPER-DO-NOT-USE-IN-PRODUCTION-20261012
       OPENAI_AVAILABLE: ${{ secrets.OPENAI_API_KEY != '' }}
       OLA_LLM_MODE: deterministic
@@ -23,8 +24,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
+      - name: Assert exact candidate source checkout
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -41,11 +45,11 @@ jobs:
         run: python scripts/verify_readme_claims.py
 
       - name: Build deployment image
-        run: docker build --tag ola:${GITHUB_SHA} .
+        run: docker build --tag ola:${SOURCE_SHA} .
 
       - name: Run deployment image
         run: |
-          docker run -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" --detach --rm --name ola-e2e --publish 8000:8000 -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola:${GITHUB_SHA}
+          docker run -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" --detach --rm --name ola-e2e --publish 8000:8000 -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola:${SOURCE_SHA}
           for i in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
               exit 0
@@ -57,7 +61,7 @@ jobs:
 
       - name: Independent runtime E2E proof
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           docker exec -i -e EXPECTED_COMMIT="$EXPECTED_COMMIT" ola-e2e python - <<'PY'
           from app.api_key_crypto import hash_api_key
@@ -127,7 +131,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OLA_LLM_MODE: required
           OLA_LLM_MODEL: gpt-5.6-luna
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
           EXPECTED_TASK: Calculate 17 * 23 and return the verified result.
           EXPECTED_RESULT: "391"
         run: |
@@ -185,7 +189,7 @@ jobs:
 
       - name: Controlled invoice six-agent business E2E and independent verifier
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
           INVOICE_JSON: '{"invoice_id":"INV-CI-2026-001","supplier":"TEST-SUPPLIER","currency":"EUR","net":1000.0,"vat_rate":0.21}'
         run: |
           set -euo pipefail
@@ -240,7 +244,7 @@ jobs:
 
       - name: Real runtime fault injection and recovery
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           curl --fail --silent http://127.0.0.1:8000/health >/dev/null
@@ -262,14 +266,14 @@ jobs:
           docker inspect ola-e2e > docker-inspect.json 2>&1 || true
           docker logs ola-e2e > docker-runtime.log 2>&1 || true
           sha256sum docker-inspect.json docker-runtime.log agent-runtime-proof.json business-invoice-proof.json > runtime-file-hashes.txt || true
-          printf '%s\n' "commit=${GITHUB_SHA}" "run=${GITHUB_RUN_ID}" > provenance.txt
+          printf '%s\n' "commit=${SOURCE_SHA}" "run=${GITHUB_RUN_ID}" > provenance.txt
           sha256sum provenance.txt >> runtime-file-hashes.txt || true
 
       - name: Upload runtime evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ola-runtime-e2e-${{ github.sha }}
+          name: ola-runtime-e2e-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             docker-inspect.json
             docker-runtime.log
