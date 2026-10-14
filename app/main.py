@@ -9,7 +9,7 @@ from starlette.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from .database import Base, engine, SessionLocal, install_append_only_triggers
-from .api_key_crypto import hash_api_key
+from .api_key_crypto import hash_api_key, KeyConfigurationError
 from .models import Tenant, ApiKey, EvidenceRecord, StripeEvent
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
 from .agent_runtime import run_agent_task
@@ -36,6 +36,9 @@ def identity_from_key(raw_key):
         key_hash = hash_api_key(raw_key)
     except ValueError:
         raise HTTPException(status_code=401, detail="invalid API key") from None
+    except KeyConfigurationError:
+        # A missing pepper is a deployment defect, never a bad user credential.
+        raise HTTPException(status_code=503, detail="OLA API authentication is not configured") from None
     with SessionLocal() as db:
         key = db.scalar(select(ApiKey).where(ApiKey.key_hash == key_hash))
         if key is None:
@@ -141,6 +144,13 @@ def run_controlled_audit(tenant_id, task, scenario):
         "evidence_ids": evidence_ids,
         "reason": reason,
     }
+
+
+@app.get("/auth/session")
+def get_current_operator(x_api_key: str | None = Header(default=None)):
+    """Read-only credential check. Never issues credentials or exposes raw keys."""
+    tenant_id, key_id = identity_from_key(x_api_key)
+    return {"authenticated": True, "tenant_id": tenant_id, "credential_id": key_id, "scope": "OLA_CORE"}
 
 
 @app.get("/health")
