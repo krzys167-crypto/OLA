@@ -6,8 +6,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $script:Preview='ola-cc-preview'
 function Get-Preview {
- $raw=& docker.exe inspect --format '{{json .}}' $script:Preview 2>$null
- if($LASTEXITCODE -ne 0 -or !$raw){return $null}
+ $names=@(& docker.exe ps -a --format '{{.Names}}')
+ if($LASTEXITCODE -ne 0){throw 'DOCKER_ENGINE_UNAVAILABLE'}
+ if($names -notcontains $script:Preview){return $null}
+ $raw=& docker.exe inspect --format '{{json .}}' $script:Preview
+ if($LASTEXITCODE -ne 0 -or !$raw){throw 'PREVIEW_INSPECT_FAILED'}
  $c=$raw|ConvertFrom-Json
  if($c.Name -ne '/ola-cc-preview' -or $c.HostConfig.Privileged -or $c.HostConfig.NetworkMode -eq 'host'){throw 'BLOCKED_UNEXPECTED_CONTAINER'}
  $port=$c.HostConfig.PortBindings.'8000/tcp'
@@ -15,7 +18,7 @@ function Get-Preview {
  $c
 }
 function Test-Pepper {
- $v=& docker.exe exec $script:Preview python -c "import os; print('READY' if len(os.environ.get('OLA_API_KEY_PEPPER','').encode('utf-8')) >= 32 else 'MISSING')" 2>$null
+ $v=& docker.exe exec $script:Preview python -c "import os; p=os.environ.get('OLA_API_KEY_PEPPER',''); print('READY' if len(p.encode('utf-8')) >= 32 and not p.startswith('CI-ONLY-') else 'MISSING')" 2>$null
  ($LASTEXITCODE -eq 0 -and ([string]$v).Trim() -eq 'READY')
 }
 
@@ -63,8 +66,9 @@ function Create-Preview {
  if($Model -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.\/-]{0,95}(:[a-zA-Z0-9_.-]{1,32})?$'){throw 'INVALID_OLLAMA_MODEL_NAME'}
  if($Model -notin $available){throw 'OLLAMA_MODEL_NOT_PRESENT'}
  $volume='ola-cc-preview-data'
- & docker.exe volume inspect $volume *> $null
- if($LASTEXITCODE -eq 0){throw 'PREVIEW_VOLUME_EXISTS: manual review required'}
+ $volumes=@(& docker.exe volume ls --format '{{.Name}}')
+ if($LASTEXITCODE -ne 0){throw 'DOCKER_VOLUME_LIST_FAILED'}
+ if($volumes -contains $volume){throw 'PREVIEW_VOLUME_EXISTS: manual review required'}
  $secretFile=New-PreviewSecretFile
  $image='ola-cc-preview:'+($ExpectedSha.Substring(0,12))
  & docker.exe build -t $image $repo
