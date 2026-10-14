@@ -43,7 +43,7 @@ def main():
 
     db = sqlite3.connect(args.db)
     rows = db.execute(
-        "SELECT tenant_id, seq, record_type, payload_json, prev_hash, record_hash "
+        "SELECT tenant_id, seq, record_type, payload_json, prev_hash, record_hash, id, hash_version "
         "FROM evidence_records WHERE tenant_id=? ORDER BY seq",
         (args.tenant_id,),
     ).fetchall()
@@ -61,14 +61,34 @@ def main():
     contexts = set()
     payloads = []
     for expected_seq, row in enumerate(rows):
-        tenant_id, seq, record_type, payload_json, prev_hash, record_hash = row
+        tenant_id, seq, record_type, payload_json, prev_hash, record_hash, record_id, hash_version = row
         if tenant_id != args.tenant_id or seq != expected_seq:
             fail("tenant or sequence mismatch")
         if prev_hash != expected_prev:
             fail("hash-chain predecessor mismatch")
-        expected_hash = hashlib.sha256(
-            f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")
-        ).hexdigest()
+        if hash_version == 1:
+            expected_hash = hashlib.sha256(
+                f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")
+            ).hexdigest()
+        elif hash_version == 2:
+            try:
+                canonical_payload = canonical(json.loads(
+                    payload_json, parse_constant=lambda val: (_ for _ in ()).throw(ValueError(val))
+                ))
+                if canonical_payload != payload_json or not record_id or not record_type:
+                    fail("invalid v2 record schema")
+                material = json.dumps({
+                    "hash_version": 2, "id": record_id,
+                    "tenant_id": tenant_id, "seq": seq,
+                    "prev_hash": prev_hash, "record_type": record_type,
+                    "payload_json": payload_json,
+                }, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+                expected_hash = hashlib.sha256(b"OLA-EVIDENCE-RECORD-V2\\x00" + material).hexdigest()
+            except (TypeError, ValueError, OverflowError):
+                fail("invalid v2 payload")
+        else:
+            fail("unsupported hash version")
+
         if record_hash != expected_hash:
             fail("hash-chain record hash mismatch")
         expected_prev = record_hash
