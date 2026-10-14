@@ -83,7 +83,7 @@ def main():
                     "prev_hash": prev_hash, "record_type": record_type,
                     "payload_json": payload_json,
                 }, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-                expected_hash = hashlib.sha256(b"OLA-EVIDENCE-RECORD-V2\\x00" + material).hexdigest()
+                expected_hash = hashlib.sha256(b"OLA-EVIDENCE-RECORD-V2\x00" + material).hexdigest()
             except (TypeError, ValueError, OverflowError):
                 fail("invalid v2 payload")
         else:
