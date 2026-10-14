@@ -172,8 +172,20 @@ jobs:
           assert body["provenance"]["llm_invocations"]==6, body
           assert len(body["provenance"]["response_ids"])==6, body
           assert body["replay_verification"]["status"]=="VERIFIED", body
-          assert body["replay_verification"]["event_count"]==7, body
-          assert len(body["replay"])==7, body
+          assert body["replay_verification"]["event_count"]==8, body
+          assert len(body["replay"])==8, body
+          assert [event["record_type"] for event in body["replay"]] == [
+              "execution.authorization", "agent.codeact", "agent.react",
+              "agent.agentic_rag", "agent.mcp_tool_use", "agent.self_reflection",
+              "agent.multi_agent", "provenance.runtime",
+          ], body
+          report_v2 = body["decision_report_v2"]
+          assert report_v2["bindings"]["source_sha"] == os.environ["SOURCE_SHA"], body
+          assert report_v2["assurance"]["status"] == "UNKNOWN", body
+          assert report_v2["production_eligible"] is False, body
+          binding = report_v2["legacy_report"]["execution_binding"]
+          assert binding["policy_digest"] == report_v2["bindings"]["policy_digest"], body
+          assert binding["source"]["status"] == "LOCAL", body
           assert body["policy"]["status"]=="VERIFIED", body
           # HumanGate remains fail-closed until the separate approval endpoint is used.
           assert body["human_gate"]["status"]=="BLOCK", body
