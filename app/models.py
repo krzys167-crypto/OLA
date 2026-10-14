@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Integer, Text, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, String, Integer, Text, ForeignKey, UniqueConstraint, text
 from .database import Base
 
 
@@ -29,6 +29,8 @@ class EvidenceRecord(Base):
     payload_json = Column(Text, nullable=False)
     prev_hash = Column(String(64), nullable=False)
     record_hash = Column(String(64), nullable=False)
+    # Additive migration: historical rows default to v1; new app writes v2 explicitly.
+    hash_version = Column(Integer, nullable=False, server_default=text('1'))
     __table_args__ = (UniqueConstraint("tenant_id", "seq", name="uq_evidence_tenant_seq"),)
 
 
