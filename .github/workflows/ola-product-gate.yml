@@ -64,8 +64,12 @@ jobs:
       - name: Verify product surface
         run: |
           set -euo pipefail
-          curl --fail --silent http://127.0.0.1:8000/ | grep -q "NINA"
-          curl --fail --silent http://127.0.0.1:8000/ | grep -q "X-API-Key"
+          # curl | grep -q under pipefail produces curl exit 23 (SIGPIPE)
+          # as soon as grep finds an early match, even for a healthy UI.
+          curl --fail --silent --show-error http://127.0.0.1:8000/ > product-ui.html
+          grep -q "NINA" product-ui.html
+          grep -q "X-API-Key" product-ui.html
+          test -s product-ui.html
       - name: Verify real six-agent runtime
         if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         env:
