@@ -31,8 +31,9 @@ def test_frontier_baseline_vector():
         ).all()
 
     chain = [
-        {"tenant_id": r.tenant_id, "seq": r.seq, "prev_hash": r.prev_hash,
-         "record_hash": r.record_hash, "payload_json": r.payload_json}
+        {"id": r.id, "tenant_id": r.tenant_id, "seq": r.seq,
+         "record_type": r.record_type, "hash_version": r.hash_version,
+         "prev_hash": r.prev_hash, "record_hash": r.record_hash, "payload_json": r.payload_json}
         for r in rows
     ]
     chain_ok, reason = verify_chain(chain)
