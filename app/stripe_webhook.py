@@ -11,8 +11,8 @@ from sqlalchemy.exc import IntegrityError
 
 from .agent_runtime import run_agent_task
 from .database import SessionLocal
-from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash
-from .models import EvidenceRecord, StripeEvent
+from .hashchain import canonical_json
+from .models import StripeEvent
 from .stripe_mode import StripeModeError, validate_stripe_mode
 
 
@@ -46,27 +46,25 @@ def verify_stripe_signature(payload: bytes, signature_header: str, secret: str, 
 
 
 def _append_evidence(tenant_id: str, record_type: str, payload: dict) -> str:
-    payload_json = canonical_json(payload)
-    with SessionLocal() as db:
-        last = db.scalar(
-            select(EvidenceRecord)
-            .where(EvidenceRecord.tenant_id == tenant_id)
-            .order_by(EvidenceRecord.seq.desc())
-        )
-        seq = 0 if last is None else last.seq + 1
-        prev_hash = GENESIS_HASH if last is None else last.record_hash
-        record = EvidenceRecord(
-            id=str(uuid.uuid4()),
-            tenant_id=tenant_id,
-            seq=seq,
-            record_type=record_type,
-            payload_json=payload_json,
-            prev_hash=prev_hash,
-            record_hash=compute_record_hash(tenant_id, seq, prev_hash, payload_json),
-        )
-        db.add(record)
-        db.commit()
-        return record.id
+    # One SQLite writer for every tenant's hash chain (NINA, audit, Stripe).
+    from .main import append_record
+    return append_record(tenant_id, record_type, payload)["id"]
+
+
+def _session_claim(payload: dict) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("checkout_session_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _event_session_claim(event: StripeEvent) -> str | None:
+    if not event.result_json:
+        return None
+    try:
+        return _session_claim(json.loads(event.result_json))
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 def _metadata_task(session: dict) -> str | None:
@@ -140,79 +138,97 @@ def process_checkout_event(payload: bytes, signature_header: str) -> dict:
     if not tenant_id:
         raise HTTPException(status_code=500, detail="Stripe session has no tenant provenance")
 
-    with SessionLocal() as db:
-        existing = db.scalar(select(StripeEvent).where(StripeEvent.event_id == event_id))
-        if existing is not None:
-            if existing.status == "COMPLETED" and existing.result_json:
-                return json.loads(existing.result_json)
-            raise HTTPException(status_code=409, detail="Stripe event is already being processed")
+    session_id = session.get("id")
+    if not isinstance(session_id, str) or not session_id.startswith(("cs_test_", "cs_live_")):
+        raise HTTPException(status_code=400, detail="valid checkout session id required")
 
-        record = StripeEvent(
+    # SQLite write reservation makes the session claim atomic across event IDs.
+    # Store the claim in existing result_json to avoid unsafe ALTER TABLE
+    # migration of the production/staging StripeEvent table.
+    with SessionLocal() as db:
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        old_events = db.scalars(select(StripeEvent)).all()
+        for old in old_events:
+            if old.event_id == event_id:
+                if old.status in {"COMPLETED", "EXECUTION_BLOCKED"} and old.result_json:
+                    return json.loads(old.result_json)
+                raise HTTPException(status_code=409, detail="Stripe event already claimed; manual recovery required")
+            if _event_session_claim(old) == session_id:
+                # A second signed Stripe event may describe the same checkout.
+                # Returning old result for this tenant/session is idempotent.
+                if old.status in {"COMPLETED", "EXECUTION_BLOCKED"} and old.result_json:
+                    return json.loads(old.result_json)
+                raise HTTPException(status_code=409, detail="checkout session already claimed; manual recovery required")
+
+        db.add(StripeEvent(
             id=str(uuid.uuid4()),
             event_id=event_id,
             status="PROCESSING",
             task=task,
-        )
-        db.add(record)
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            raise HTTPException(status_code=409, detail="Stripe event is already being processed") from None
-
-    payment_evidence_id = _append_evidence(
-        tenant_id,
-        "stripe.payment_confirmed",
-        {
-            "stripe_event_id": event_id,
-            "checkout_session_id": session.get("id"),
-            "offer": OLA_OFFER,
-            "product": OLA_PRODUCT,
-            "amount_total": session.get("amount_total"),
-            "currency": session.get("currency"),
-            "task": task,
-        },
-    )
+            result_json=canonical_json({
+                "checkout_session_id": session_id,
+                "tenant_id": tenant_id,
+                "status": "PROCESSING",
+            }),
+        ))
+        db.commit()
 
     try:
+        payment_evidence_id = _append_evidence(
+            tenant_id,
+            "stripe.payment_confirmed",
+            {
+                "stripe_event_id": event_id,
+                "checkout_session_id": session.get("id"),
+                "offer": OLA_OFFER,
+                "product": OLA_PRODUCT,
+                "amount_total": session.get("amount_total"),
+                "currency": session.get("currency"),
+                "task": task,
+            },
+        )
+
         runtime = run_agent_task(tenant_id, task)
+
+        result = {
+            "status": "COMPLETED" if runtime.get("status") == "VERIFIED" else "EXECUTION_BLOCKED",
+            "event_id": event_id,
+            "checkout_session_id": session.get("id"),
+            "payment": "CONFIRMED",
+            "ola_status": runtime.get("status", "UNKNOWN"),
+            "ola_run_id": runtime.get("run_id"),
+            "ola_final_result": runtime.get("final_result"),
+            "payment_evidence_id": payment_evidence_id,
+            "ola_evidence_ids": runtime.get("evidence_ids", []),
+        }
+        _append_evidence(
+            tenant_id,
+            "stripe.ola_execution_completed",
+            {
+                "stripe_event_id": event_id,
+                "checkout_session_id": session.get("id"),
+                "ola_run_id": runtime.get("run_id"),
+                "ola_status": runtime.get("status", "UNKNOWN"),
+                "ola_final_result": runtime.get("final_result"),
+                "payment_evidence_id": payment_evidence_id,
+            },
+        )
+
+        with SessionLocal() as db:
+            completed = db.scalar(select(StripeEvent).where(StripeEvent.event_id == event_id))
+            completed.status = result["status"]
+            completed.run_id = runtime.get("run_id")
+            completed.result_json = canonical_json(result)
+            db.commit()
+
     except Exception:
+        # Once paid, never re-run blindly on retries. Preserve the session
+        # claim and mark failure for authenticated manual reconciliation.
         with SessionLocal() as db:
             failed = db.scalar(select(StripeEvent).where(StripeEvent.event_id == event_id))
-            if failed is not None:
+            if failed is not None and failed.status == "PROCESSING":
                 failed.status = "FAILED"
                 db.commit()
         raise
-
-    result = {
-        "status": "COMPLETED",
-        "event_id": event_id,
-        "checkout_session_id": session.get("id"),
-        "payment": "CONFIRMED",
-        "ola_status": runtime.get("status", "UNKNOWN"),
-        "ola_run_id": runtime.get("run_id"),
-        "ola_final_result": runtime.get("final_result"),
-        "payment_evidence_id": payment_evidence_id,
-        "ola_evidence_ids": runtime.get("evidence_ids", []),
-    }
-    _append_evidence(
-        tenant_id,
-        "stripe.ola_execution_completed",
-        {
-            "stripe_event_id": event_id,
-            "checkout_session_id": session.get("id"),
-            "ola_run_id": runtime.get("run_id"),
-            "ola_status": runtime.get("status", "UNKNOWN"),
-            "ola_final_result": runtime.get("final_result"),
-            "payment_evidence_id": payment_evidence_id,
-        },
-    )
-
-    with SessionLocal() as db:
-        completed = db.scalar(select(StripeEvent).where(StripeEvent.event_id == event_id))
-        completed.status = "COMPLETED"
-        completed.run_id = runtime.get("run_id")
-        completed.result_json = canonical_json(result)
-        db.commit()
 
     return result
