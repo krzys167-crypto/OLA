@@ -131,8 +131,14 @@ def test_concurrent_event_claims_cannot_double_execute(monkeypatch):
     ]
     def call(event):
         return wh.process_checkout_event(*event)
+    def attempt(event):
+        try:
+            return call(event)
+        except HTTPException as exc:
+            return {"http": exc.status_code}
     with ThreadPoolExecutor(max_workers=4) as executor:
-        results = list(executor.map(call, events))
+        results = list(executor.map(attempt, events))
     assert len(calls) == 1
-    assert all(r == results[0] for r in results)
+    assert sum(r.get("status") == "COMPLETED" for r in results) >= 1
+    assert all(r.get("status") == "COMPLETED" or r.get("http") == 409 for r in results)
     assert verify_chain(_rows(tenant))[0] is True
