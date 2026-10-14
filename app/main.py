@@ -8,7 +8,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from starlette.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
-from .database import Base, engine, SessionLocal, install_append_only_triggers
+from .database import Base, engine, SessionLocal, install_append_only_triggers, ensure_evidence_hash_schema
 from .api_key_crypto import hash_api_key, KeyConfigurationError
 from .models import Tenant, ApiKey, EvidenceRecord, StripeEvent
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
@@ -27,6 +27,7 @@ from .stripe_webhook import process_checkout_event
 
 app = FastAPI(title="OLA Execution Gate")
 Base.metadata.create_all(bind=engine)
+ensure_evidence_hash_schema()
 install_append_only_triggers()
 
 
@@ -75,14 +76,19 @@ def append_record(tenant_id, record_type, payload):
         )
         seq = 0 if last is None else last.seq + 1
         prev_hash = GENESIS_HASH if last is None else last.record_hash
+        record_id = str(uuid.uuid4())
         record = EvidenceRecord(
-            id=str(uuid.uuid4()),
+            id=record_id,
             tenant_id=tenant_id,
             seq=seq,
             record_type=record_type,
             payload_json=payload_json,
             prev_hash=prev_hash,
-            record_hash=compute_record_hash(tenant_id, seq, prev_hash, payload_json),
+            hash_version=2,
+            record_hash=compute_record_hash(
+                tenant_id, seq, prev_hash, payload_json,
+                record_id=record_id, record_type=record_type, hash_version=2,
+            ),
         )
         db.add(record)
         db.commit()
@@ -90,6 +96,7 @@ def append_record(tenant_id, record_type, payload):
             "id": record.id,
             "tenant_id": record.tenant_id,
             "seq": record.seq,
+            "hash_version": record.hash_version,
             "record_hash": record.record_hash,
         }
 
@@ -122,10 +129,13 @@ def run_controlled_audit(tenant_id, task, scenario):
 
     chain = [
         {
+            "id": row.id,
             "tenant_id": row.tenant_id,
             "seq": row.seq,
             "prev_hash": row.prev_hash,
             "record_hash": row.record_hash,
+            "record_type": row.record_type,
+            "hash_version": row.hash_version,
             "payload_json": row.payload_json,
         }
         for row in rows
@@ -393,6 +403,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
             "prev_hash": row.prev_hash,
             "record_hash": row.record_hash,
             "record_type": row.record_type,
+            "hash_version": row.hash_version,
             "payload_json": row.payload_json,
         }
         for row in rows
@@ -548,10 +559,13 @@ def approve_nina_run(
 
         chain = [
             {
+                "id": row.id,
                 "tenant_id": row.tenant_id,
                 "seq": row.seq,
                 "prev_hash": row.prev_hash,
                 "record_hash": row.record_hash,
+                "record_type": row.record_type,
+                "hash_version": row.hash_version,
                 "payload_json": row.payload_json,
             }
             for row in rows
@@ -620,13 +634,15 @@ def approve_nina_run(
         record_id = str(uuid.uuid4())
         new_seq = rows[-1].seq + 1
         record_hash = compute_record_hash(
-            approver_tenant_id, new_seq, tip_hash, payload_json
+            approver_tenant_id, new_seq, tip_hash, payload_json,
+            record_id=record_id, record_type="human.approval", hash_version=2,
         )
         db.add(EvidenceRecord(
             id=record_id,
             tenant_id=approver_tenant_id,
             seq=new_seq,
             record_type="human.approval",
+            hash_version=2,
             payload_json=payload_json,
             prev_hash=tip_hash,
             record_hash=record_hash,
@@ -682,6 +698,7 @@ def get_evidence(record_id: str, x_api_key: str | None = Header(default=None)):
             "tenant_id": record.tenant_id,
             "seq": record.seq,
             "record_type": record.record_type,
+            "hash_version": record.hash_version,
             "payload": json.loads(record.payload_json),
             "prev_hash": record.prev_hash,
             "record_hash": record.record_hash,
