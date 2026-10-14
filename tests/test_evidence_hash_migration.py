@@ -92,3 +92,23 @@ def test_additive_schema_migration_preserves_preexisting_legacy_bytes(monkeypatc
             compute_record_hash("tenant-old", 0, GENESIS_HASH, "{}"), 1,
         )
         migrated_engine.dispose()
+
+
+def test_runtime_rejects_duplicate_v2_record_identity_even_if_rehashed():
+    tenant = "duplicate-proof-tenant"
+    base = {
+        "id": "same-id", "tenant_id": tenant,
+        "seq": 0, "record_type": "user.first", "hash_version": 2,
+        "prev_hash": GENESIS_HASH, "payload_json": "{}",
+    }
+    first = {**base, "record_hash": compute_record_hash(
+        tenant, 0, GENESIS_HASH, "{}",
+        record_id="same-id", record_type="user.first", hash_version=2,
+    )}
+    second = {**base, "seq": 1, "record_type": "user.second",
+              "prev_hash": first["record_hash"]}
+    second["record_hash"] = compute_record_hash(
+        tenant, 1, first["record_hash"], "{}",
+        record_id="same-id", record_type="user.second", hash_version=2,
+    )
+    assert verify_chain([first, second]) == (False, "duplicate evidence record id")

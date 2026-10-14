@@ -143,3 +143,25 @@ def test_concurrent_event_claims_cannot_double_execute(monkeypatch):
     assert sum(r.get("status") == "COMPLETED" for r in results) >= 1
     assert all(r.get("status") == "COMPLETED" or r.get("http") == 409 for r in results)
     assert verify_chain(_rows(tenant))[0] is True
+
+
+def test_stripe_session_claim_rejects_cross_tenant_signed_replay(monkeypatch):
+    first_tenant = _seed(monkeypatch)
+    second_tenant = _seed(monkeypatch)
+    session = "cs_test_" + uuid.uuid4().hex
+    executions = []
+    def execute(tenant_id, task):
+        executions.append(tenant_id)
+        return {"status": "VERIFIED", "run_id": "run-safe",
+                "final_result": "ok", "evidence_ids": []}
+    monkeypatch.setattr(wh, "run_agent_task", execute)
+    first = wh.process_checkout_event(*_event(
+        first_tenant, session, "evt_"+uuid.uuid4().hex
+    ))
+    assert first["tenant_id"] == first_tenant
+    with pytest.raises(HTTPException) as result:
+        wh.process_checkout_event(*_event(
+            second_tenant, session, "evt_"+uuid.uuid4().hex
+        ))
+    assert result.value.status_code == 409
+    assert executions == [first_tenant]
