@@ -61,6 +61,13 @@ python -m pip install -r requirements.txt
 OLA_LLM_MODE=deterministic python -m pytest -q
 ```
 
+Browser tests need Playwright and are not part of the default run. They start a real server and drive the console (`aurora-e2e.yml` runs them in CI):
+
+```bash
+python -m pip install playwright==1.57.0 && python -m playwright install chromium
+python -m pytest tests/browser_command_center_real_server.py -q
+```
+
 ## What a green CI check does and does not prove
 
 Several gates need `OPENAI_API_KEY` (the `ci-openai` environment). Without it — for example on fork PRs — the real-LLM steps are **skipped**, and the run proves only the deterministic and Ollama paths. Since this change the workflows say so explicitly with a `NOT EXECUTED` warning annotation and job summary. To make a missing credential a hard failure, set the repository variable:

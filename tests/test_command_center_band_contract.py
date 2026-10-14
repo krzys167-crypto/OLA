@@ -51,3 +51,13 @@ def test_run_status_is_labelled_recorded_not_independently_verified():
     text = _text()
     assert "RECORDED, nie niezależny podpis" in text
     assert "NO-GO" in _band_markup()
+
+
+def test_agent_core_reads_the_same_overview_and_never_upgrades_recorded_to_verified():
+    text = _text()
+    assert "function syncAgentCore(data)" in text and "document.dispatchEvent(new Event('ola:recorded'))" in text
+    assert "target.textContent = 'REC ' + recorded;" in text            # stored state is labelled REC
+    assert "target.classList.remove('verified'); target.classList.add('recorded');" in text
+    assert "chain.textContent = 'LOCAL ' + chain.dataset.recorded;" in text  # local recompute, not attestation
+    assert "publish('ccIgor',null)" in text                              # IGOR is not in evidence: stays session-only
+    assert "żaden nie jest niezależną weryfikacją" in text

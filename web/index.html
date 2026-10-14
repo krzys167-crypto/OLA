@@ -29,6 +29,7 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
 .cc-agent:hover{background:rgba(17,170,118,.11)}
 .cc-agent b{font:600 9px ui-monospace,monospace;color:#eab66f}
 .cc-agent b.verified{color:#6bf4bb}
+.cc-agent b.recorded{color:#8fd9ff}
 .cc-note{font-size:10px;color:#90b5a7;line-height:1.5;padding:12px;margin-top:auto}
 .cc-map{background:radial-gradient(ellipse at 50% 47%,rgba(0,106,87,.17),transparent 57%),#031014;display:flex;flex-direction:column}
 .cc-maphead{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:12px 14px}
@@ -156,7 +157,7 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
    <button type="button" data-view="operations" class="cc-agent">IGOR <b id="ccIgor">UNKNOWN</b></button>
    <button type="button" data-view="operations" class="cc-agent">HUMAN GATE <b id="ccGate">UNKNOWN</b></button>
    <button type="button" data-view="audit" class="cc-agent">REPLAY <b id="ccReplay">UNKNOWN</b></button>
-   <p class="cc-note">ROUTE READY oznacza obecność endpointu, a nie wykonanie. VERIFIED wyświetlamy tylko z rzeczywistej odpowiedzi backendu.</p>
+   <p class="cc-note">ROUTE READY oznacza obecność endpointu, a nie wykonanie. VERIFIED wyświetlamy tylko z rzeczywistej odpowiedzi backendu. REC = stan zapisany w evidence ostatniego runu, LOCAL = lokalny recompute łańcucha; żaden nie jest niezależną weryfikacją. IGOR nie jest zapisywany w evidence, więc zostaje UNKNOWN do odpowiedzi /nina-run.</p>
   </aside>
   <section class="cc-panel cc-map" aria-label="Schemat przepływu dowodowego">
    <div class="cc-maphead"><div><div class="cc-title" style="border:0;padding:0">OLA / GLOBAL INTELLIGENCE</div><small>MODEL PRZEPŁYWU · NIE TELEMETRIA</small></div><span class="cc-live" id="ccLive" aria-live="polite">API UNKNOWN</span></div>
@@ -364,11 +365,31 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
  'use strict';
  const node = id => document.getElementById(id);
  const map = [['healthStatus','ccCore'],['ninaStatus','ccNina'],['igorStatus','ccIgor'],['replayStatus','ccReplay'],['humanStatus','ccGate']];
+ const REC_TITLE = 'RECORDED: stan zapisany w evidence tego tenanta (ostatni run), nie niezależna weryfikacja';
  function reflect(){
    for (const [origin, dest] of map) {
+     const target = node(dest);
      const value = node(origin).textContent.trim() || 'UNKNOWN';
-     node(dest).textContent = value;
-     node(dest).classList.toggle('verified', value === 'VERIFIED');
+     const recorded = target.dataset.recorded;
+     if (value === 'UNKNOWN' && recorded) {
+       // No live answer in this session yet: show the stored state from /control/overview, labelled REC and never styled as verified.
+       target.textContent = 'REC ' + recorded;
+       target.classList.remove('verified'); target.classList.add('recorded');
+       target.dataset.source = 'recorded'; target.title = REC_TITLE;
+     } else {
+       target.textContent = value;
+       target.classList.toggle('verified', value === 'VERIFIED'); target.classList.remove('recorded');
+       delete target.dataset.source; target.removeAttribute('title');
+     }
+   }
+   const chain = node('ccEvidence');
+   if (chain.dataset.recorded) {
+     chain.textContent = 'LOCAL ' + chain.dataset.recorded;
+     chain.classList.add('recorded'); chain.dataset.source = 'local-chain';
+     chain.title = 'Lokalny recompute łańcucha hashy na serwerze, nie atestacja zewnętrzna';
+   } else {
+     chain.textContent = chain.dataset.route || 'UNKNOWN';
+     chain.classList.remove('recorded'); delete chain.dataset.source; chain.removeAttribute('title');
    }
    const live = node('healthStatus').textContent.trim() === 'ONLINE';
    node('ccLive').textContent = live ? 'API ONLINE' : 'API UNKNOWN';
@@ -381,8 +402,11 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
    .then(spec => {
       const paths = spec && spec.paths || {};
       const found = Object.keys(paths).some(path => path.startsWith('/evidence/') && !!paths[path].get);
-      node('ccEvidence').textContent = found ? 'ROUTE READY' : 'UNKNOWN';
-   }).catch(() => {node('ccEvidence').textContent = 'UNKNOWN';});
+      node('ccEvidence').dataset.route = found ? 'ROUTE READY' : 'UNKNOWN';
+      reflect();
+   }).catch(() => {node('ccEvidence').dataset.route = 'UNKNOWN'; reflect();});
+ // The control-plane monitor publishes the stored per-tenant state here; reflect() decides precedence.
+ document.addEventListener('ola:recorded', reflect);
 })();
 </script>
 
@@ -518,8 +542,22 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
  const tone=v=>v==='VERIFIED'?'ok':(v==='BLOCK'||v==='FAIL'||v==='FAILED')?'bad':'';
  const TRUST={LOCAL_SQLITE_HASH_CHAIN_NOT_EXTERNAL_ATTESTATION:'Lokalny hash chain · nie atestacja zewnętrzna'};
  const placeholder=(list,text)=>list.replaceChildren(node('li','empty',text));
+ // Agent Core (top panel) reads the same tenant-scoped overview as the band below it.
+ // Values are RECORDED states of the latest run; IGOR is not stored in the evidence chain, so it stays session-only.
+ function syncAgentCore(data){
+  const runs=data&&Array.isArray(data.runs)?data.runs:[];
+  const latest=runs.find(r=>r&&typeof r.run_id==='string')||null;
+  const publish=(id,value)=>{const n=el(id);if(value)n.dataset.recorded=value;else delete n.dataset.recorded;};
+  publish('ccNina',latest?str(latest.nina_status_recorded):null);
+  publish('ccReplay',latest?str(latest.replay_status_recorded):null);
+  publish('ccGate',latest?(latest.human_approval_recorded?'APPROVAL':'REVIEW'):null);
+  publish('ccEvidence',data&&data.evidence&&typeof data.evidence.status==='string'?data.evidence.status:null);
+  publish('ccIgor',null);
+  document.dispatchEvent(new Event('ola:recorded'));
+ }
  function renderBand(data){
   const queue=el('ccQueue'),events=el('ccEvents'),chain=el('ccChain');
+  syncAgentCore(data);
   if(!data){
    placeholder(queue,'Brak zweryfikowanej sesji. Zweryfikuj klucz w USTAWIENIACH, aby odczytać runy swojego tenanta.');
    placeholder(events,'Brak zweryfikowanej sesji.');

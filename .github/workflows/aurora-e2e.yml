@@ -6,6 +6,8 @@ on:
       - 'web/index.html'
       - 'tests/test_aurora_contract.py'
       - 'tests/browser_aurora_real_api.py'
+      - 'tests/browser_command_center_real_server.py'
+      - 'app/control_plane.py'
       - '.github/workflows/aurora-e2e.yml'
   workflow_dispatch:
 
@@ -38,6 +40,10 @@ jobs:
         run: python -m pytest tests/test_aurora_contract.py -q
       - name: Browser to real OLA Core routes
         run: python tests/browser_aurora_real_api.py
+      - name: Command Center in a browser against a real uvicorn server
+        # Real HTTP, real SQLite, real NINA/IGOR/replay/Human Gate (deterministic local model).
+        # Not collected by the default suite; a missing playwright is a hard failure here.
+        run: python -m pytest tests/browser_command_center_real_server.py -q
       - name: Upload runtime evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

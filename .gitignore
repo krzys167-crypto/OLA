@@ -113,3 +113,4 @@ TestResults.xml
 __pycache__/
 *.py[cod]
 .pytest_cache/
+aurora-evidence/
