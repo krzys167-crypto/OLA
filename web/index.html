@@ -87,6 +87,41 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
 .cc-live-output{max-height:410px;overflow:auto;overflow-wrap:anywhere;white-space:pre-wrap;padding:13px;border-radius:9px;background:#031715;border:1px solid rgba(35,184,146,.27);font:11px/1.5 ui-monospace,monospace}
 @media(max-width:1100px){.cc-layers{grid-template-columns:repeat(3,minmax(90px,1fr))}}
 @media(max-width:690px){.cc-layers{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Command Center lower band. Every value comes from /control/overview; anything the API cannot supply says "Niepodłączone". */
+.cc-band{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:0 0 20px}
+.cc-band .cc-panel{display:flex;flex-direction:column}
+.cc-list{list-style:none;margin:0;padding:4px 0;overflow:auto;max-height:248px}
+.cc-list li{border-bottom:1px solid rgba(33,220,164,.1);font:11px/1.45 ui-monospace,monospace;color:#d8fbe9}
+.cc-list li:last-child{border-bottom:0}
+.cc-list li.empty,.cc-list li.row{padding:10px 13px}
+.cc-list li.empty{color:#90b5a7;line-height:1.55}
+.cc-list li.row{display:flex;gap:8px;justify-content:space-between;align-items:center}
+.cc-list li.row span:first-child{overflow-wrap:anywhere}
+.cc-run{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px 9px;align-items:center;width:100%;padding:9px 13px;border:0;background:transparent;color:#e3fff2;text-align:left;font:11px/1.45 ui-monospace,monospace}
+.cc-run:hover,.cc-run:focus-visible{background:rgba(17,170,118,.13);outline:0}
+.cc-run small{grid-column:1/-1;color:#8fb8aa;font-size:10px}
+.cc-tag{font:700 9px ui-monospace,monospace;padding:3px 7px;border-radius:20px;border:1px solid rgba(221,160,89,.4);color:#efbd78;white-space:nowrap}
+.cc-tag.ok{color:#6bf4bb;border-color:rgba(67,229,169,.5)}
+.cc-tag.bad{color:#ff9bab;border-color:rgba(250,131,155,.5)}
+.cc-kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:9px 12px;margin:0;padding:13px;font:11px/1.45 ui-monospace,monospace}
+.cc-kv dt{color:#8fb8aa}
+.cc-kv dd{margin:0;text-align:right;color:#e6fff1;overflow-wrap:anywhere}
+.cc-kv dd.na{color:#eab66f}
+.cc-kv.stack{grid-template-columns:minmax(0,1fr);gap:2px}
+.cc-kv.stack dt{font-size:10px;margin-top:8px}
+.cc-kv.stack dt:first-child{margin-top:0}
+.cc-kv.stack dd{text-align:left}
+.cc-chainwrap{grid-column:1/-1}
+.cc-chainstrip{display:flex;align-items:stretch;overflow-x:auto;padding:14px 13px 10px;gap:0}
+.cc-block{flex:0 0 auto;min-width:128px;border:1px solid rgba(45,217,157,.32);border-radius:8px;padding:8px 10px;background:#051e1b;font:10px/1.5 ui-monospace,monospace;color:#bfe9d9}
+.cc-block b{display:block;color:#7df6d4;font-size:11px}
+.cc-block.tip{border-color:#6bf4bb;box-shadow:0 0 14px rgba(40,230,160,.18)}
+.cc-block.none{border-style:dashed;color:#eab66f}
+.cc-link{flex:0 0 16px;align-self:center;height:1px;background:rgba(45,217,157,.55)}
+.cc-chainmeta{padding:9px 13px;border-top:1px solid rgba(45,217,157,.2);font:10px/1.5 ui-monospace,monospace;color:#91bcaf;overflow-wrap:anywhere}
+@media(max-width:1100px){.cc-band{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){.cc-band{grid-template-columns:minmax(0,1fr)}}
 </style>
 </head>
 <body>
@@ -139,6 +174,41 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
    <div class="cc-portrait" role="img" aria-label="Portret OLA z holograficznym celownikiem na jednym oku"><div class="cc-reticle" aria-hidden="true"></div><div class="cc-facecaption"><b>OLA</b> ANALYSE · REASON · VERIFY</div></div>
    <div class="cc-actions"><button type="button" data-view="chat">NINA CHAT</button><button type="button" data-view="operations">EXECUTE</button></div>
   </section>
+ </section>
+
+ <section class="cc-band" aria-label="OLA Command Center — kolejka runów, zdarzenia, metryki i łańcuch dowodów z /control/overview">
+  <article class="cc-panel" aria-labelledby="ccQueueTitle">
+   <div class="cc-title" id="ccQueueTitle">KOLEJKA · OSTATNIE RUNY</div>
+   <ul class="cc-list" id="ccQueue"><li class="empty">Brak zweryfikowanej sesji. Zweryfikuj klucz w USTAWIENIACH, aby odczytać runy swojego tenanta.</li></ul>
+  </article>
+  <article class="cc-panel" aria-labelledby="ccEventsTitle">
+   <div class="cc-title" id="ccEventsTitle">OSTATNIE ZDARZENIA · EVIDENCE</div>
+   <ul class="cc-list" id="ccEvents"><li class="empty">Brak zweryfikowanej sesji.</li></ul>
+  </article>
+  <article class="cc-panel" aria-labelledby="ccMetricsTitle">
+   <div class="cc-title" id="ccMetricsTitle">METRYKI SYSTEMU</div>
+   <dl class="cc-kv">
+    <dt>Rekordy dowodowe</dt><dd id="ccmRecords">UNKNOWN</dd>
+    <dt>Runy w oknie (≤12)</dt><dd id="ccmRuns">UNKNOWN</dd>
+    <dt>Zdarzenia / h</dt><dd class="na">Niepodłączone</dd>
+    <dt>Opóźnienie API</dt><dd class="na">Niepodłączone</dd>
+    <dt>CPU · RAM · GPU</dt><dd class="na">Niepodłączone</dd>
+   </dl>
+  </article>
+  <article class="cc-panel" aria-labelledby="ccReleaseTitle">
+   <div class="cc-title" id="ccReleaseTitle">STATUS WYDANIA</div>
+   <dl class="cc-kv stack">
+    <dt>Produkcja</dt><dd id="ccrProd" class="na">NO-GO</dd>
+    <dt>Źródło</dt><dd id="ccrSource">UNKNOWN</dd>
+    <dt>LLM</dt><dd id="ccrLlm">UNKNOWN</dd>
+    <dt>Zaufanie dowodów</dt><dd id="ccrTrust">UNKNOWN</dd>
+   </dl>
+  </article>
+  <article class="cc-panel cc-chainwrap" aria-labelledby="ccChainTitle">
+   <div class="cc-title" id="ccChainTitle">ŁAŃCUCH DOWODOWY · OSTATNIE REKORDY</div>
+   <div class="cc-chainstrip" id="ccChain" role="list" aria-label="Ostatnie rekordy łańcucha dowodowego"><div class="cc-block none" role="listitem"><b>UNKNOWN</b>brak odczytu</div></div>
+   <div class="cc-chainmeta" id="ccChainMeta">Łańcuch: UNKNOWN · odczyt tylko po uwierzytelnieniu · odświeżanie co 30 s</div>
+  </article>
  </section>
 
  <section class="cc-local" aria-label="OLA Local Executor — kontrolowane komendy na tym ZBooku">
@@ -443,9 +513,72 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
  const el=id=>document.getElementById(id);
  let epoch=0, controller=null, tenant=null, cache=null;
  const fields=['ccL1','ccL2','ccL3','ccL4','ccL5'];
+ const node=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
+ const str=(v,fallback)=>(typeof v==='string'&&v)||(typeof v==='number'?String(v):fallback||'UNKNOWN');
+ const tone=v=>v==='VERIFIED'?'ok':(v==='BLOCK'||v==='FAIL'||v==='FAILED')?'bad':'';
+ const TRUST={LOCAL_SQLITE_HASH_CHAIN_NOT_EXTERNAL_ATTESTATION:'Lokalny hash chain · nie atestacja zewnętrzna'};
+ const placeholder=(list,text)=>list.replaceChildren(node('li','empty',text));
+ function renderBand(data){
+  const queue=el('ccQueue'),events=el('ccEvents'),chain=el('ccChain');
+  if(!data){
+   placeholder(queue,'Brak zweryfikowanej sesji. Zweryfikuj klucz w USTAWIENIACH, aby odczytać runy swojego tenanta.');
+   placeholder(events,'Brak zweryfikowanej sesji.');
+   const none=node('div','cc-block none');none.setAttribute('role','listitem');none.append(node('b',null,'UNKNOWN'),'brak odczytu');
+   chain.replaceChildren(none);
+   el('ccChainMeta').textContent='Łańcuch: UNKNOWN · odczyt tylko po uwierzytelnieniu · odświeżanie co 30 s';
+   ['ccmRecords','ccrSource','ccrLlm','ccrTrust'].forEach(id=>{el(id).textContent='UNKNOWN';});
+   el('ccmRuns').textContent='UNKNOWN';el('ccrProd').textContent='NO-GO';
+   return;
+  }
+  const ev=data.evidence||{},src=data.source||{},llm=data.llm||{},prod=data.production||{};
+  const runs=Array.isArray(data.runs)?data.runs:[],recent=Array.isArray(data.recent_events)?data.recent_events:[];
+  // queue: one button per recorded run; opens the existing replay inspector
+  if(!runs.length)placeholder(queue,'Brak zapisanych runów dla tego tenanta.');
+  else queue.replaceChildren(...runs.filter(r=>typeof r.run_id==='string').map(r=>{
+   const li=document.createElement('li'),b=node('button','cc-run');b.type='button';b.dataset.runId=r.run_id;
+   b.title='Otwórz replay tego runu w Control Plane';
+   const cand=str(r.candidate_status_recorded),tag=node('span','cc-tag '+tone(cand),cand);
+   b.append(node('span',null,r.run_id.slice(0,8)),node('span',null,'NINA '+str(r.nina_status_recorded)),tag,
+    node('small',null,'POLICY '+str(r.policy_status_recorded)+' · REPLAY '+str(r.replay_status_recorded)+' · '+(r.human_approval_recorded?'APPROVAL RECORDED':'REVIEW')+' · RECORDED, nie niezależny podpis'));
+   li.append(b);return li;
+  }));
+  // events: newest first
+  if(!recent.length)placeholder(events,ev.status==='VERIFIED'?'Brak rekordów.':'Zdarzenia ukryte: łańcuch '+str(ev.status)+'.');
+  else events.replaceChildren(...recent.slice().reverse().map(e=>{
+   const li=node('li','row');
+   li.append(node('span',null,'#'+str(e.seq)+' · '+str(e.type)),node('span','cc-tag',e.run_id?String(e.run_id).slice(0,8):'—'));
+   return li;
+  }));
+  // chain strip: last records, tip carries the chain hash
+  const blocks=[];
+  recent.forEach((e,i)=>{
+   if(i)blocks.push(node('span','cc-link'));
+   const last=i===recent.length-1,blk=node('div','cc-block'+(last?' tip':''));blk.setAttribute('role','listitem');
+   blk.append(node('b',null,'#'+str(e.seq)),str(e.type));
+   if(last&&typeof ev.tip_hash==='string')blk.append(node('br'),'tip '+ev.tip_hash.slice(0,12)+'…');
+   blocks.push(blk);
+  });
+  if(!blocks.length){const none=node('div','cc-block none');none.setAttribute('role','listitem');none.append(node('b',null,str(ev.status)),str(ev.reason,'brak rekordów'));blocks.push(none);}
+  chain.replaceChildren(...blocks);chain.scrollLeft=chain.scrollWidth;
+  el('ccChainMeta').textContent='Łańcuch: '+str(ev.status)+' · rekordy: '+(ev.record_count===null||ev.record_count===undefined?'UNKNOWN':String(ev.record_count))+' · '+str(ev.reason,'')+' · '+str(data.evidence_trust);
+  // metrics + release: only fields the API really returns
+  el('ccmRecords').textContent=ev.record_count===null||ev.record_count===undefined?'UNKNOWN':String(ev.record_count);
+  el('ccmRuns').textContent=String(runs.length);
+  el('ccrProd').textContent=str(prod.status,'NO-GO');el('ccrProd').title=str(prod.reason,'');
+  el('ccrSource').textContent=src.commit?String(src.commit).slice(0,12)+' · '+str(src.status):'UNKNOWN';
+  el('ccrLlm').textContent=str(llm.provider_configured)+'/'+str(llm.model_configured)+' · łączność '+str(llm.connectivity);
+  el('ccrTrust').textContent=TRUST[data.evidence_trust]||str(data.evidence_trust);el('ccrTrust').title=str(data.evidence_trust);
+ }
+ function openRun(id){
+  const nav=document.querySelector('.nav-btn[data-view="control"]')||document.querySelector('[data-view="control"]');
+  if(nav)nav.click();
+  el('ccRunSelect').value=id;
+  if(el('ccRunSelect').value===id)el('ccInspectRun').click();
+ }
+ el('ccQueue').addEventListener('click',e=>{const b=e.target.closest('button[data-run-id]');if(b)openRun(b.dataset.runId);});
  function reset(){
   epoch++;if(controller){controller.abort();controller=null;}
-  tenant=null;cache=null;fields.forEach(id=>el(id).textContent='UNKNOWN');
+  tenant=null;cache=null;renderBand(null);fields.forEach(id=>el(id).textContent='UNKNOWN');
   el('ccMonitorState').textContent='UNKNOWN';
   el('ccMonitorDetails').textContent='Brak zweryfikowanej sesji';
   el('ccRunSelect').replaceChildren(new Option('Brak historii',''));
@@ -470,7 +603,7 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
    const result=await fetchBound('/control/overview',token);
    if(epoch!==current||token!==el('apiKey').value.trim())return;
    if(result.schema!=='ola.command-center.v1'||!result.tenant_id)throw new Error('INVALID_CONTROL_SCHEMA');
-   cache=result;tenant=result.tenant_id;
+   cache=result;tenant=result.tenant_id;renderBand(result);
    const runs=Array.isArray(result.runs)?result.runs:[];
    const latest=runs[0], ev=result.evidence||{};
    el('ccL1').textContent=ev.status||'UNKNOWN';
