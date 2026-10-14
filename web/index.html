@@ -73,6 +73,20 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
 @media(max-width:1120px){.cc-localform{grid-template-columns:1fr 1.4fr auto auto}.cc-localform button:last-child{grid-column:4}}
 @media(max-width:700px){.cc-localform{grid-template-columns:1fr 1fr}.cc-localform>div{grid-column:1/-1}.cc-localform button{grid-column:auto!important}}
 
+
+/* L1-L5 live control plane: data from tenant-scoped read API */
+.cc-layers{display:grid;grid-template-columns:repeat(5,minmax(90px,1fr));gap:8px;margin:14px 0}
+.cc-layer{border:1px solid rgba(34,218,163,.23);background:#061e1b;border-radius:8px;padding:12px 9px;overflow-wrap:anywhere;min-height:98px}
+.cc-layer strong{display:block;font:700 10px ui-monospace,monospace;color:#8aebcb}
+.cc-layer span{display:block;font:700 12px/1.4 ui-monospace,monospace;color:#e6fff1;margin-top:12px}
+.cc-layer small{font-size:10px;color:#8cbcae}
+.cc-controls{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0;align-items:center}
+.cc-controls button{background:rgba(6,103,78,.4);border:1px solid #2d9e82;color:#d5ffeb;border-radius:7px;padding:11px;font-weight:700}
+.cc-controls button:disabled{opacity:.45}
+.cc-controls select{flex:1;min-width:190px;padding:11px;background:#09231f;color:#c9ffe8;border:1px solid #388d73;border-radius:6px}
+.cc-live-output{max-height:410px;overflow:auto;overflow-wrap:anywhere;white-space:pre-wrap;padding:13px;border-radius:9px;background:#031715;border:1px solid rgba(35,184,146,.27);font:11px/1.5 ui-monospace,monospace}
+@media(max-width:1100px){.cc-layers{grid-template-columns:repeat(3,minmax(90px,1fr))}}
+@media(max-width:690px){.cc-layers{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -86,6 +100,7 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
   <button class="nav-btn" type="button" data-view="chat"><span class="sym">✧</span> AI CORE</button>
   <button class="nav-btn" type="button" data-view="evidence"><span class="sym">▣</span> EVIDENCE</button>
   <button class="nav-btn" type="button" data-view="operations"><span class="sym">⚙</span> OPERATIONS</button>
+  <button class="nav-btn" type="button" data-view="control"><span class="sym">◇</span> CONTROL PLANE</button>
   <button class="nav-btn" type="button" data-view="system"><span class="sym">◎</span> SYSTEM</button>
   <button class="nav-btn" type="button" data-view="settings"><span class="sym">☷</span> SETTINGS</button>
  </nav>
@@ -154,7 +169,27 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
      <section id="panel-evidence" hidden><h2>Dowody i odtwarzanie</h2><p class="muted">Odczyt konkretnego rekordu po identyfikatorze. Dane filtrowane przez tenant w OLA Core.</p><form id="evidenceForm" style="margin-top:13px"><label for="evidenceId">ID dowodu</label><input class="field mono" id="evidenceId" maxlength="80" placeholder="UUID rekordu" required><div class="form-row"><button class="primary" type="submit">Pobierz /evidence/{id}</button></div></form><pre id="evidenceResult" class="action-out" aria-live="polite">Brak pobranego dowodu.</pre><p class="notice" style="margin-top:11px">Integralność pełnego łańcucha potwierdza serwer, nie wyświetlenie pojedynczego rekordu.</p></section>
      <section id="panel-audit" hidden><h2>Test odtwarzania awarii</h2><p class="muted">Kontrolowany scenariusz <span class="mono">fault_then_recovery</span>, nie dowód prawdziwej awarii produkcyjnej.</p><form id="auditForm" style="margin-top:14px"><label for="auditTask">Opis testu</label><input class="field" id="auditTask" maxlength="500" required placeholder="Scenariusz testowy OLA"><div class="form-row"><button class="primary" type="submit">Uruchom /audit</button></div></form><pre id="auditResult" class="action-out" aria-live="polite">Nie wykonano testu.</pre></section>
      <section id="panel-apps" hidden><h2>Aplikacje ekosystemu</h2><p class="muted">Otwieramy istniejące moduły. Brak połączenia to nie wynik VERIFIED.</p><div class="quick-grid" style="margin-top:18px"><button type="button" class="quick-btn" data-view="chat"><span class="sym">✧</span>NINA Chat</button><button type="button" class="quick-btn" data-view="operations"><span class="sym">⚙</span>NINA/IGOR</button><button type="button" class="quick-btn" data-view="evidence"><span class="sym">▣</span>Evidence</button><button type="button" class="quick-btn" data-view="audit"><span class="sym">✹</span>Audit</button><button type="button" class="quick-btn" id="studioApp"><span class="sym">◈</span>AI Studio</button><button type="button" class="quick-btn" disabled title="Niepodłączone — brak API"><span class="sym">▤</span>Files · N/D</button><button type="button" class="quick-btn" disabled title="Niepodłączone — brak API"><span class="sym">▣</span>CRM · N/D</button><button type="button" class="quick-btn" disabled title="Niepodłączone — brak API"><span class="sym">▥</span>Store · N/D</button></div></section>
-     <section id="panel-system" hidden><h2>System i łączność</h2><p class="muted">Tylko pomiary dostępne przez publiczny API. Lokalny odczyt CPU i RAM wymaga osobnego kontrolowanego endpointu.</p><div class="status-rail"><span class="badge-item">OLA Core <b id="sysCore">UNKNOWN</b></span><span class="badge-item">CPU <b>Niepodłączone</b></span><span class="badge-item">RAM <b>Niepodłączone</b></span><span class="badge-item">Storage <b>Niepodłączone</b></span><span class="badge-item">AI STUDIO <b>OSOBNY RUNTIME</b></span></div><div class="form-row" style="margin-top:19px"><button type="button" class="primary" id="refreshHealth">Odśwież /health</button><button type="button" class="secondary" id="systemAuditLink" data-view="audit">Test odtwarzania</button></div></section>
+     <section id="panel-control" hidden aria-label="OLA five layer control plane">
+  <div class="panel-heading"><h2>Control Plane · 5 warstw</h2><span class="pill warn" id="ccMonitorState" role="status" aria-live="polite">UNKNOWN</span></div>
+  <p class="muted">Tylko rzeczywisty odczyt z API bieżącego tenanta; lokalny hash chain nie zastępuje podpisanej atestacji.</p>
+  <div class="cc-layers">
+    <div class="cc-layer"><strong>L1 · EVIDENCE</strong><span id="ccL1">UNKNOWN</span><small>Integralność</small></div>
+    <div class="cc-layer"><strong>L2 · POLICY</strong><span id="ccL2">UNKNOWN</span><small>Polityka</small></div>
+    <div class="cc-layer"><strong>L3 · DECISION</strong><span id="ccL3">UNKNOWN</span><small>Kandydat</small></div>
+    <div class="cc-layer"><strong>L4 · AGENTS</strong><span id="ccL4">UNKNOWN</span><small>NINA / IGOR</small></div>
+    <div class="cc-layer"><strong>L5 · GOVERNANCE</strong><span id="ccL5">UNKNOWN</span><small>Human Gate</small></div>
+  </div>
+  <p class="muted" id="ccSourceLabel">SOURCE UNKNOWN · OLLAMA UNKNOWN · PRODUCTION NO-GO</p>
+  <div class="cc-controls">
+   <button type="button" id="ccRefresh">Odśwież dane</button>
+   <label for="ccRunSelect">Run ID</label>
+   <select id="ccRunSelect" disabled><option value="">Brak historii</option></select>
+   <button type="button" id="ccInspectRun" disabled>Sprawdź replay</button>
+  </div>
+  <pre class="cc-live-output" id="ccMonitorDetails" role="log" aria-live="polite">Zweryfikuj klucz w SETTINGS, następnie odczytaj dane.</pre>
+  <p class="muted">RECORDED oznacza stan zapisany w dowodach, nie niezależny podpis. Wynik produkcyjny pozostaje NO-GO.</p>
+ </section>
+<section id="panel-system" hidden><h2>System i łączność</h2><p class="muted">Tylko pomiary dostępne przez publiczny API. Lokalny odczyt CPU i RAM wymaga osobnego kontrolowanego endpointu.</p><div class="status-rail"><span class="badge-item">OLA Core <b id="sysCore">UNKNOWN</b></span><span class="badge-item">CPU <b>Niepodłączone</b></span><span class="badge-item">RAM <b>Niepodłączone</b></span><span class="badge-item">Storage <b>Niepodłączone</b></span><span class="badge-item">AI STUDIO <b>OSOBNY RUNTIME</b></span></div><div class="form-row" style="margin-top:19px"><button type="button" class="primary" id="refreshHealth">Odśwież /health</button><button type="button" class="secondary" id="systemAuditLink" data-view="audit">Test odtwarzania</button></div></section>
      <section id="panel-settings" hidden><h2>Połączenie z OLA Core</h2><p class="muted">Jeden klucz API w pamięci bieżącej karty. Nie jest zapisywany w przeglądarce ani wysyłany do Studio.</p><div class="auth-row" style="margin-top:19px"><div><label for="apiKey">X-API-Key — tenant OLA</label><input class="field" id="apiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Wprowadź klucz dla obecnej sesji"></div><button type="button" class="secondary" id="forgetKey">Wyczyść klucze</button><button type="button" class="primary" id="verifyApiKey">Zweryfikuj klucz</button></div><p class="fineprint">Kliknij „Zweryfikuj klucz”. Status UWIERZYTELNIONY dotyczy tylko sesji API, nie dostępu do PowerShell. Local Executor wymaga osobnego tokenu.</p><div class="form-row"><button class="primary" type="button" id="healthFromSettings">Sprawdź połączenie</button></div><p class="notice" style="margin-top:17px">AI STUDIO 3.6.0 uruchamia się jako osobna usługa lokalna na porcie 8001; nie dzieli automatycznie autoryzacji, tenantów ani Evidence Graph.</p></section>
     </div>
    </article>
@@ -167,13 +202,13 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
  </div>
 </main>
 </div>
-<nav class="dock" aria-label="Szybka nawigacja"><div class="brand-mark" style="width:37px;height:37px;margin-right:5px" aria-hidden="true"></div><span class="dock-rule"></span><button type="button" class="dock-btn active" data-view="home" aria-label="Pulpit" title="Pulpit">▦</button><button type="button" class="dock-btn" data-view="apps" aria-label="Aplikacje" title="Aplikacje">▤</button><button type="button" class="dock-btn" data-view="operations" aria-label="Wykonanie" title="Wykonanie">⌘</button><button type="button" class="dock-btn" data-view="chat" aria-label="NINA AI" title="NINA AI">◉</button><button type="button" class="dock-btn" data-view="evidence" aria-label="Dowody" title="Dowody">▣</button><button type="button" class="dock-btn" data-view="system" aria-label="System" title="System">⚙</button></nav>
+<nav class="dock" aria-label="Szybka nawigacja"><div class="brand-mark" style="width:37px;height:37px;margin-right:5px" aria-hidden="true"></div><span class="dock-rule"></span><button type="button" class="dock-btn active" data-view="home" aria-label="Pulpit" title="Pulpit">▦</button><button type="button" class="dock-btn" data-view="apps" aria-label="Aplikacje" title="Aplikacje">▤</button><button type="button" class="dock-btn" data-view="operations" aria-label="Wykonanie" title="Wykonanie">⌘</button><button type="button" class="dock-btn" data-view="chat" aria-label="NINA AI" title="NINA AI">◉</button><button type="button" class="dock-btn" data-view="evidence" aria-label="Dowody" title="Dowody">▣</button><button type="button" class="dock-btn" data-view="control" aria-label="Control Plane" title="Control Plane">◇</button><button type="button" class="dock-btn" data-view="system" aria-label="System" title="System">⚙</button></nav>
 <div id="toast" class="toast hidden" role="alert" aria-live="assertive"></div>
 <script>
 'use strict';
 (() => {
  const $ = id => document.getElementById(id);
- const navNames={home:'OLA AI CORE / CHAT',apps:'APLIKACJE OLA',chat:'NINA / CHAT',operations:'NINA → IGOR / EXECUTION',evidence:'EVIDENCE / FORENSIC',audit:'RECOVERY TEST / AUDIT',system:'STATUS SYSTEMU',settings:'USTAWIENIA SESJI'};
+ const navNames={home:'OLA AI CORE / CHAT',apps:'APLIKACJE OLA',chat:'NINA / CHAT',operations:'NINA → IGOR / EXECUTION',evidence:'EVIDENCE / FORENSIC',audit:'RECOVERY TEST / AUDIT',control:'OLA · CONTROL PLANE L1–L5',system:'STATUS SYSTEMU',settings:'USTAWIENIA SESJI'};
  const session={messages:[],lastCandidate:null,busy:false,epoch:0,activeControllers:new Set()};
  const friendly={VERIFIED:'VERIFIED',REVIEW:'REVIEW',BLOCK:'BLOCK',UNKNOWN:'UNKNOWN',PARTIAL:'PARTIAL',ALLOW:'ALLOW'};
  function setText(id,value){$(id).textContent=String(value ?? 'UNKNOWN')}
@@ -400,5 +435,83 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
 })();
 </script>
 
+
+<script>
+/* Authenticated monitor of existing evidence. Read-only, no fake metrics. */
+(()=>{
+ 'use strict';
+ const el=id=>document.getElementById(id);
+ let epoch=0, controller=null, tenant=null, cache=null;
+ const fields=['ccL1','ccL2','ccL3','ccL4','ccL5'];
+ function reset(){
+  epoch++;if(controller){controller.abort();controller=null;}
+  tenant=null;cache=null;fields.forEach(id=>el(id).textContent='UNKNOWN');
+  el('ccMonitorState').textContent='UNKNOWN';
+  el('ccMonitorDetails').textContent='Brak zweryfikowanej sesji';
+  el('ccRunSelect').replaceChildren(new Option('Brak historii',''));
+  el('ccRunSelect').disabled=true;el('ccInspectRun').disabled=true;
+  el('ccSourceLabel').textContent='SOURCE UNKNOWN · OLLAMA UNKNOWN · PRODUCTION NO-GO';
+ }
+ async function fetchBound(path,token){
+  const c=new AbortController();controller=c;
+  const timer=setTimeout(()=>c.abort(),12000);
+  try{
+   const response=await fetch(path,{headers:{'X-API-Key':token},credentials:'same-origin',cache:'no-store',signal:c.signal});
+   if(!response.ok)throw new Error('HTTP '+response.status);
+   return await response.json();
+  }finally{clearTimeout(timer);if(controller===c)controller=null;}
+ }
+ async function refresh(){
+  if(el('keyState').textContent.trim()!=='UWIERZYTELNIONY'||!el('apiKey').value.trim()){reset();return;}
+  if(controller)return;
+  const current=++epoch,token=el('apiKey').value.trim();
+  el('ccMonitorState').textContent='SCANNING';
+  try{
+   const result=await fetchBound('/control/overview',token);
+   if(epoch!==current||token!==el('apiKey').value.trim())return;
+   if(result.schema!=='ola.command-center.v1'||!result.tenant_id)throw new Error('INVALID_CONTROL_SCHEMA');
+   cache=result;tenant=result.tenant_id;
+   const runs=Array.isArray(result.runs)?result.runs:[];
+   const latest=runs[0], ev=result.evidence||{};
+   el('ccL1').textContent=ev.status||'UNKNOWN';
+   el('ccL2').textContent=latest?'RECORDED: '+String(latest.policy_status_recorded):'UNKNOWN';
+   el('ccL3').textContent=latest?'RECORDED: '+String(latest.candidate_status_recorded):'NOT_RUN';
+   el('ccL4').textContent=latest?'RECORDED: '+String(latest.nina_status_recorded):'NOT_RUN';
+   el('ccL5').textContent=latest?(latest.human_approval_recorded?'APPROVAL RECORDED':'REVIEW'):'UNKNOWN';
+   const src=result.source||{},llm=result.llm||{};
+   el('ccSourceLabel').textContent='SOURCE: '+String(src.commit||'UNKNOWN').slice(0,12)+' ('+String(src.status||'UNKNOWN')+') | LLM: '+String(llm.provider_configured||'UNKNOWN')+'/'+String(llm.model_configured||'UNKNOWN')+' | PRODUCTION NO-GO';
+   el('ccRunSelect').replaceChildren(new Option('Wybierz run_id',''));
+   for(const run of runs){if(typeof run.run_id==='string')el('ccRunSelect').add(new Option(run.run_id.slice(0,8)+' · '+String(run.candidate_status_recorded||'UNKNOWN'),run.run_id));}
+   el('ccRunSelect').disabled=runs.length===0;el('ccInspectRun').disabled=runs.length===0;
+   el('ccMonitorDetails').textContent=JSON.stringify(result,null,2);
+   el('ccMonitorState').textContent='AUTHENTICATED · RELEASE NO-GO';
+  }catch(err){
+   if(epoch!==current)return;
+   reset();el('ccMonitorDetails').textContent='CONTROL PLANE: '+err.message;
+  }
+ }
+ el('ccRefresh').addEventListener('click',refresh);
+ el('ccInspectRun').addEventListener('click',async()=>{
+  if(controller||!tenant)return;
+  const run=el('ccRunSelect').value,token=el('apiKey').value.trim(),expected=tenant,current=epoch;
+  if(!run||el('keyState').textContent.trim()!=='UWIERZYTELNIONY')return;
+  el('ccInspectRun').disabled=true;
+  try{
+   const detail=await fetchBound('/control/runs/'+encodeURIComponent(run),token);
+   if(current!==epoch||expected!==tenant||run!==el('ccRunSelect').value)return;
+   el('ccMonitorDetails').textContent=JSON.stringify(detail,null,2);
+   el('ccMonitorState').textContent='LOCAL REPLAY '+String(detail.status||'UNKNOWN')+' · RELEASE NO-GO';
+  }catch(err){if(current===epoch)el('ccMonitorDetails').textContent='REPLAY: '+err.message;}
+  finally{el('ccInspectRun').disabled=!tenant;}
+ });
+ el('apiKey').addEventListener('input',reset);
+ el('forgetKey').addEventListener('click',reset);
+ new MutationObserver(()=>{
+  if(el('keyState').textContent.trim()==='UWIERZYTELNIONY'){refresh();}
+  else if(tenant){reset();}
+ }).observe(el('keyState'),{childList:true,subtree:true,characterData:true});
+ setInterval(()=>{if(!document.hidden&&tenant&&!controller)refresh();},30000);
+})();
+</script>
 </body>
 </html>
