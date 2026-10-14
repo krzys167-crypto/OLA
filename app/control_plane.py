@@ -10,6 +10,7 @@ import os
 import re
 from sqlalchemy import select
 
+from .agent_runtime import AGENT_ROLES
 from .database import SessionLocal
 from .hashchain import verify_chain
 from .models import EvidenceRecord
@@ -60,7 +61,11 @@ def _integrity(records):
     if not records:
         return "UNKNOWN", "no evidence recorded for tenant"
     ok, reason = verify_chain(records)
-    return ("VERIFIED" if ok else "BLOCK"), reason
+    if not ok:
+        return "BLOCK", reason
+    if any(_payload(row) is None for row in records):
+        return "BLOCK", "invalid or non-object evidence payload"
+    return "VERIFIED", reason
 
 
 def _runs(records):
@@ -139,7 +144,7 @@ def get_overview(tenant_id: str):
         },
         "orchestrator": {
             "status": "REGISTERED_NOT_EXECUTED",
-            "roles": ["codeact", "react", "agentic_rag", "mcp_tool_use", "self_reflection", "multi_agent"],
+            "roles": list(AGENT_ROLES),
         },
         "llm": {"provider_configured": provider, "model_configured": model, "connectivity": "UNKNOWN"},
         "runs": runs,
