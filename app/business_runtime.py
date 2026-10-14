@@ -125,7 +125,7 @@ def run_invoice_task(tenant_id, task):
             .where(EvidenceRecord.tenant_id == tenant_id)
             .order_by(EvidenceRecord.seq.asc())
         ).all()
-    chain = [{"tenant_id": r.tenant_id, "seq": r.seq, "prev_hash": r.prev_hash, "record_hash": r.record_hash, "payload_json": r.payload_json} for r in rows]
+    chain = [{"id": r.id, "tenant_id": r.tenant_id, "seq": r.seq, "prev_hash": r.prev_hash, "record_hash": r.record_hash, "record_type": r.record_type, "hash_version": r.hash_version, "payload_json": r.payload_json} for r in rows]
     chain_ok, reason = verify_chain(chain)
     final_result = execution[-1]["final_result"]
     status = "VERIFIED" if chain_ok else "BLOCK"
