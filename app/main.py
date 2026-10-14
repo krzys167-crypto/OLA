@@ -17,6 +17,7 @@ from .business_runtime import run_invoice_task
 from .nina import NinaOrchestrator, NinaTask
 from .igor import IgorVerifier
 from .replay import build_replay, verify_replay
+from .control_plane import get_overview, get_run_detail
 from .human_gate import HumanGate, ReviewDecision
 from .nina_igor import NinaIgorChain
 from .decision_report import build_decision_report
@@ -157,6 +158,22 @@ def get_current_operator(x_api_key: str | None = Header(default=None)):
     """Read-only credential check. Never issues credentials or exposes raw keys."""
     tenant_id, key_id = identity_from_key(x_api_key)
     return {"authenticated": True, "tenant_id": tenant_id, "credential_id": key_id, "scope": "OLA_CORE"}
+
+
+@app.get("/control/overview")
+def command_center_overview(x_api_key: str | None = Header(default=None)):
+    """Read-only, tenant-scoped operational truth. Does not authorize host commands."""
+    tenant_id = tenant_from_key(x_api_key)
+    return get_overview(tenant_id)
+
+
+@app.get("/control/runs/{run_id}")
+def command_center_run(run_id: str, x_api_key: str | None = Header(default=None)):
+    tenant_id = tenant_from_key(x_api_key)
+    result = get_run_detail(tenant_id, run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return result
 
 
 @app.get("/health")
