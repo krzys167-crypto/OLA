@@ -155,7 +155,7 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
      <section id="panel-audit" hidden><h2>Test odtwarzania awarii</h2><p class="muted">Kontrolowany scenariusz <span class="mono">fault_then_recovery</span>, nie dowód prawdziwej awarii produkcyjnej.</p><form id="auditForm" style="margin-top:14px"><label for="auditTask">Opis testu</label><input class="field" id="auditTask" maxlength="500" required placeholder="Scenariusz testowy OLA"><div class="form-row"><button class="primary" type="submit">Uruchom /audit</button></div></form><pre id="auditResult" class="action-out" aria-live="polite">Nie wykonano testu.</pre></section>
      <section id="panel-apps" hidden><h2>Aplikacje ekosystemu</h2><p class="muted">Otwieramy istniejące moduły. Brak połączenia to nie wynik VERIFIED.</p><div class="quick-grid" style="margin-top:18px"><button type="button" class="quick-btn" data-view="chat"><span class="sym">✧</span>NINA Chat</button><button type="button" class="quick-btn" data-view="operations"><span class="sym">⚙</span>NINA/IGOR</button><button type="button" class="quick-btn" data-view="evidence"><span class="sym">▣</span>Evidence</button><button type="button" class="quick-btn" data-view="audit"><span class="sym">✹</span>Audit</button><button type="button" class="quick-btn" id="studioApp"><span class="sym">◈</span>AI Studio</button><button type="button" class="quick-btn" disabled title="Niepodłączone — brak API"><span class="sym">▤</span>Files · N/D</button><button type="button" class="quick-btn" disabled title="Niepodłączone — brak API"><span class="sym">▣</span>CRM · N/D</button><button type="button" class="quick-btn" disabled title="Niepodłączone — brak API"><span class="sym">▥</span>Store · N/D</button></div></section>
      <section id="panel-system" hidden><h2>System i łączność</h2><p class="muted">Tylko pomiary dostępne przez publiczny API. Lokalny odczyt CPU i RAM wymaga osobnego kontrolowanego endpointu.</p><div class="status-rail"><span class="badge-item">OLA Core <b id="sysCore">UNKNOWN</b></span><span class="badge-item">CPU <b>Niepodłączone</b></span><span class="badge-item">RAM <b>Niepodłączone</b></span><span class="badge-item">Storage <b>Niepodłączone</b></span><span class="badge-item">AI STUDIO <b>OSOBNY RUNTIME</b></span></div><div class="form-row" style="margin-top:19px"><button type="button" class="primary" id="refreshHealth">Odśwież /health</button><button type="button" class="secondary" id="systemAuditLink" data-view="audit">Test odtwarzania</button></div></section>
-     <section id="panel-settings" hidden><h2>Połączenie z OLA Core</h2><p class="muted">Jeden klucz API w pamięci bieżącej karty. Nie jest zapisywany w przeglądarce ani wysyłany do Studio.</p><div class="auth-row" style="margin-top:19px"><div><label for="apiKey">X-API-Key — tenant OLA</label><input class="field" id="apiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Wprowadź klucz dla obecnej sesji"></div><button type="button" class="secondary" id="forgetKey">Wyczyść klucze</button></div><p class="fineprint">Dostęp uwierzytelniony dopiero podczas żądania; samo wprowadzenie klucza nie oznacza weryfikacji użytkownika.</p><div class="form-row"><button class="primary" type="button" id="healthFromSettings">Sprawdź połączenie</button></div><p class="notice" style="margin-top:17px">AI STUDIO 3.6.0 uruchamia się jako osobna usługa lokalna na porcie 8001; nie dzieli automatycznie autoryzacji, tenantów ani Evidence Graph.</p></section>
+     <section id="panel-settings" hidden><h2>Połączenie z OLA Core</h2><p class="muted">Jeden klucz API w pamięci bieżącej karty. Nie jest zapisywany w przeglądarce ani wysyłany do Studio.</p><div class="auth-row" style="margin-top:19px"><div><label for="apiKey">X-API-Key — tenant OLA</label><input class="field" id="apiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Wprowadź klucz dla obecnej sesji"></div><button type="button" class="secondary" id="forgetKey">Wyczyść klucze</button><button type="button" class="primary" id="verifyApiKey">Zweryfikuj klucz</button></div><p class="fineprint">Kliknij „Zweryfikuj klucz”. Status UWIERZYTELNIONY dotyczy tylko sesji API, nie dostępu do PowerShell. Local Executor wymaga osobnego tokenu.</p><div class="form-row"><button class="primary" type="button" id="healthFromSettings">Sprawdź połączenie</button></div><p class="notice" style="margin-top:17px">AI STUDIO 3.6.0 uruchamia się jako osobna usługa lokalna na porcie 8001; nie dzieli automatycznie autoryzacji, tenantów ani Evidence Graph.</p></section>
     </div>
    </article>
   </div>
@@ -224,8 +224,29 @@ body{background:#030a0b}.sky{background:radial-gradient(ellipse at 55% 36%,rgba(
  function openStudio(){const host=window.location.hostname;if(!['127.0.0.1','localhost'].includes(host)){toast('AI STUDIO 3.6.0: dostęp tylko na lokalnym ZBooku (port 8001).');return}const target=window.location.protocol+'//'+host+':8001/';const opened=window.open(target,'_blank','noopener,noreferrer');if(opened)opened.opener=null;log('Otworzono lokalny adres AI STUDIO 3.6.0 (health nieweryfikowany)')}
  $('studioQuick').addEventListener('click',openStudio);$('studioApp').addEventListener('click',openStudio);
  if(['127.0.0.1','localhost'].includes(window.location.hostname))setText('studioNote','AI STUDIO: port 8001 (oddzielne logowanie).');
- $('forgetKey').addEventListener('click',()=>{$('apiKey').value='';$('approverKey').value='';resetTenantSession();setText('keyState','NIEPODANY');log('Klucze usunięte z pól bieżącej sesji')});
- $('apiKey').addEventListener('input',()=>{resetTenantSession();const found=!!key();setText('keyState',found?'WPROWADZONY':'NIEPODANY');$('keyState').className='pill '+(found?'good':'warn')});
+ function setApiKeyState(status,good=false){setText('keyState',status);$('keyState').className='pill '+(good?'good':'warn')}
+ $('forgetKey').addEventListener('click',()=>{$('apiKey').value='';$('approverKey').value='';resetTenantSession();setApiKeyState('NIEPODANY');log('Klucze usunięte z pól bieżącej sesji')});
+ $('apiKey').addEventListener('input',()=>{resetTenantSession();setApiKeyState(key()?'NIEZWERYFIKOWANY':'NIEPODANY')});
+ $('verifyApiKey').addEventListener('click',()=>{
+   const candidate=key();
+   if(!candidate){setApiKeyState('NIEPODANY');show('settings');toast('Wprowadź klucz API OLA.');return}
+   const epoch=session.epoch;
+   busy($('verifyApiKey'),async()=>{
+     setApiKeyState('SPRAWDZANIE');
+     try{
+       const data=await api('/auth/session',{token:candidate,timeout:10000});
+       if(epoch!==session.epoch || candidate!==key())return;
+       if(data.authenticated!==true || !data.tenant_id)throw new Error('Serwer nie potwierdził sesji');
+       setApiKeyState('UWIERZYTELNIONY',true);
+       log('GET /auth/session → AUTHENTICATED (tenant '+String(data.tenant_id).slice(0,8)+'…)');
+     }catch(err){
+       if(epoch!==session.epoch || candidate!==key())return;
+       setApiKeyState('ODRZUCONY');
+       log('GET /auth/session → BLOCK ('+err.message+')');
+       toast('Klucz nie został zweryfikowany: '+err.message);
+     }
+   });
+ });
  $('clearLog').addEventListener('click',()=>{$('statusLog').replaceChildren()});
  $('refreshHealth').addEventListener('click',refreshHealth);$('healthFromSettings').addEventListener('click',refreshHealth);
  function updateClock(){const now=new Date();setText('clock',now.toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit'}));setText('sessionDate',now.toLocaleDateString('pl-PL',{day:'2-digit',month:'short',year:'numeric'}));setText('sessionTime',now.toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit',second:'2-digit'}))}
