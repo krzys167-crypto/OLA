@@ -43,7 +43,7 @@ class IgorVerifier:
         if not payloads:
             return IgorVerification("UNKNOWN", "missing current-run evidence", checks)
         provenance_values = {payload.get("commit") for payload in payloads if payload.get("commit") is not None}
-        checks["commit"] = bool(expected_commit) and expected_commit in provenance_values
+        checks["commit"] = bool(expected_commit) and provenance_values == {expected_commit}
         if not checks["commit"]:
             return IgorVerification("BLOCK", "commit provenance mismatch", checks)
 
@@ -68,29 +68,31 @@ class IgorVerifier:
             or payload.get("model") is not None
             or payload.get("invocation_type") is not None
         ]
+        # All provenance-bearing records in the *current* run must agree,
+        # not merely one matching aggregate. Agent evidence uses response_id,
+        # aggregate runtime provenance uses response_ids.
         if expected_provider is not None:
-            candidate_provenances = [
-                payload for payload in provenance_payloads
-                if payload.get("provider") == expected_provider
-                and payload.get("invocation_type") == "real_llm"
-                and (expected_model is None or payload.get("model") == expected_model)
-            ]
-            if expected_provider != "local":
-                candidate_provenances = [
-                    payload for payload in candidate_provenances
-                    if isinstance(payload.get("response_ids"), list)
-                    and any(isinstance(value, str) and value for value in payload["response_ids"])
-                ]
-            checks["provider"] = bool(candidate_provenances)
+            checks["provider"] = bool(provenance_payloads) and all(
+                p.get("provider") == expected_provider
+                and p.get("invocation_type") == "real_llm"
+                for p in provenance_payloads
+            )
             if not checks["provider"]:
                 return IgorVerification("BLOCK", "provider provenance mismatch", checks)
             if expected_provider != "local":
-                checks["response_ids"] = True
+                def valid_response(p):
+                    aggregate = p.get("response_ids")
+                    individual = p.get("response_id")
+                    if aggregate is not None:
+                        return (isinstance(aggregate, list) and bool(aggregate)
+                                and all(isinstance(x, str) and x.strip() for x in aggregate))
+                    return isinstance(individual, str) and bool(individual.strip())
+                checks["response_ids"] = all(valid_response(p) for p in provenance_payloads)
+                if not checks["response_ids"]:
+                    return IgorVerification("BLOCK", "real LLM response ids missing", checks)
         if expected_model is not None:
-            checks["model"] = bool(provenance_payloads) and any(
-                payload.get("model") == expected_model
-                and (expected_provider is None or payload in candidate_provenances)
-                for payload in provenance_payloads
+            checks["model"] = bool(provenance_payloads) and all(
+                p.get("model") == expected_model for p in provenance_payloads
             )
             if not checks["model"]:
                 return IgorVerification("BLOCK", "model provenance mismatch", checks)
