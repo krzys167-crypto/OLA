@@ -22,7 +22,7 @@ function Test-Pepper {
 function New-PreviewSecretFile {
  $secretDir=Join-Path $env:LOCALAPPDATA 'OLA-Control\secrets'
  $secretPath=Join-Path $secretDir 'preview.env'
- if(Test-Path -LiteralPath $secretPath){throw 'PREVIEW_SECRET_FILE_ALREADY_EXISTS: manual review required'}
+ if(Test-Path -LiteralPath $secretPath){throw 'PREVIEW_SECRET_FILE_ALREADY_EXISTS'}
  New-Item -ItemType Directory -Path $secretDir -Force|Out-Null
  $username=[Security.Principal.WindowsIdentity]::GetCurrent().Name
  $acl=Get-Acl -LiteralPath $secretDir
@@ -42,38 +42,7 @@ function New-PreviewSecretFile {
 }
 function Create-Preview {
  if(Get-Preview){throw 'PREVIEW_EXISTS: no existing data will be modified or replaced'}
- if($ExpectedSha -notmatch '^[a-f0-9]{40}
- if($script:Preview -ne 'ola-cc-preview'){throw 'PREVIEW_NAME_CHANGED'}
- Write-Host 'OLA_PREVIEW_AUTH_SELFTEST=PASS';exit 0
-}
-if($IssueKey -and $CreatePreview){throw 'USE_ONLY_ONE_WRITE_MODE'}
-if($CreatePreview -and !(Get-Command git.exe -ErrorAction SilentlyContinue)){throw 'GIT_CLI_MISSING'}
-if(!(Get-Command docker.exe -ErrorAction SilentlyContinue)){throw 'DOCKER_CLI_MISSING'}
-if($CreatePreview){Create-Preview;exit 0}
-$state=Get-Preview
-if(!$state){Write-Host 'PREVIEW_NOT_FOUND: create a new credential-enabled preview after verifying source SHA.';exit 2}
-if($state.State.Status -ne 'running'){Write-Host ("PREVIEW_NOT_RUNNING: "+$state.State.Status);exit 3}
-if(!(Test-Pepper)){
- Write-Host 'AUTH_NOT_CONFIGURED: preview has no OLA_API_KEY_PEPPER.' -ForegroundColor Yellow
- Write-Host 'BLOCKED: no key created, no container restart, no data changed.'
- Write-Host 'A reviewed backup + preview recreation is required before issuing credentials.'
- exit 4
-}
-$module=& docker.exe exec $script:Preview python -c "import scripts.provision_local_operator; print('READY')" 2>$null
-if($LASTEXITCODE -ne 0 -or ([string]$module).Trim() -ne 'READY'){
- Write-Host 'AUTH_MODULE_NOT_DEPLOYED: update preview image after source verification.'
- exit 5
-}
-if(!$IssueKey){
- Write-Host 'PREVIEW_AUTH_READY. Run this script with -IssueKey to create the operator API key.' -ForegroundColor Green
- exit 0
-}
-Write-Host 'Creating a NEW tenant API key for OLA Core, not a Windows Local Executor token.' -ForegroundColor Cyan
-& docker.exe exec $script:Preview python -m scripts.provision_local_operator
-if($LASTEXITCODE -ne 0){throw 'KEY_ISSUANCE_FAILED_OR_DUPLICATE_TENANT'}
-Write-Host 'Copy X_API_KEY_ONCE into Command Center > SETTINGS > X-API-Key > Verify.' -ForegroundColor Green
-Write-Host 'Do not send the key to ChatGPT or store it in your Git repository.'
-){throw 'EXPECTED_SOURCE_SHA_REQUIRED'}
+ if($ExpectedSha -notmatch '^[a-f0-9]{40}$'){throw 'EXPECTED_SOURCE_SHA_REQUIRED'}
  $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
  if(!(Test-Path -LiteralPath (Join-Path $repo '.git'))){throw 'CHECKOUT_REQUIRED'}
  $actual=(& git.exe -C $repo rev-parse HEAD).Trim()
@@ -87,71 +56,15 @@ Write-Host 'Do not send the key to ChatGPT or store it in your Git repository.'
  catch{throw 'OLLAMA_NOT_AVAILABLE: start host Ollama first'}
  $available=@($tags.models|ForEach-Object{$_.name})
  if(!$Model){
-  $first=@($available|Where-Object{$_ -and $_ -notmatch ':cloud
- if($script:Preview -ne 'ola-cc-preview'){throw 'PREVIEW_NAME_CHANGED'}
- Write-Host 'OLA_PREVIEW_AUTH_SELFTEST=PASS';exit 0
-}
-if(!(Get-Command docker.exe -ErrorAction SilentlyContinue)){throw 'DOCKER_CLI_MISSING'}
-$state=Get-Preview
-if(!$state){Write-Host 'PREVIEW_NOT_FOUND: create a new credential-enabled preview after verifying source SHA.';exit 2}
-if($state.State.Status -ne 'running'){Write-Host ("PREVIEW_NOT_RUNNING: "+$state.State.Status);exit 3}
-if(!(Test-Pepper)){
- Write-Host 'AUTH_NOT_CONFIGURED: preview has no OLA_API_KEY_PEPPER.' -ForegroundColor Yellow
- Write-Host 'BLOCKED: no key created, no container restart, no data changed.'
- Write-Host 'A reviewed backup + preview recreation is required before issuing credentials.'
- exit 4
-}
-$module=& docker.exe exec $script:Preview python -c "import scripts.provision_local_operator; print('READY')" 2>$null
-if($LASTEXITCODE -ne 0 -or ([string]$module).Trim() -ne 'READY'){
- Write-Host 'AUTH_MODULE_NOT_DEPLOYED: update preview image after source verification.'
- exit 5
-}
-if(!$IssueKey){
- Write-Host 'PREVIEW_AUTH_READY. Run this script with -IssueKey to create the operator API key.' -ForegroundColor Green
- exit 0
-}
-Write-Host 'Creating a NEW tenant API key for OLA Core, not a Windows Local Executor token.' -ForegroundColor Cyan
-& docker.exe exec $script:Preview python -m scripts.provision_local_operator
-if($LASTEXITCODE -ne 0){throw 'KEY_ISSUANCE_FAILED_OR_DUPLICATE_TENANT'}
-Write-Host 'Copy X_API_KEY_ONCE into Command Center > SETTINGS > X-API-Key > Verify.' -ForegroundColor Green
-Write-Host 'Do not send the key to ChatGPT or store it in your Git repository.'
-})
-  if($first.Count -eq 0){throw 'NO_LOCAL_OLLAMA_MODEL: specify a model that exists in host Ollama'}
-  $Model=[string]$first[0]
+  $localModels=@($available|Where-Object{$_ -and $_ -notmatch ':cloud$'})
+  if($localModels.Count -eq 0){throw 'NO_LOCAL_OLLAMA_MODEL'}
+  $Model=[string]$localModels[0]
  }
- if($Model -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.\/-]{0,95}(:[a-zA-Z0-9_.-]{1,32})?
- if($script:Preview -ne 'ola-cc-preview'){throw 'PREVIEW_NAME_CHANGED'}
- Write-Host 'OLA_PREVIEW_AUTH_SELFTEST=PASS';exit 0
-}
-if(!(Get-Command docker.exe -ErrorAction SilentlyContinue)){throw 'DOCKER_CLI_MISSING'}
-$state=Get-Preview
-if(!$state){Write-Host 'PREVIEW_NOT_FOUND: create a new credential-enabled preview after verifying source SHA.';exit 2}
-if($state.State.Status -ne 'running'){Write-Host ("PREVIEW_NOT_RUNNING: "+$state.State.Status);exit 3}
-if(!(Test-Pepper)){
- Write-Host 'AUTH_NOT_CONFIGURED: preview has no OLA_API_KEY_PEPPER.' -ForegroundColor Yellow
- Write-Host 'BLOCKED: no key created, no container restart, no data changed.'
- Write-Host 'A reviewed backup + preview recreation is required before issuing credentials.'
- exit 4
-}
-$module=& docker.exe exec $script:Preview python -c "import scripts.provision_local_operator; print('READY')" 2>$null
-if($LASTEXITCODE -ne 0 -or ([string]$module).Trim() -ne 'READY'){
- Write-Host 'AUTH_MODULE_NOT_DEPLOYED: update preview image after source verification.'
- exit 5
-}
-if(!$IssueKey){
- Write-Host 'PREVIEW_AUTH_READY. Run this script with -IssueKey to create the operator API key.' -ForegroundColor Green
- exit 0
-}
-Write-Host 'Creating a NEW tenant API key for OLA Core, not a Windows Local Executor token.' -ForegroundColor Cyan
-& docker.exe exec $script:Preview python -m scripts.provision_local_operator
-if($LASTEXITCODE -ne 0){throw 'KEY_ISSUANCE_FAILED_OR_DUPLICATE_TENANT'}
-Write-Host 'Copy X_API_KEY_ONCE into Command Center > SETTINGS > X-API-Key > Verify.' -ForegroundColor Green
-Write-Host 'Do not send the key to ChatGPT or store it in your Git repository.'
-){throw 'INVALID_OLLAMA_MODEL_NAME'}
+ if($Model -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.\/-]{0,95}(:[a-zA-Z0-9_.-]{1,32})?$'){throw 'INVALID_OLLAMA_MODEL_NAME'}
  if($Model -notin $available){throw 'OLLAMA_MODEL_NOT_PRESENT'}
  $volume='ola-cc-preview-data'
  & docker.exe volume inspect $volume *> $null
- if($LASTEXITCODE -eq 0){throw 'PREVIEW_VOLUME_EXISTS: manual verification required to prevent data mixing'}
+ if($LASTEXITCODE -eq 0){throw 'PREVIEW_VOLUME_EXISTS: manual review required'}
  $secretFile=New-PreviewSecretFile
  $image='ola-cc-preview:'+($ExpectedSha.Substring(0,12))
  & docker.exe build -t $image $repo
@@ -181,9 +94,9 @@ Write-Host 'Do not send the key to ChatGPT or store it in your Git repository.'
    if($response.status -eq 'ok'){$ready=$true;break}
   }catch{}
  }
- if(!$ready){throw 'PREVIEW_HEALTH_FAILED: inspect logs; previous OLA services unchanged'}
+ if(!$ready){throw 'PREVIEW_HEALTH_FAILED: previous OLA services unchanged'}
  Write-Host 'OLA PREVIEW CREATED / HEALTH PASS / PERSISTENT SQLITE / SOURCE PINNED' -ForegroundColor Green
- Write-Host 'Random pepper stored in restricted Windows LocalAppData; never printed.'
+ Write-Host 'Random pepper stored in restricted LocalAppData; it was not printed.'
  Write-Host 'Run -IssueKey separately to create the first tenant credential.'
 }
 
@@ -191,7 +104,10 @@ if($SelfTest){
  if($script:Preview -ne 'ola-cc-preview'){throw 'PREVIEW_NAME_CHANGED'}
  Write-Host 'OLA_PREVIEW_AUTH_SELFTEST=PASS';exit 0
 }
+if($IssueKey -and $CreatePreview){throw 'USE_ONLY_ONE_WRITE_MODE'}
+if($CreatePreview -and !(Get-Command git.exe -ErrorAction SilentlyContinue)){throw 'GIT_CLI_MISSING'}
 if(!(Get-Command docker.exe -ErrorAction SilentlyContinue)){throw 'DOCKER_CLI_MISSING'}
+if($CreatePreview){Create-Preview;exit 0}
 $state=Get-Preview
 if(!$state){Write-Host 'PREVIEW_NOT_FOUND: create a new credential-enabled preview after verifying source SHA.';exit 2}
 if($state.State.Status -ne 'running'){Write-Host ("PREVIEW_NOT_RUNNING: "+$state.State.Status);exit 3}
