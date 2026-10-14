@@ -71,8 +71,11 @@ def test_ola_e2e_closed_environment():
     row = db.get(EvidenceRecord, record["id"])
     chain = [
         {
+            "id": row.id,
             "tenant_id": row.tenant_id,
             "seq": row.seq,
+            "record_type": row.record_type,
+            "hash_version": row.hash_version,
             "prev_hash": row.prev_hash,
             "record_hash": row.record_hash,
             "payload_json": row.payload_json,
@@ -160,8 +163,11 @@ def test_product_e2e_customer_audit():
     assert verify_chain(
         [
             {
+                "id": row.id,
                 "tenant_id": row.tenant_id,
                 "seq": row.seq,
+                "record_type": row.record_type,
+                "hash_version": row.hash_version,
                 "prev_hash": row.prev_hash,
                 "record_hash": row.record_hash,
                 "payload_json": row.payload_json,
