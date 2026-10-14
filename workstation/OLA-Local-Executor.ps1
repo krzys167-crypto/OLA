@@ -58,10 +58,36 @@ function Run-FixedProcess([hashtable]$spec){
   @{exit_code=[int]$p.ExitCode;output=$out}
  }finally{$p.Dispose()}
 }
+function Assert-AllowedMutation([string]$id){
+ # Never start a similarly named privileged or externally exposed container.
+ if($id -notin @('docker-unpause-ola','docker-start-ola')){throw 'MUTATION_NOT_REGISTERED'}
+ $raw=& docker.exe inspect --format '{{json .}}' ola-zbook-local 2>$null
+ if($LASTEXITCODE -ne 0 -or !$raw){throw 'TARGET_CONTAINER_NOT_FOUND'}
+ $container=$raw|ConvertFrom-Json
+ if($container.Name -ne '/ola-zbook-local' -or $container.Config.Image -ne 'ola-zbook-local:test'){
+  throw 'TARGET_IMAGE_MISMATCH'
+ }
+ if($container.HostConfig.Privileged -or $container.HostConfig.NetworkMode -eq 'host'){
+  throw 'UNSAFE_CONTAINER_CONFIGURATION'
+ }
+ $binding=$container.HostConfig.PortBindings.'8000/tcp'
+ if(!$binding -or @($binding).Count -ne 1 -or
+    $binding[0].HostIp -ne '127.0.0.1' -or
+    $binding[0].HostPort -ne '18080'){
+  throw 'TARGET_LOOPBACK_BINDING_MISMATCH'
+ }
+ if($id -eq 'docker-unpause-ola' -and $container.State.Status -ne 'paused'){
+  throw 'TARGET_NOT_PAUSED'
+ }
+ if($id -eq 'docker-start-ola' -and $container.State.Status -notin @('created','exited')){
+  throw 'TARGET_NOT_STOPPED'
+ }
+}
 function Execute([string]$id){
  if(!$script:Actions.Contains($id)){throw 'ACTION_NOT_ALLOWLISTED'}
  Audit $id 'STARTED' -1 ''
  try{
+  if($script:Actions[$id].mode -eq 'confirm'){Assert-AllowedMutation $id}
   $v=Run-FixedProcess $script:Actions[$id];Audit $id 'FINISHED' $v.exit_code $v.output
   @{action=$id;status=$(if($v.exit_code -eq 0){'LOCAL_EXECUTED'}else{'COMMAND_FAILED'});exit_code=$v.exit_code;output=$v.output;scope='ZBOOK_LOCAL';production='NOT_VERIFIED'}
  }catch{
