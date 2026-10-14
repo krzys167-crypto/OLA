@@ -1,0 +1,1 @@
+{"id":"OLA-LOCAL-PERMIT-v1","operation":"sha256-text","max_utf8_bytes":65536,"ttl_seconds":300,"approver_role":"owner","executor_role":"executor","external_effects":false,"production_allowed":false}

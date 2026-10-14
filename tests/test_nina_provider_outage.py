@@ -9,7 +9,7 @@ from app.main import app
 from app.models import ApiKey, Tenant
 
 
-def test_real_llm_connection_failure_returns_block_with_recorded_evidence(monkeypatch):
+def test_real_llm_connection_failure_returns_block_with_recorded_evidence(monkeypatch, local_binding_source):
     tenant_id, key = str(uuid.uuid4()), "test-run-" + uuid.uuid4().hex
     with SessionLocal() as db:
         db.add(Tenant(id=tenant_id, name="provider_" + tenant_id))
@@ -26,7 +26,7 @@ def test_real_llm_connection_failure_returns_block_with_recorded_evidence(monkey
     monkeypatch.setattr(httpx, "post", down)
     client = TestClient(app)
     result = client.post("/nina-run", headers={"X-API-Key": key},
-                         json={"task": "17 * 23", "requested_tools": ["safe_expression"]})
+                         json={"task": "17 * 23", "requested_tools": ["safe_expression", "local_mcp_tool_registry.sha256"]})
     assert result.status_code == 200
     body = result.json()
     assert body["status"] == "BLOCK"

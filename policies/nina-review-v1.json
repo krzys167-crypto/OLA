@@ -1,0 +1,1 @@
+{"id":"OLA-NINA-REVIEW-v1","operation":"nina-run","allowed_tools":["safe_expression","local_mcp_tool_registry.sha256"],"execution_authorization":"registered-capabilities","human_scope":"review-result","approval_ttl_seconds":900,"production_allowed":false}

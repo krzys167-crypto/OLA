@@ -78,7 +78,9 @@ jobs:
           curl --fail --silent http://127.0.0.1:11434/api/tags > ollama-models.json
 
       - name: Build OLA
-        run: docker build --tag ola-nina-ollama --file Dockerfile .
+        run: |
+          python3 scripts/build_source_manifest.py
+          docker build --tag ola-nina-ollama --file Dockerfile .
 
       - name: Start OLA
         shell: bash
@@ -136,7 +138,7 @@ jobs:
           task="Calculate 17 * 23 and return the exact verified result 391."
           request_body={
               "task":task,
-              "requested_tools":["safe_expression"],
+              "requested_tools":["safe_expression", "local_mcp_tool_registry.sha256"],
               "human_approved":False,
               "human_actor":"ci-machine",
               "human_reason":"human confirmation intentionally left pending in CI",

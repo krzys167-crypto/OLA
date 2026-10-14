@@ -21,7 +21,7 @@ def test_standalone_verifier_blocks_tampered_evidence():
         db.add(Tenant(id=tenant_id, name="tamper-proof-test"))
         db.commit()
 
-    runtime = run_agent_task(tenant_id, TASK)
+    runtime = run_agent_task(tenant_id, TASK, allowed_tools=("safe_expression", "local_mcp_tool_registry.sha256"))
     assert runtime["status"] == "VERIFIED", runtime
 
     source_db = os.environ["OLA_EG_DB_PATH"]

@@ -49,7 +49,7 @@ def evaluate_policy(*, nina_status: str, igor_status: str, evidence_count: int,
 def build_decision_report(*, task_id: str, run_id: str, task: str, nina: dict,
                           igor: dict, replay: dict | list, human_gate: dict,
                           evidence_ids: list[str], human_approved: bool,
-                          human_actor: str, human_reason: str) -> dict:
+                          human_actor: str, human_reason: str, execution_binding: dict | None = None) -> dict:
     if isinstance(replay, dict):
         replay_status = str(replay.get("status", "UNKNOWN"))
     elif isinstance(replay, list):
@@ -87,6 +87,8 @@ def build_decision_report(*, task_id: str, run_id: str, task: str, nina: dict,
             "reason": human_reason,
         },
     }
+    if execution_binding is not None:
+        body["execution_binding"] = execution_binding
     canonical = canonical_json(body)
     body["report_sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return body

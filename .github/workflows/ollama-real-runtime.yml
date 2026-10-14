@@ -62,7 +62,9 @@ jobs:
           PY
 
       - name: Build OLA image
-        run: docker build --tag ola-ollama-e2e --file Dockerfile .
+        run: |
+          python3 scripts/build_source_manifest.py
+          docker build --tag ola-ollama-e2e --file Dockerfile .
 
       - name: Start OLA against live Ollama
         shell: bash
@@ -125,7 +127,7 @@ jobs:
           task="Calculate 17 * 23 and return the exact verified result 391."
           req=urllib.request.Request(
               "http://127.0.0.1:8000/agent-run",
-              data=json.dumps({"task":task}).encode(),
+              data=json.dumps({"task":task,"requested_tools":["safe_expression","local_mcp_tool_registry.sha256"]}).encode(),
               headers={"Content-Type":"application/json","X-API-Key":raw_key},
               method="POST",
           )

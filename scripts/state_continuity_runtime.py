@@ -50,7 +50,7 @@ def main():
     if args.inspect:
         print(json.dumps({"tenant_id": tenant, **chain_snapshot(tenant)}, sort_keys=True))
         return
-    result = run_agent_task(tenant, args.task)
+    result = run_agent_task(tenant, args.task, allowed_tools=("safe_expression", "local_mcp_tool_registry.sha256"))
     if result.get("status") != "VERIFIED":
         raise SystemExit(json.dumps({"tenant_id": tenant, "result": result}, sort_keys=True))
     print(json.dumps({

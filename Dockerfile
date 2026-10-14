@@ -18,6 +18,10 @@ RUN python3.13 -m venv /opt/venv     && python -m pip install --no-cache-dir --u
     && rm -f /opt/venv/bin/pip /opt/venv/bin/pip3 /opt/venv/bin/pip3.13
 
 COPY app ./app
+COPY policies ./policies
+COPY source-manifest.json ./source-manifest.json
+ENV OLA_SOURCE_MODE=build-inventory
+RUN python -c "from app.execution_binding import capture_source; s=capture_source(); print(s); assert s['status'] == 'LOCAL'"
 COPY scripts ./scripts
 COPY tests ./tests
 COPY web ./web

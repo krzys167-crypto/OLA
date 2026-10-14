@@ -109,3 +109,5 @@ if __name__ == "__main__":
 *.flf
 #Test results file
 TestResults.xml
+# Generated from clean Git source before container builds
+/source-manifest.json

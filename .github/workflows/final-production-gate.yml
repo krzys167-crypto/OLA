@@ -213,7 +213,9 @@ jobs:
           done
 
       - name: Build release image
-        run: docker build -t ola-final:${{ steps.target.outputs.sha }} .
+        run: |
+          python3 scripts/build_source_manifest.py
+          docker build -t ola-final:${{ steps.target.outputs.sha }} .
 
       - name: Export release image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

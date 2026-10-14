@@ -1,17 +1,26 @@
 #!/usr/bin/env python3
-"""Independent verifier for an OLA decision report artifact."""
+"""Local checksum inspection of a legacy OLA report; not execution attestation."""
 import argparse
 import hashlib
 import json
 import sys
 
 def canonical_json(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def unique_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
 
 
 def verify(path: str) -> bool:
     with open(path, encoding="utf-8") as handle:
-        report = json.load(handle)
+        report = json.load(handle, object_pairs_hook=unique_pairs)
     claimed = report.get("report_sha256")
     if not claimed:
         return False
@@ -25,10 +34,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("report")
     args = parser.parse_args()
-    if not verify(args.report):
+    try:
+        valid = verify(args.report)
+    except (OSError, ValueError, TypeError, AttributeError):
+        valid = False
+    if not valid:
         print("DECISION_REPORT=BLOCK")
         return 1
-    print("DECISION_REPORT=VERIFIED")
+    print("DECISION_REPORT=LOCAL")
+    print("EXECUTION_ASSURANCE=UNKNOWN")
     return 0
 
 

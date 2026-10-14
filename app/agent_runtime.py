@@ -11,6 +11,7 @@ from sqlalchemy import select
 from .database import SessionLocal
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
 from .models import EvidenceRecord
+from .tool_authorization import ToolScope, ToolAuthorizationError
 
 
 AGENT_ROLES = [
@@ -202,7 +203,11 @@ def _invoke_local_deterministic_model(agent, task, context):
     }
 
 
-def _execute_agent(agent, tenant_id, task, previous_output, execution):
+def _execute_agent(agent, tenant_id, task, previous_output, execution, scope):
+    if agent == "codeact":
+        scope.require("safe_expression", tenant_id, task)
+    elif agent == "mcp_tool_use":
+        scope.require("local_mcp_tool_registry.sha256", tenant_id, task)
     context = {
         "task": task,
         "previous_output": previous_output,
@@ -210,6 +215,7 @@ def _execute_agent(agent, tenant_id, task, previous_output, execution):
     }
     model = _invoke_llm(agent, task, context) or _invoke_local_deterministic_model(agent, task, context)
     if agent == "codeact":
+        scope.require("safe_expression", tenant_id, task)
         tool_output = _safe_expression(task)
         result = {"capability": "executed_safe_expression", "tool": "safe_expression", "tool_output": tool_output, "result": f"safe execution returned {tool_output}"}
     elif agent == "react":
@@ -219,6 +225,7 @@ def _execute_agent(agent, tenant_id, task, previous_output, execution):
         data = _run_rag(tenant_id, task)
         result = {"capability": "retrieved_prior_evidence", "tool": "evidence_retriever", "tool_output": json.dumps(data, sort_keys=True), "result": data["result"]}
     elif agent == "mcp_tool_use":
+        scope.require("local_mcp_tool_registry.sha256", tenant_id, task)
         value = _mcp_tool_call("sha256", {"value": previous_output.get("tool_output", task)})
         result = {"capability": "invoked_tool", "tool": "local_mcp_tool_registry.sha256", "tool_output": value, "result": "invoked a registered tool through the tool-use boundary"}
     elif agent == "self_reflection":
@@ -247,7 +254,7 @@ def _execute_agent(agent, tenant_id, task, previous_output, execution):
     return result
 
 
-def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution):
+def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution, scope):
     agent_instance_id = str(uuid.uuid4())
     context = {
         "run_id": run_id,
@@ -264,7 +271,8 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
         "context_digest": _digest(canonical_json(context)),
         "task": task,
         "input_digest": _digest(json.dumps(previous_output, sort_keys=True)),
-        **_execute_agent(agent, tenant_id, task, previous_output, execution),
+        **_execute_agent(agent, tenant_id, task, previous_output, execution, scope),
+        "authorized_tools": sorted(scope.allowed),
         "status": "VERIFIED",
         "llm_required": os.getenv("OLA_LLM_MODE", "deterministic") == "required",
     }
@@ -275,23 +283,28 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
     return record["id"], output
 
 
-def run_agent_task(tenant_id, task):
+def run_agent_task(tenant_id, task, *, allowed_tools=()):
     run_id = str(uuid.uuid4())
     evidence_ids = []
     execution = []
     previous_output = {"task": task}
+    scope = None
     for agent in AGENT_ROLES:
         try:
-            evidence_id, output = _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution)
+            if scope is None:
+                scope = ToolScope.create(tenant_id, task, allowed_tools)
+                scope.preflight()
+            evidence_id, output = _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution, scope)
         except (httpx.HTTPError, RuntimeError, ValueError, TimeoutError, LookupError, json.JSONDecodeError) as exc:
             # Never fall back silently to a deterministic model when real LLM is required.
             # Preserve partial evidence, but mark the entire run BLOCK.
             from .main import append_record
+            reason_code = "TOOL_SCOPE_DENIED" if isinstance(exc, ToolAuthorizationError) else "MODEL_OR_TOOL_UNAVAILABLE"
             failure = append_record(tenant_id, "runtime.blocked", {
                 "run_id": run_id,
                 "agent": agent,
                 "status": "BLOCK",
-                "reason_code": "MODEL_OR_TOOL_UNAVAILABLE",
+                "reason_code": reason_code,
                 "error_type": type(exc).__name__,
                 "completed_agents": len(execution),
             })
@@ -301,7 +314,7 @@ def run_agent_task(tenant_id, task):
                 "task": task,
                 "final_result": None,
                 "status": "BLOCK",
-                "reason": "MODEL_OR_TOOL_UNAVAILABLE",
+                "reason": reason_code,
                 "agents": AGENT_ROLES,
                 "evidence_count": len(evidence_ids),
                 "evidence_ids": evidence_ids,

@@ -18,7 +18,8 @@ from playwright.sync_api import sync_playwright
 
 WORK = Path(tempfile.mkdtemp(prefix="aurora-browser-e2e-"))
 os.environ['OLA_EG_DB_PATH'] = str(WORK / 'ola-e2e.db')
-os.environ['OLA_RUNTIME_COMMIT'] = 'AURORA_E2E_COMMIT'
+import subprocess
+os.environ['OLA_RUNTIME_COMMIT'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
 os.environ['OLA_LLM_MODE'] = 'deterministic'
 os.environ['OLA_LLM_PROVIDER'] = 'openai'
 os.environ.pop('OPENAI_API_KEY', None)
@@ -156,7 +157,7 @@ def run():
             page.screenshot(path=str(OUT/'aurora-approval-failure.png'), animations='disabled')
             raise AssertionError('Human approval E2E failure: '+json.dumps(diagnostic)) from exc
         approval=json.loads(page.locator('#approvalResult').text_content())
-        assert approval['status']=='VERIFIED',approval
+        assert approval['status']=='APPROVED' and approval['assurance']=='UNKNOWN',approval
         assert approval['approved_tip_hash']==run['tip_hash']
 
         # Run explorer reads stored hashes + independent replay, not fake stats.

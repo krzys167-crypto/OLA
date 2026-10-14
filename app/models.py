@@ -43,3 +43,14 @@ class StripeEvent(Base):
     run_id = Column(String(36), nullable=True)
     task = Column(Text, nullable=True)
     result_json = Column(Text, nullable=True)
+
+
+class ExecutionPermit(Base):
+    __tablename__ = "execution_permits"
+    id = Column(String(36), primary_key=True)
+    tenant_id = Column(String(36), nullable=False, index=True)
+    subject_json = Column(Text, nullable=False)
+    subject_digest = Column(String(64), nullable=False)
+    state = Column(String(16), nullable=False)
+    approval_json = Column(Text, nullable=True)
+    receipt_json = Column(Text, nullable=True)

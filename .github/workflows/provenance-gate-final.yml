@@ -23,7 +23,9 @@ jobs:
           persist-credentials: false
 
       - name: Build deployment image
-        run: docker build --tag ola:${GITHUB_SHA} .
+        run: |
+          python3 scripts/build_source_manifest.py
+          docker build --tag ola:${GITHUB_SHA} .
 
       - name: Start deployment image with source provenance
         run: |
@@ -59,7 +61,7 @@ jobs:
           db.execute("INSERT INTO api_keys(id, tenant_id, key_hash) VALUES (?, ?, ?)", (str(uuid.uuid4()), tenant_id, key_hash))
           db.commit(); db.close()
           task = os.environ["EXPECTED_TASK"]
-          req = urllib.request.Request("http://127.0.0.1:8000/agent-run", data=json.dumps({"task": task}).encode(), headers={"Content-Type":"application/json", "X-API-Key":raw_key}, method="POST")
+          req = urllib.request.Request("http://127.0.0.1:8000/agent-run", data=json.dumps({"task": task,"requested_tools":["safe_expression","local_mcp_tool_registry.sha256"]}).encode(), headers={"Content-Type":"application/json", "X-API-Key":raw_key}, method="POST")
           with urllib.request.urlopen(req, timeout=10) as response:
               result = json.load(response)
           assert result["status"] == "VERIFIED", result
@@ -98,7 +100,7 @@ jobs:
           db.execute("INSERT INTO api_keys(id, tenant_id, key_hash) VALUES (?, ?, ?)", (str(uuid.uuid4()), tenant_id, key_hash))
           db.commit(); db.close()
           task = os.environ["EXPECTED_TASK"]
-          req = urllib.request.Request("http://127.0.0.1:8000/agent-run", data=json.dumps({"task": task}).encode(), headers={"Content-Type":"application/json", "X-API-Key":raw_key}, method="POST")
+          req = urllib.request.Request("http://127.0.0.1:8000/agent-run", data=json.dumps({"task": task,"requested_tools":["safe_expression","local_mcp_tool_registry.sha256"]}).encode(), headers={"Content-Type":"application/json", "X-API-Key":raw_key}, method="POST")
           with urllib.request.urlopen(req, timeout=10) as response:
               result = json.load(response)
           assert result["status"] == "VERIFIED", result
@@ -150,7 +152,7 @@ jobs:
           db.execute("INSERT INTO api_keys(id, tenant_id, key_hash) VALUES (?, ?, ?)", (str(uuid.uuid4()), tenant_id, key_hash))
           db.commit(); db.close()
           task = os.environ["EXPECTED_TASK"]
-          req = urllib.request.Request("http://127.0.0.1:8000/agent-run", data=json.dumps({"task": task}).encode(), headers={"Content-Type":"application/json", "X-API-Key":raw_key}, method="POST")
+          req = urllib.request.Request("http://127.0.0.1:8000/agent-run", data=json.dumps({"task": task,"requested_tools":["safe_expression","local_mcp_tool_registry.sha256"]}).encode(), headers={"Content-Type":"application/json", "X-API-Key":raw_key}, method="POST")
           with urllib.request.urlopen(req, timeout=10) as response:
               result = json.load(response)
           assert result["status"] == "VERIFIED", result

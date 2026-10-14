@@ -65,14 +65,14 @@ def test_repeated_audit_verifies_complete_chain_not_sliced_new_events():
     assert overview["evidence"]["status"] == "VERIFIED"
 
 
-def test_run_replay_is_tenant_scoped_and_not_claimed_as_production():
+def test_run_replay_is_tenant_scoped_and_not_claimed_as_production(local_binding_source):
     _, a_key = seed()
     _, b_key = seed()
     client = TestClient(app)
     created = client.post(
         "/nina-run",
         headers={"X-API-Key": a_key},
-        json={"task": "17 * 23", "requested_tools": ["safe_expression"]},
+        json={"task": "17 * 23", "requested_tools": ["safe_expression", "local_mcp_tool_registry.sha256"]},
     )
     assert created.status_code == 200
     run_id = created.json()["run_id"]

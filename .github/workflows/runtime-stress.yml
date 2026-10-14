@@ -18,7 +18,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Build runtime image
-        run: docker build -t ola-stress .
+        run: |
+          python3 scripts/build_source_manifest.py
+          docker build -t ola-stress .
       - name: Start runtime
         shell: bash
         run: |

@@ -46,7 +46,9 @@ jobs:
           python -m pip install -r requirements.txt
           OLA_LLM_MODE=deterministic python -m pytest -q
       - name: Build exact-source runtime
-        run: docker build --tag "ola-product:${SOURCE_SHA}" .
+        run: |
+          python3 scripts/build_source_manifest.py
+          docker build --tag "ola-product:${SOURCE_SHA}" .
       - name: Start runtime
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -87,7 +89,7 @@ jobs:
           db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tid,hash_api_key(key)))
           db.commit(); db.close()
           task="Calculate 17 * 23 and return the verified result."
-          req=urllib.request.Request("http://127.0.0.1:8000/agent-run",data=json.dumps({"task":task}).encode(),headers={"Content-Type":"application/json","X-API-Key":key},method="POST")
+          req=urllib.request.Request("http://127.0.0.1:8000/agent-run",data=json.dumps({"task":task,"requested_tools":["safe_expression","local_mcp_tool_registry.sha256"]}).encode(),headers={"Content-Type":"application/json","X-API-Key":key},method="POST")
           with urllib.request.urlopen(req,timeout=120) as r: d=json.load(r)
           assert d["status"]=="VERIFIED",d
           assert d["final_result"]=="391",d
@@ -110,7 +112,7 @@ jobs:
           db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tid,"nina-chain"))
           db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tid,hash_api_key(key)))
           db.commit(); db.close()
-          req=urllib.request.Request("http://127.0.0.1:8000/nina-run",data=json.dumps({"task":"Calculate 17 * 23 and return the verified result.","requested_tools":["safe_expression"],"human_approved":False}).encode(),headers={"Content-Type":"application/json","X-API-Key":key},method="POST")
+          req=urllib.request.Request("http://127.0.0.1:8000/nina-run",data=json.dumps({"task":"Calculate 17 * 23 and return the verified result.","requested_tools":["safe_expression", "local_mcp_tool_registry.sha256"],"human_approved":False}).encode(),headers={"Content-Type":"application/json","X-API-Key":key},method="POST")
           with urllib.request.urlopen(req,timeout=120) as r: d=json.load(r)
           assert d["nina"]["status"]=="VERIFIED",d
           assert d["igor"]["status"]=="VERIFIED",d

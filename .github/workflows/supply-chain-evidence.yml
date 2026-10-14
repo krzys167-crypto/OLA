@@ -91,7 +91,9 @@ jobs:
       - name: Build immutable local image
         env:
           IMAGE: ola-supply-chain:${{ github.sha }}
-        run: docker build --pull --tag "$IMAGE" --file Dockerfile .
+        run: |
+          python3 scripts/build_source_manifest.py
+          docker build --pull --tag "$IMAGE" --file Dockerfile .
 
       - name: Trivy filesystem and config report
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

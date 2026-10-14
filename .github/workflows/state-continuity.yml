@@ -23,7 +23,9 @@ jobs:
       - name: Assert exact candidate source checkout
         run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
       - name: Build runtime image
-        run: docker build -t ola-state-continuity .
+        run: |
+          python3 scripts/build_source_manifest.py
+          docker build -t ola-state-continuity .
       - name: Start runtime with persistent volume
         shell: bash
         run: |

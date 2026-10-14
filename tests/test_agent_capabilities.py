@@ -14,7 +14,7 @@ def _tenant():
 
 
 def test_six_agents_perform_distinct_runtime_capabilities():
-    result = run_agent_task(_tenant(), "calculate 2+3 and preserve the result")
+    result = run_agent_task(_tenant(), "calculate 2+3 and preserve the result", allowed_tools=("safe_expression", "local_mcp_tool_registry.sha256"))
     assert result["status"] == "VERIFIED"
     capabilities = {item["agent"]: item["capability"] for item in result["execution"]}
 
@@ -27,6 +27,6 @@ def test_six_agents_perform_distinct_runtime_capabilities():
 
 
 def test_agent_results_are_not_deterministic_placeholder_strings():
-    result = run_agent_task(_tenant(), "calculate 2+3")
+    result = run_agent_task(_tenant(), "calculate 2+3", allowed_tools=("safe_expression", "local_mcp_tool_registry.sha256"))
     assert all("deterministic runtime contract" not in item["result"] for item in result["execution"])
     assert result["execution"][0]["tool_output"] == "5"

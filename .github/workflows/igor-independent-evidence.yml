@@ -106,6 +106,7 @@ jobs:
       - name: Build exact-source runtime for independent replay
         run: |
           python -m pip install -r requirements.txt
+          python3 scripts/build_source_manifest.py
           docker build --tag "ola-igor:${SOURCE_COMMIT}" .
 
       - name: Start runtime
@@ -129,7 +130,7 @@ jobs:
           db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tenant_id,hash_api_key(raw_key)))
           db.commit(); db.close()
           task="Calculate 17 * 23 and return the verified result."
-          req=urllib.request.Request("http://127.0.0.1:8000/agent-run",data=json.dumps({"task":task}).encode(),headers={"Content-Type":"application/json","X-API-Key":raw_key},method="POST")
+          req=urllib.request.Request("http://127.0.0.1:8000/agent-run",data=json.dumps({"task":task,"requested_tools":["safe_expression","local_mcp_tool_registry.sha256"]}).encode(),headers={"Content-Type":"application/json","X-API-Key":raw_key},method="POST")
           with urllib.request.urlopen(req,timeout=15) as response: d=json.load(response)
           assert d["status"]=="VERIFIED"
           assert d["task"]==task

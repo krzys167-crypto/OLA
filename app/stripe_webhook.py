@@ -193,7 +193,7 @@ def process_checkout_event(payload: bytes, signature_header: str) -> dict:
             },
         )
 
-        runtime = run_agent_task(tenant_id, task)
+        runtime = run_agent_task(tenant_id, task, allowed_tools=("safe_expression", "local_mcp_tool_registry.sha256"))
 
         result = {
             "status": "COMPLETED" if runtime.get("status") == "VERIFIED" else "EXECUTION_BLOCKED",

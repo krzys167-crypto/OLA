@@ -2,6 +2,8 @@ import hashlib
 import os
 import uuid
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from app.api_key_crypto import hash_api_key
@@ -15,9 +17,8 @@ def test_nina_run_route_exists():
     assert "/nina-run" in routes
 
 
-def test_nina_run_executes_chain_but_does_not_self_approve():
-    commit = "TEST_NINA_E2E_COMMIT"
-    os.environ["OLA_RUNTIME_COMMIT"] = commit
+def test_nina_run_executes_chain_but_does_not_self_approve(local_binding_source):
+    commit = local_binding_source["sha"]
 
     tenant_id = str(uuid.uuid4())
     api_key = "nina-test-" + uuid.uuid4().hex
@@ -36,7 +37,7 @@ def test_nina_run_executes_chain_but_does_not_self_approve():
         headers={"X-API-Key": api_key},
         json={
             "task": "Calculate 17 * 23 and return the verified result.",
-            "requested_tools": ["safe_expression"],
+            "requested_tools": ["safe_expression", "local_mcp_tool_registry.sha256"],
             "human_approved": True,
             "human_actor": "e2e-human",
             "human_reason": "approved after independent verification",
@@ -62,4 +63,13 @@ def test_nina_run_executes_chain_but_does_not_self_approve():
     assert body["status_fields"]["EXECUTION_ALLOWED"] == "REVIEW", body
     assert body["status"] == "REVIEW", body
     assert body["replay_verification"]["status"] == "VERIFIED", body
-    assert len(body["replay"]) == 7
+    assert len(body["replay"]) == 8
+
+    v2 = body["decision_report_v2"]
+    assert v2["assurance"]["status"] == "UNKNOWN"
+    assert v2["production_eligible"] is False
+    assert v2["bindings"]["source_sha"] == commit
+    assert len(v2["bindings"]["policy_digest"]) == 64
+    assert v2["bindings"]["human_approval_digest"] is None
+    from app.decision_report_v2 import inspect_decision_report_v2
+    assert inspect_decision_report_v2(v2)["integrity"] == "LOCAL"

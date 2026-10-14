@@ -21,6 +21,9 @@ def test_independent_decision_report_verifier_blocks_tamper(tmp_path):
     path.write_text(json.dumps(report), encoding="utf-8")
     good = subprocess.run([sys.executable, "scripts/verify_decision_report.py", str(path)], capture_output=True, text=True)
     assert good.returncode == 0
+    assert "DECISION_REPORT=LOCAL" in good.stdout
+    assert "VERIFIED" not in good.stdout
+    assert "EXECUTION_ASSURANCE=UNKNOWN" in good.stdout
 
     report["policy"]["status"] = "VERIFIED"
     path.write_text(json.dumps(report), encoding="utf-8")

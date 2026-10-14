@@ -70,7 +70,8 @@ def test_two_distinct_events_for_same_paid_session_run_only_once(monkeypatch):
     tenant = _seed(monkeypatch)
     session = "cs_test_" + uuid.uuid4().hex
     calls = []
-    def execute(tenant_id, task):
+    def execute(tenant_id, task, *, allowed_tools):
+        assert set(allowed_tools) == {"safe_expression", "local_mcp_tool_registry.sha256"}
         calls.append((tenant_id, task))
         return {"status": "VERIFIED", "run_id": "run-a", "final_result": "ok",
                 "evidence_ids": []}
@@ -92,7 +93,7 @@ def test_failed_first_evidence_write_stays_failed_and_retries_block(monkeypatch)
     def broken(*args):
         raise RuntimeError("temporary storage failure")
     monkeypatch.setattr(wh, "_append_evidence", broken)
-    monkeypatch.setattr(wh, "run_agent_task", lambda *args: pytest.fail("must not run"))
+    monkeypatch.setattr(wh, "run_agent_task", lambda *args, **kwargs: pytest.fail("must not run"))
     with pytest.raises(RuntimeError):
         wh.process_checkout_event(*event)
     with SessionLocal() as db:
@@ -107,7 +108,7 @@ def test_failed_first_evidence_write_stays_failed_and_retries_block(monkeypatch)
 def test_blocked_agent_run_never_delivered_as_completed(monkeypatch):
     tenant = _seed(monkeypatch)
     monkeypatch.setattr(wh, "run_agent_task",
-                        lambda *args: {"status": "BLOCK", "run_id": "run-b",
+                        lambda *args, **kwargs: {"status": "BLOCK", "run_id": "run-b",
                                        "final_result": None, "evidence_ids": []})
     result = wh.process_checkout_event(*_event(tenant, "cs_test_"+uuid.uuid4().hex,
                                               "evt_"+uuid.uuid4().hex))
@@ -122,7 +123,8 @@ def test_concurrent_event_claims_cannot_double_execute(monkeypatch):
     tenant = _seed(monkeypatch)
     session = "cs_test_" + uuid.uuid4().hex
     calls = []
-    def execute(*args):
+    def execute(*args, allowed_tools):
+        assert set(allowed_tools) == {"safe_expression", "local_mcp_tool_registry.sha256"}
         calls.append(args)
         return {"status": "VERIFIED", "run_id": "run-c", "final_result": "ok", "evidence_ids": []}
     monkeypatch.setattr(wh, "run_agent_task", execute)
@@ -150,7 +152,8 @@ def test_stripe_session_claim_rejects_cross_tenant_signed_replay(monkeypatch):
     second_tenant = _seed(monkeypatch)
     session = "cs_test_" + uuid.uuid4().hex
     executions = []
-    def execute(tenant_id, task):
+    def execute(tenant_id, task, *, allowed_tools):
+        assert set(allowed_tools) == {"safe_expression", "local_mcp_tool_registry.sha256"}
         executions.append(tenant_id)
         return {"status": "VERIFIED", "run_id": "run-safe",
                 "final_result": "ok", "evidence_ids": []}

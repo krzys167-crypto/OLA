@@ -22,7 +22,7 @@ def _tenant():
 
 def test_six_agents_produce_verified_final_result_with_external_verifier():
     tenant_id = _tenant()
-    result = run_agent_task(tenant_id, REAL_TASK)
+    result = run_agent_task(tenant_id, REAL_TASK, allowed_tools=("safe_expression", "local_mcp_tool_registry.sha256"))
 
     assert result["status"] == "VERIFIED", result
     assert result["task"] == REAL_TASK

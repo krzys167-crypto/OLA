@@ -21,7 +21,7 @@ jobs:
           python-version: "3.13"
       - run: python -m pip install -r requirements.txt
       - name: Decision policy tests
-        run: python -m pytest -q tests/test_decision_report.py tests/test_decision_report_verifier.py tests/test_nina_igor_chain.py
+        run: python -m pytest -q tests/test_decision_report.py tests/test_decision_report_v2.py tests/test_nina_run_endpoint_contract.py tests/test_decision_report_verifier.py tests/test_nina_igor_chain.py tests/test_execution_binding.py tests/test_tool_authorization.py tests/test_execution_permit.py tests/test_human_approval_integrity.py tests/test_atomic_human_gate.py
       - name: Static verifier smoke test
         run: |
           python - <<'PY'
@@ -32,6 +32,6 @@ jobs:
           with tempfile.NamedTemporaryFile("w+",suffix=".json") as f:
               json.dump(body,f); f.flush()
               p=subprocess.run(["python","scripts/verify_decision_report.py",f.name],capture_output=True,text=True)
-              assert p.returncode==0 and "DECISION_REPORT=VERIFIED" in p.stdout
-          print("DECISION_EVIDENCE_GATE=VERIFIED")
+              assert p.returncode==0 and "DECISION_REPORT=LOCAL" in p.stdout
+          print("DECISION_EVIDENCE_TESTS=PASS")
           PY

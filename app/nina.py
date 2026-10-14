@@ -4,7 +4,7 @@ import uuid
 from .agent_runtime import run_agent_task
 
 
-REGISTERED_TOOLS = ("safe_expression", "local_mcp_tool_registry.sha256")
+from .tool_authorization import REGISTERED_TOOLS
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,7 @@ class NinaOrchestrator:
                 "status": "BLOCK",
                 "reason": decision.reason,
             }
-        runtime = run_agent_task(task.tenant_id, task.task)
+        runtime = run_agent_task(task.tenant_id, task.task, allowed_tools=decision.allowed_tools)
         return {
             "task_id": task.task_id,
             "decision": decision,

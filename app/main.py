@@ -3,6 +3,7 @@ import json
 import os
 import re
 import uuid
+import time
 from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Request
 from starlette.responses import FileResponse
@@ -21,6 +22,8 @@ from .control_plane import get_overview, get_run_detail
 from .human_gate import HumanGate, ReviewDecision
 from .nina_igor import NinaIgorChain
 from .decision_report import build_decision_report
+from .decision_report_v2 import build_decision_report_v2
+from .execution_binding import prepare_binding, capture_source, validate_review_subject, digest, review_state
 from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout, payment_verified
 from .stripe_webhook import process_checkout_event
@@ -335,7 +338,7 @@ def create_agent_run(body: dict, x_api_key: str | None = Header(default=None)):
     task = body.get("task")
     if not task:
         raise HTTPException(status_code=400, detail="task is required")
-    return run_agent_task(tenant_id, task)
+    return run_agent_task(tenant_id, task, allowed_tools=body.get("requested_tools", []))
 
 
 @app.post("/nina-run")
@@ -344,7 +347,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
     task_text = body.get("task")
     if not task_text:
         raise HTTPException(status_code=400, detail="task is required")
-    requested_tools = body.get("requested_tools", ["safe_expression"])
+    requested_tools = body.get("requested_tools", [])
     if not isinstance(requested_tools, list):
         raise HTTPException(status_code=400, detail="requested_tools must be a list")
 
@@ -363,10 +366,22 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
             "status": "BLOCK",
         }
 
+    try:
+        execution_binding = prepare_binding(tenant_id, requester_id, task_text, requested_tools)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # Capture the policy decision before invoking the executor.
+    append_record(tenant_id, "execution.authorization", {
+        "task_id": nina_task.task_id, "execution_binding": execution_binding,
+    })
     runtime = nina.execute(nina_task)
+    source_after = capture_source()
+    if source_after != execution_binding["source"]:
+        append_record(tenant_id, "execution.binding_failed", {"task_id": nina_task.task_id})
+        raise HTTPException(status_code=409, detail="source changed during execution; result blocked")
     run_id = runtime["runtime"]["run_id"]
     execution = runtime["runtime"].get("execution", [])
-    runtime_commit = os.getenv("OLA_RUNTIME_COMMIT")
+    runtime_commit = execution_binding["source"]["sha"]
     provider = execution[0].get("provider") if execution else None
     model = execution[0].get("model") if execution else None
     invocation_type = execution[0].get("invocation_type") if execution else None
@@ -483,6 +498,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         human_approved=review.approved,
         human_actor=review.actor,
         human_reason=review.reason,
+        execution_binding=execution_binding,
     )
 
     replay_integrity_status = (
@@ -500,6 +516,12 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
     execution_allowed_status = NinaIgorChain.derive_status(status_fields)
     status_fields["EXECUTION_ALLOWED"] = execution_allowed_status
     derived_status = execution_allowed_status
+    report_v2 = build_decision_report_v2(
+        legacy_report=report, source_sha=runtime_commit,
+        evidence_root=record_dicts[-1]["record_hash"] if record_dicts else None,
+        policy_digest=execution_binding["policy_digest"], human_approval_digest=None,
+    )
+    review_issued_at = int(time.time())
     candidate_record = append_record(
         tenant_id,
         "decision.candidate",
@@ -508,6 +530,10 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
             "requester_id": requester_id,
             "status_fields": status_fields,
             "candidate_status": derived_status,
+            "decision_report_v2": report_v2,
+            "execution_binding": execution_binding,
+            "review_issued_at": review_issued_at,
+            "review_expires_at": review_issued_at + 900,
         },
     )
     tip_hash = candidate_record["record_hash"]
@@ -525,6 +551,9 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         "policy": report["policy"],
         "status_fields": status_fields,
         "decision_report": report,
+        "decision_report_v2": report_v2,
+        "review_scope": "review-result",
+        "review_expires_at": review_issued_at + 900,
         "status": derived_status,
     }
 
@@ -596,6 +625,7 @@ def approve_nina_run(
                 continue
             if isinstance(payload, dict) and payload.get("run_id") == run_id:
                 candidate = payload
+                candidate_previous_hash = row.prev_hash
                 break
 
         if candidate is None:
@@ -622,14 +652,34 @@ def approve_nina_run(
         if derived != "REVIEW" or NinaIgorChain.derive_status(approved_fields) != "VERIFIED":
             raise HTTPException(status_code=409, detail="candidate is not eligible for human approval")
 
+        bound_report = candidate.get("decision_report_v2", {})
+        if bound_report.get("bindings", {}).get("evidence_root") != candidate_previous_hash:
+            raise HTTPException(status_code=409, detail="report evidence root differs from candidate predecessor")
+        if body.get("scope") != "review-result":
+            raise HTTPException(status_code=400, detail="scope must be review-result")
+        try:
+            binding = validate_review_subject(candidate, approver_tenant_id, requester_id,
+                                              body.get("report_sha256"))
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         approval_payload = {
+            "tenant_id": approver_tenant_id,
             "run_id": run_id,
             "tip_hash": tip_hash,
             "requester_id": requester_id,
             "approver_id": approver_id,
             "reason": str(body.get("reason", "")),
-            "status": "VERIFIED",
+            "status": "APPROVED",
+            "assurance": "UNKNOWN",
+            "scope": "review-result",
+            "report_sha256": body["report_sha256"],
+            "source_sha": binding["source"]["sha"],
+            "policy_digest": binding["policy_digest"],
+            "parameters_digest": binding["parameters_digest"],
+            "issued_at": int(time.time()),
+            "expires_at": candidate["review_expires_at"],
         }
+        approval_digest = digest(approval_payload)
         payload_json = canonical_json(approval_payload)
         record_id = str(uuid.uuid4())
         new_seq = rows[-1].seq + 1
@@ -650,7 +700,13 @@ def approve_nina_run(
         db.commit()
 
     return {
-        "status": "VERIFIED",
+        "status": "APPROVED",
+        "assurance": "UNKNOWN",
+        "scope": "review-result",
+        "report_sha256": body["report_sha256"],
+        "human_approval_digest": approval_digest,
+        "expires_at": approval_payload["expires_at"],
+        "production_eligible": False,
         "run_id": run_id,
         "tip_hash": record_hash,
         "approved_tip_hash": tip_hash,
@@ -658,6 +714,61 @@ def approve_nina_run(
         "record_type": "human.approval",
         "approver_id": approver_id,
     }
+
+
+@app.get("/nina-run/{run_id}/approval")
+def get_nina_review(run_id: str, authorization: str | None = Header(default=None)):
+    tenant_id, _ = bearer_identity(authorization)
+    with SessionLocal() as db:
+        rows = db.scalars(select(EvidenceRecord).where(
+            EvidenceRecord.tenant_id == tenant_id).order_by(EvidenceRecord.seq.asc())).all()
+        chain = [{name: getattr(row, name) for name in (
+            "id", "tenant_id", "seq", "prev_hash", "record_hash", "record_type",
+            "hash_version", "payload_json")} for row in rows]
+    state, approval_digest = review_state(chain, run_id)
+    return {"status": state, "human_approval_digest": approval_digest,
+            "scope": "review-result", "assurance": "UNKNOWN", "production_eligible": False}
+
+
+@app.post("/nina-run/{run_id}/approval/revoke")
+def revoke_nina_review(run_id: str, body: dict,
+                       authorization: str | None = Header(default=None)):
+    tenant_id, actor_id = bearer_identity(authorization)
+    with SessionLocal() as db:
+        try:
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        except OperationalError as exc:
+            raise HTTPException(status_code=409, detail="revocation transaction busy") from exc
+        rows = db.scalars(select(EvidenceRecord).where(
+            EvidenceRecord.tenant_id == tenant_id).order_by(EvidenceRecord.seq.asc())).all()
+        chain = [{name: getattr(row, name) for name in (
+            "id", "tenant_id", "seq", "prev_hash", "record_hash", "record_type",
+            "hash_version", "payload_json")} for row in rows]
+        if not verify_chain(chain)[0]:
+            raise HTTPException(status_code=409, detail="invalid evidence chain")
+        approvals = [json.loads(row.payload_json) for row in rows
+                     if row.record_type == "human.approval"
+                     and json.loads(row.payload_json).get("run_id") == run_id]
+        if not approvals:
+            raise HTTPException(status_code=404, detail="approval not found")
+        approval = approvals[-1]
+        if approval.get("approver_id") != actor_id:
+            raise HTTPException(status_code=403, detail="only original approver may revoke")
+        approval_digest = digest(approval)
+        if body.get("human_approval_digest") != approval_digest:
+            raise HTTPException(status_code=409, detail="approval digest mismatch")
+        payload = {"run_id": run_id, "human_approval_digest": approval_digest,
+                   "actor_id": actor_id, "revoked_at": int(time.time())}
+        encoded = canonical_json(payload)
+        record_id, seq, previous = str(uuid.uuid4()), rows[-1].seq + 1, rows[-1].record_hash
+        record_hash = compute_record_hash(tenant_id, seq, previous, encoded,
+            record_id=record_id, record_type="human.approval.revoked", hash_version=2)
+        db.add(EvidenceRecord(id=record_id, tenant_id=tenant_id, seq=seq,
+            prev_hash=previous, record_hash=record_hash, record_type="human.approval.revoked",
+            hash_version=2, payload_json=encoded))
+        db.commit()
+    return {"status": "REVOKED", "human_approval_digest": approval_digest,
+            "assurance": "UNKNOWN", "production_eligible": False}
 
 
 @app.post("/stripe/webhook")

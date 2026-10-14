@@ -16,7 +16,7 @@ def test_frontier_baseline_vector():
         db.add(Tenant(id=tenant_id, name="frontier-baseline"))
         db.commit()
 
-    result = run_agent_task(tenant_id, "Calculate 17 * 23 and return the verified result.")
+    result = run_agent_task(tenant_id, "Calculate 17 * 23 and return the verified result.", allowed_tools=("safe_expression", "local_mcp_tool_registry.sha256"))
     assert result["status"] == "VERIFIED"
     assert result["final_result"] == "391"
     assert len(result["execution"]) == 6

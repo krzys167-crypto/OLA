@@ -1,3 +1,6 @@
+import pytest
+from conftest import bound_candidate_fields, review_body
+pytestmark = pytest.mark.usefixtures("local_binding_source")
 """Two valid simultaneous approvers may produce at most one Human Gate approval."""
 import concurrent.futures
 import hashlib
@@ -36,6 +39,7 @@ def _prepare():
     run = "atomic-" + uuid.uuid4().hex
     tip = main.append_record(tenant, "decision.candidate", {
         "run_id": run, "requester_id": requester,
+        **bound_candidate_fields(tenant, requester, run),
         "status_fields": {
             "RUNTIME": "VERIFIED", "EVIDENCE": "VERIFIED",
             "REPLAY_INTEGRITY": "VERIFIED", "POLICY": "VERIFIED",
@@ -66,7 +70,7 @@ def test_simultaneous_approvals_are_atomic_and_never_duplicate(monkeypatch):
         return client.post(
             f"/nina-run/{run}/approve",
             headers={"Authorization": f"Bearer {key}"},
-            json={"tip_hash": tip},
+            json=review_body(tenant, run, tip),
         )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
