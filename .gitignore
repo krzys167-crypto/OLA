@@ -109,3 +109,7 @@ if __name__ == "__main__":
 *.flf
 #Test results file
 TestResults.xml
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
