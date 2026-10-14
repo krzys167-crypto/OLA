@@ -46,3 +46,33 @@ def test_frontend_executes_only_user_selected_registered_actions():
     assert "new Option(" in html
     assert 'localStorage' not in html and 'sessionStorage' not in html
     assert 'innerHTML' not in html
+
+
+
+def test_state_changing_container_controls_verify_exact_immutable_target():
+    bridge = RUNNER.read_text(encoding="utf-8")
+    assert "Assert-AllowedMutation" in bridge
+    assert "TARGET_IMAGE_MISMATCH" in bridge
+    assert "TARGET_LOOPBACK_BINDING_MISMATCH" in bridge
+    assert "UNSAFE_CONTAINER_CONFIGURATION" in bridge
+    assert "ola-zbook-local:test" in bridge
+    assert "127.0.0.1" in bridge
+    assert "18080" in bridge
+    assert "TARGET_NOT_PAUSED" in bridge
+    assert "TARGET_NOT_STOPPED" in bridge
+
+
+def test_authentication_controls_are_independent():
+    html = HTML.read_text(encoding="utf-8")
+    assert 'id="verifyApiKey"' in html
+    assert '/auth/session' in html
+    assert "UWIERZYTELNIONY" in html
+    assert "NIEZWERYFIKOWANY" in html
+    assert "credential" not in html.lower() or "localToken" in html
+    assert "localToken" in html and "apiKey" in html
+    auth = (ROOT / "workstation" / "OLA-Preview-Auth.ps1").read_text(encoding="utf-8")
+    assert "AUTH_NOT_CONFIGURED" in auth
+    assert "KEY_ISSUANCE_FAILED_OR_DUPLICATE_TENANT" in auth
+    assert "docker.exe exec" in auth
+    assert "OLA_API_KEY_PEPPER" in auth
+    assert "no container restart" in auth
