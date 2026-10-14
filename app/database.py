@@ -27,14 +27,21 @@ def ensure_evidence_hash_schema():
     Legacy rows retain hash_version=1; only newly appended rows use v2.
     Caller must retain an external trusted backup/anchor before production GO.
     """
-    with engine.begin() as connection:
-        cols = {row[1] for row in connection.exec_driver_sql(
-            "PRAGMA table_info(evidence_records)"
-        ).fetchall()}
-        if not cols:
-            raise RuntimeError("evidence_records table must exist")
-        if "hash_version" not in cols:
-            connection.exec_driver_sql(
-                "ALTER TABLE evidence_records "
-                "ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1"
-            )
+    with engine.connect() as connection:
+        # Writers from multiple workers must not race to ALTER the same table.
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        try:
+            cols = {row[1] for row in connection.exec_driver_sql(
+                "PRAGMA table_info(evidence_records)"
+            ).fetchall()}
+            if not cols:
+                raise RuntimeError("evidence_records table must exist")
+            if "hash_version" not in cols:
+                connection.exec_driver_sql(
+                    "ALTER TABLE evidence_records "
+                    "ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1"
+                )
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise

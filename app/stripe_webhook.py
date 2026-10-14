@@ -149,16 +149,21 @@ def process_checkout_event(payload: bytes, signature_header: str) -> dict:
         db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         old_events = db.scalars(select(StripeEvent)).all()
         for old in old_events:
-            if old.event_id == event_id:
-                if old.status in {"COMPLETED", "EXECUTION_BLOCKED"} and old.result_json:
-                    return json.loads(old.result_json)
-                raise HTTPException(status_code=409, detail="Stripe event already claimed; manual recovery required")
-            if _event_session_claim(old) == session_id:
-                # A second signed Stripe event may describe the same checkout.
-                # Returning old result for this tenant/session is idempotent.
-                if old.status in {"COMPLETED", "EXECUTION_BLOCKED"} and old.result_json:
-                    return json.loads(old.result_json)
-                raise HTTPException(status_code=409, detail="checkout session already claimed; manual recovery required")
+            if old.event_id == event_id or _event_session_claim(old) == session_id:
+                # Never return a different tenant's receipt or a legacy
+                # unbound result; require explicit operator reconciliation.
+                try:
+                    stored = json.loads(old.result_json) if old.result_json else None
+                except (json.JSONDecodeError, TypeError):
+                    stored = None
+                if not isinstance(stored, dict) or (
+                    stored.get("tenant_id") != tenant_id
+                    or stored.get("checkout_session_id") != session_id
+                ):
+                    raise HTTPException(status_code=409, detail="Stripe claim provenance mismatch; manual recovery required")
+                if old.status in {"COMPLETED", "EXECUTION_BLOCKED"}:
+                    return stored
+                raise HTTPException(status_code=409, detail="checkout already claimed; manual recovery required")
 
         db.add(StripeEvent(
             id=str(uuid.uuid4()),
@@ -194,6 +199,7 @@ def process_checkout_event(payload: bytes, signature_header: str) -> dict:
             "status": "COMPLETED" if runtime.get("status") == "VERIFIED" else "EXECUTION_BLOCKED",
             "event_id": event_id,
             "checkout_session_id": session.get("id"),
+            "tenant_id": tenant_id,
             "payment": "CONFIRMED",
             "ola_status": runtime.get("status", "UNKNOWN"),
             "ola_run_id": runtime.get("run_id"),

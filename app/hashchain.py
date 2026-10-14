@@ -41,6 +41,7 @@ def verify_chain(records):
     expected_seq = 0
     expected_tenant = None
     highest_version = 1
+    seen_ids = set()
     for r in records:
         if not isinstance(r, dict):
             return False, "evidence record is not an object"
@@ -56,6 +57,8 @@ def verify_chain(records):
         if version < highest_version:
             return False, "evidence hash version downgrade"
         highest_version = version
+        if version == 2 and r.get("id") in seen_ids:
+            return False, "duplicate evidence record id"
         try:
             expected = compute_record_hash(
                 r["tenant_id"], r["seq"], r["prev_hash"], r["payload_json"],
@@ -66,6 +69,8 @@ def verify_chain(records):
             return False, "evidence record schema invalid"
         if r.get("record_hash") != expected:
             return False, "record hash mismatch"
+        if version == 2:
+            seen_ids.add(r["id"])
         expected_prev = r["record_hash"]
         expected_seq += 1
     return True, "ok"
