@@ -36,7 +36,7 @@ from typing import Any, Dict, Optional
 
 from ola_pipeline import PipelineConfig
 from ola_pipeline.errors import ConfigError, OlaPipelineError
-from ola_pipeline.igor import Igor, parse_judge
+from ola_pipeline.igor import Igor, judge_prompt_fingerprint, parse_judge
 from ola_pipeline.providers import build_provider
 
 from . import pipeline_bridge as pb
@@ -191,7 +191,9 @@ def enforce(tenant_id: str, surface: str, task: str, output: str, produced_by: O
             try:
                 qualification = pb.judge_qualification(
                     {"provider": j["judge"]["provider"], "model": j["judge"]["model"],
-                     "model_digest": j["judge"]["model_digest"]}, pb.qualification_policy_from_env())
+                     "model_digest": j["judge"]["model_digest"]}, pb.qualification_policy_from_env(),
+                    prompt_fingerprint=judge_prompt_fingerprint(tuple(cfg.quality_requirements),
+                                                                cfg.policy.min_quality_score))
             except pb.PipelineNotConfigured as exc:
                 raise AmbientConfigError(str(exc)) from exc
             if qualification["state"] != "QUALIFIED":

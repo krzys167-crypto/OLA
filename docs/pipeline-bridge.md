@@ -148,8 +148,25 @@ force at the time of the request, and every response carries `judge_qualificatio
   **None of them qualifies**: switching this on today means no result can reach VERIFIED with those judges, which is
   what the measurements say.
 * Off by default, so nothing changes until an operator decides. It is operator configuration, like the key pin: whoever
-  can write the file and the environment can qualify any judge. It binds provider, model and digest, **not** sampling
-  settings (`think`, temperature), and a 47-item toy set says nothing about your own task distribution.
+  can write the file and the environment can qualify any judge. It binds provider, model, digest **and the judge prompt**
+  (next section), **not** sampling settings (`think`, temperature), and a 47-item toy set says nothing about your own task
+  distribution.
+
+### The measurement is bound to the judge prompt
+
+A judge is the model **plus** its prompt, its quality requirements and its acceptance threshold. A measurement of
+`llama3.1:8b` under one prompt says nothing about the same model under another. `judge_eval.py` therefore writes
+`judge_prompt_sha256` (`ola_pipeline.igor.judge_prompt_fingerprint`: system text, instruction text, key layout, the
+requirements in order, `min_quality_score`), and the bridge recomputes the fingerprint of the session **as it actually ran**:
+requirements from the stored judge input, threshold from `final.json` (both sealed by the anchor), and the template is
+proven by rebuilding the prompt from the stored input and requiring its SHA-256 to equal the envelope's `prompt_hash`. A
+qualification file without the field, with another fingerprint, or a session whose prompt cannot be reconstructed is
+`NOT_QUALIFIED`. Consequences: changing `OLA_MIN_QUALITY_SCORE` or `OLA_QUALITY_REQUIREMENTS`, or editing the prompt, invalidates
+every existing qualification until the judge is measured again, and a measurement made with a measurement-only variant
+(`scripts/judge_variants.py`) never qualifies anything: the file records `variant` and only `baseline` files are accepted (found in review: the `scoped-requirements` variant has the same fingerprint as a production run configured with the same requirements). The refactor that made this
+possible changed no byte of the prompt (golden hashes in `tests/test_judge_prompt.py` were taken from the old code). Ambient
+`enforce` builds the prompt itself, so it passes the fingerprint of the requirements and threshold it is configured with
+(`judge_qualification(..., prompt_fingerprint=...)`); the same rules apply.
 
 ## Limits that remain
 
@@ -369,3 +386,89 @@ OLA-side `cfr.result` endpoint would only record a number the runner claims. Tha
 claim. A real integration needs the runner to sign its result with an Ed25519 key that OLA pins (the same mechanism as the
 pipeline signature) and a way to re-run the assertions. Neither the runner nor a Docker daemon is available in this
 environment, so nothing was built and nothing is claimed. Status: **UNKNOWN**.
+
+### Measured prompt variants (measurement only)
+
+`scripts/judge_eval.py --variant NAME` runs the same labelled set and the same rule with another prompt: `scoped-requirements`
+(two requirements a one-number answer can meet), `plain-input` (plain-text sections with a digest-tagged deliverable marker
+instead of a JSON blob), `check-first` (tell the judge to work out the answer and compare), `combined`. Each isolates one
+hypothesis for why correct answers are rejected. Workflow `judge-variants.yml` runs 3 judges x 4 variants (it runs on a pull
+request only when it or the harness changes, and on demand) and prints `WOULD_QUALIFY` per pair plus the rejection causes and
+the false accepts. **Thresholds and the production prompt are not changed by it.** A variant becomes the production prompt only
+by a separate change that moves its template into Igor and re-measures; if a variant lifts correct-accepted it must not lift
+false-accept (the same 72 wrong answers, including injection attempts, are in the set). Until results exist the cause of the
+0/67 was a hypothesis when this was written; the measurement below answers it.
+
+### Measured result of the prompt variants (CI, PR #8 head 6ef52ae, v2 set 72 wrong / 67 correct, one run each)
+
+| judge | variant | wrong accepted | upper 95% | correct accepted | lower 95% | qualifies |
+|---|---|---|---|---|---|---|
+| `llama3.2:3b` | baseline (v2 run) | 6/72 | 17.0% | 14/67 | 12.9% | no |
+| `llama3.2:3b` | scoped-requirements | 6/72 | 17.0% | 11/67 | 9.4% | no |
+| `llama3.2:3b` | plain-input | 15/72 | 31.6% | 28/67 | 30.7% | no |
+| `llama3.2:3b` | check-first | 66/72 | 96.1% | 65/67 | 89.8% | no |
+| `llama3.2:3b` | combined | 41/72 | 67.7% | 50/67 | 63.1% | no |
+| `llama3.1:8b` | baseline (v2 run) | 0/72 | 5.1% | 0/67 | 0.0% | no |
+| `llama3.1:8b` | scoped-requirements | 0/72 | 5.1% | 0/67 | 0.0% | no |
+| `llama3.1:8b` | plain-input | 20/72 | 39.0% | 26/67 | 28.0% | no |
+| `llama3.1:8b` | check-first | 0/72 | 5.1% | 6/67 | 4.2% | no |
+| `llama3.1:8b` | combined | 6/72 | 17.0% | 28/67 | 30.7% | no |
+| `qwen2.5:7b` | baseline (v2 run) | 0/72 | 5.1% | 0/67 | 0.0% | no |
+| `qwen2.5:7b` | scoped-requirements | 0/72 | 5.1% | 8/67 | 6.2% | no |
+| `qwen2.5:7b` | plain-input | 31/72 | 54.6% | 58/67 | 76.4% | no |
+| `qwen2.5:7b` | check-first | 0/72 | 5.1% | 12/67 | 10.6% | no |
+| `qwen2.5:7b` | combined | 33/72 | 57.3% | 64/67 | 87.6% | no |
+
+Reading (one run each, so differences of a few items are noise):
+* **The requirements are not what caused the all-reject; the prompt layout is a likely cause, not an isolated one.** `scoped-requirements` alone did not help (0/67 and 8/67). `plain-input` lifted correct-accepted from 0/67 to 26/67 (`llama3.1:8b`) and 58/67 (`qwen2.5:7b`), but it changes the layout AND the system text at once, so it does not isolate the JSON-string quoting that the judges' own reason ("answer must be a number only, remove extraneous characters") points at.
+* **The lift is paid for in false accepts.** Every variant that accepts many correct answers also accepts many wrong ones (`qwen2.5:7b` plain-input 31/72, combined 33/72; `llama3.2:3b` check-first 66/72). The judges do not separate right from wrong well enough on this set; the prompt only moves them along one curve.
+* The closest to qualifying is `llama3.1:8b` + `combined` (6/72 wrong accepted, upper 17.0%, just above 15%; but only 28/67 correct accepted, lower 30.7%, below 50%).
+* **No judge/variant pair qualifies.** The production prompt and thresholds are unchanged; a variant becomes the production prompt only by a separate change that moves its template into Igor and re-measures (and the measurement must then be repeated: this is one run, `--repeat` was not used).
+
+### Ablation variants (measured, one run each; none qualifies)
+
+`plain-input` changes the layout only (its system text differs from the baseline by one sentence, pinned by a test), yet it
+was the variant that lifted correct-accepted. Two variants split what the layout changes:
+
+| variant | what it changes against the baseline | tests |
+|---|---|---|
+| `json-pretty` | same JSON fields and values, indented and not ASCII-escaped | escapes and quotes in a one-line blob |
+| `plain-nomarker` | plain-text sections without the digest marker lines | whether the marker, not the sections, moves the verdicts |
+
+Measured 2026-10-05 by the `judge-variants` workflow (run 37295361837, commit f731e39, `judge_eval_v2.json`: 72 wrong / 67
+correct answers, temperature 0, fixed seed). Qualification needs false-accept upper95 <= 0.15 AND correct-accepted lower95 >= 0.50.
+FA = wrong answers accepted (of 72), CA = correct answers accepted (of 67). Wilson 95 % bounds in brackets.
+
+| model | variant | FA (upper95) | CA (lower95) | qualifies |
+|---|---|---|---|---|
+| llama3.2:3b | json-pretty | 9 (0.221) | 21 (0.215) | NO |
+| llama3.2:3b | plain-nomarker | 3 (0.115) | 12 (0.106) | NO |
+| llama3.1:8b | json-pretty | 19 (0.376) | 30 (0.335) | NO |
+| llama3.1:8b | plain-nomarker | 8 (0.204) | 12 (0.106) | NO |
+| qwen2.5:7b | json-pretty | 29 (0.518) | 63 (0.856) | NO |
+| qwen2.5:7b | plain-nomarker | 20 (0.390) | 48 (0.599) | NO |
+| llama3.2:3b | plain-input | 15 (0.316) | 31 (0.349) | NO |
+| llama3.1:8b | plain-input | 20 (0.390) | 26 (0.280) | NO |
+| qwen2.5:7b | plain-input | 31 (0.546) | 58 (0.764) | NO |
+| llama3.2:3b | check-first | 66 (0.961) | 65 (0.898) | NO |
+| llama3.1:8b | check-first | 0 (0.051) | 7 (0.052) | NO |
+| qwen2.5:7b | check-first | 0 (0.051) | 12 (0.106) | NO |
+| llama3.2:3b | scoped-requirements | 6 (0.170) | 11 (0.094) | NO |
+| llama3.1:8b | scoped-requirements | 0 (0.051) | 0 (0.000) | NO |
+| qwen2.5:7b | scoped-requirements | 0 (0.051) | 8 (0.062) | NO |
+| llama3.2:3b | combined | 41 (0.677) | 50 (0.631) | NO |
+| llama3.1:8b | combined | 6 (0.170) | 28 (0.307) | NO |
+| qwen2.5:7b | combined | 32 (0.559) | 64 (0.876) | NO |
+
+What this does and does not say. Against the baseline (0/67 correct accepted for llama3.1:8b and qwen2.5:7b, table above), BOTH
+layout changes that un-escape the one-line JSON blob lift correct-accepted a lot: `json-pretty` to 30/67 and 63/67, `plain-nomarker`
+to 12/67 and 48/67. So the baseline all-reject is most likely caused by the escaped one-line JSON string (which is also what the
+judges' own rejection reason points at), and the digest marker is not the main cause (removing it did not remove the lift and
+did not improve separation). The lift is again paid for in false accepts (`json-pretty` + qwen2.5:7b 29/72), so the judges
+still move along one curve instead of separating right from wrong: no cell has both bounds met. The strict variants
+(`check-first`, `scoped-requirements`) have the best false-accept side but accept almost no correct answer. **Runs are not
+exactly repeatable:** the same (model, variant) pairs measured earlier in this section differ from this dispatch by 1-3
+answers (e.g. llama3.2:3b plain-input correct accepted 28 then 31; qwen2.5:7b combined wrong accepted 33 then 32), so
+temperature 0 with a fixed seed is NOT deterministic on the CI runners and differences of a few answers are noise; the
+Wilson bounds do not cover that run-to-run variation. gemma2:9b was not part of this dispatch (UNKNOWN for these variants).
+This is a measurement, not a certification, and no thresholds or production prompts were changed.
