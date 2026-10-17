@@ -33,7 +33,7 @@ def verify_dag_records(records, *, tenant_id, run_id, expected_commit=None,
         relevant = []
         for row in records:
             payload = json.loads(row["payload_json"])
-            if payload.get("run_id") == run_id:
+            if payload.get("run_id") == run_id and row["record_type"] != "human.workflow_approval":
                 if payload.get("event") != row["record_type"]:
                     return _result("BLOCK", "event type mismatch")
                 relevant.append(payload)
