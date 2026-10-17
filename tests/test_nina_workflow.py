@@ -46,3 +46,55 @@ def test_reject_unregistered_tool_before_planning():
         run_nina_workflow(tenant_id="t", requester_id="u", goal="g",
             allowed_tools=["shell"], append=lambda *args: None,
             planner=lambda *args: (_ for _ in ()).throw(AssertionError("called")))
+
+
+def test_llm_agent_never_accepts_a_deterministic_stub(monkeypatch):
+    import sys
+    from types import ModuleType
+    from app.nina_workflow import execute_registered_node
+    from app.workflow_engine import WorkflowNode
+    mod = ModuleType("app.agent_runtime")
+    mod._invoke_llm = lambda *args: None
+    monkeypatch.setitem(sys.modules, "app.agent_runtime", mod)
+    with pytest.raises(WorkflowPlanError, match="real subagent"):
+        execute_registered_node(WorkflowNode("worker1", "llm_agent", "analysis", ()), {})
+
+
+def test_llm_agent_attaches_model_provenance(monkeypatch):
+    import sys
+    from types import ModuleType
+    from app.nina_workflow import execute_registered_node
+    from app.workflow_engine import WorkflowNode
+    mod = ModuleType("app.agent_runtime")
+    mod._invoke_llm = lambda *args: {"invocation_type": "real_llm", "response_id": "id42", "output": "answer", "provider": "ollama", "model": "qwen"}
+    monkeypatch.setitem(sys.modules, "app.agent_runtime", mod)
+    result = execute_registered_node(WorkflowNode("worker2", "llm_agent", "analysis", ()), {})
+    assert result == {"output": "answer", "provider": "ollama", "model": "qwen", "response_id": "id42"}
+
+
+def test_planner_requires_real_model_and_json(monkeypatch):
+    import sys
+    from types import ModuleType
+    from app.nina_workflow import model_plan
+    mod = ModuleType("app.agent_runtime")
+    mod._invoke_llm = lambda *args: None
+    monkeypatch.setitem(sys.modules, "app.agent_runtime", mod)
+    with pytest.raises(WorkflowPlanError, match="real LLM"):
+        model_plan("plan", ["llm_agent"])
+    mod._invoke_llm = lambda *args: {"invocation_type": "real_llm", "response_id": "id", "output": "not-json"}
+    with pytest.raises(WorkflowPlanError, match="strict JSON"):
+        model_plan("plan", ["llm_agent"])
+
+
+def test_planner_makes_real_model_plan_with_provenance(monkeypatch):
+    import sys
+    from types import ModuleType
+    from app.nina_workflow import model_plan
+    mod = ModuleType("app.agent_runtime")
+    mod._invoke_llm = lambda *args: {"invocation_type": "real_llm", "response_id": "id",
+        "output": '{"nodes":[{"id":"worker","tool":"llm_agent","task":"analyse","needs":[]}]}',
+        "provider": "ollama", "model": "qwen"}
+    monkeypatch.setitem(sys.modules, "app.agent_runtime", mod)
+    nodes, provenance = model_plan("plan", ["llm_agent"])
+    assert nodes[0].id == "worker"
+    assert provenance["response_id"] == "id"
