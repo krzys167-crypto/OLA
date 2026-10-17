@@ -4,7 +4,7 @@ import uuid
 from .agent_runtime import run_agent_task
 
 
-REGISTERED_TOOLS = ("safe_expression", "local_mcp_tool_registry.sha256")
+REGISTERED_TOOLS = ("safe_expression", "local_mcp_tool_registry.sha256", "llm_agent")
 
 
 @dataclass(frozen=True)
