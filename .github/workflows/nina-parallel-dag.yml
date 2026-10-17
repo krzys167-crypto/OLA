@@ -70,7 +70,7 @@ jobs:
           curl --fail --silent http://127.0.0.1:11434/api/tags >/dev/null
           ollama pull "$OLA_LLM_MODEL"
       - name: Prove two overlapping live LLM worker invocations and independent IGOR DAG verification
-        run: python scripts/verify_nina_parallel_ollama.py
+        run: PYTHONPATH=. python scripts/verify_nina_parallel_ollama.py
       - name: Upload measured execution proof
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
