@@ -13,7 +13,7 @@
 
 | Source archive | Archive SHA-256 | Contents actually scanned | Relevant limitation |
 |---|---|---:|---|
-| Library `/OLA/AUDITS/OLA_DI_OS_FULL_ECOSYSTEM_AUDIT_2026-10-12.zip` | `499876bf23a1b537bd786d6a4e6edc556227c9c468e6bdfed6ccf00e4cf14e63` | 77 entries + 348 nested historical files | SHA matches adjacent standalone `.zip.sha256`; embedded historical manifest claims 344/344 verified. Historical source ≠ live proof. |
+| Library `/OLA/AUDITS/OLA_DI_OS_FULL_ECOSYSTEM_AUDIT_2026-10-12.zip` | `499876bf23a1b537bd786d6a4e6edc556227c9c468e6bdfed6ccf00e4cf14e63` | 77 entries + 348 nested historical files | SHA matches adjacent standalone `.zip.sha256`; embedded historical manifest claims 344/344 verified. All **344/344 historical manifest entries were independently re-hashed from the nested ZIP**, with **0 missing and 0 mismatched**; nested archive has 348 file entries in total. Historical source ≠ live proof. |
 | Google Drive `OLA DI-OS — AKTUALNY PROJEKT — 2ca9d8f.zip` | `abc89360023eb36d230b7ede6511531ea69eedbc4febd712cca35cab118ee856` | 400 entries (including .git and non-source material) | `KONTROLA-PACZKI.json`: all **200/200** source file bytes independently match declared SHA-256 **and** Git blob hashes; no absent or extra manifest source paths. |
 | Library `OLA-ADR001-stage4.zip` | `650745cc7adbf480ca46...` (abbreviated) | 61 entries | Overlaps newer candidate by **38 byte-identical, nonempty files** — do not reapply those components indiscriminately. |
 | Library `OLA-MACBOOK-SOURCE.zip` | `3c5b353699e1c247895e...` (abbreviated) | 300 entries | Historical Mac/Tauri/project trees; contains generic `.git/hooks` fixtures that should not count as product duplication. |
@@ -41,3 +41,10 @@ Seven ZIP archives (without expanding nested ZIPs) contained **887** file entrie
 5. Priority for `OLA-CONT-002`: (a) compare candidate code to #107/active main; (b) reconcile existing 76-branch index and PR hashes; (c) link remaining library packages by SHA and coverage; (d) obtain an authorized native ZBook proof separately. **Do not implement already present functionality.**
 
 **No production GO:** [PR #108](https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/108) remains unmerged and unsigned. No external CI result supersedes signature and independent reviewer checks.
+
+## 5. Follow-up validations of this same recovery pass
+
+- GitHub commit API at 2026-10-17: `GET /commits/2ca9d8f839f9df6da34474f11c6f87461be2c63c` and `GET /commits/978fc95001d78ac050d32e219a8ccb0401c179c6` returned **422: No commit found for SHA**. This confirms those exact local source commits were not available in the queried upstream GitHub repository; it does **not** prove their code is invalid or absent in another branch/bundle.
+- The historical 344-manifest verification was repeated by recomputing SHA-256 and byte lengths for each named nested original: **344 PASS, 0 mismatch, 0 missing**. This independently validates bytes preserved in the archived ZIP but not authorship, commits, runtime or production.
+- Library `ola-final-production-60378da7.zip` includes `production-manifest-sha256.txt` and independent policy log `MANIFEST_POLICY=PASS state=BLOCKED production=NO-GO`; policy PASS here means the *fail-closed NO-GO decision* is correctly encoded, **not** production readiness.
+- Source/code overlap between stage4 and local 2ca9d8f source already measured by exact SHA-256: **38 identical nonempty files**. Preserve both versions and do not delete either based solely on duplicates.
