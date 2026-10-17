@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "project": "OLA-DI-OS",
+  "bootstrap_inventory_incomplete": true,
+  "notes": "BOOTSTRAP ONLY: historical completed tasks have NOT been independently reconciled. Missing registry entry does NOT imply task incomplete. Existing evidence hash-chain and state-continuity runtime remain authoritative for execution events; this is a task index.",
+  "source_repository": "https://github.com/krzysztofcieciwa07-ship-it/OLA",
+  "tasks": [
+    {
+      "id": "OLA-CONT-001",
+      "title": "Integrate durable task ledger, duplicate prevention, and new-chat instructions",
+      "priority": 0,
+      "state": "IN_PROGRESS",
+      "verification": "PARTIAL",
+      "proof": null,
+      "watched_files": {}
+    },
+    {
+      "id": "OLA-CONT-002",
+      "title": "Reconcile existing tasks and artefacts from GitHub, CI and runtime into ledger without re-executing",
+      "priority": 0,
+      "state": "TODO",
+      "verification": "UNVERIFIED",
+      "proof": null,
+      "watched_files": {}
+    },
+    {
+      "id": "OLA-RELEASE-001",
+      "title": "Re-check actual supply-chain, independent IGOR, source-binding and approval gates before release",
+      "priority": 1,
+      "state": "TODO",
+      "verification": "UNVERIFIED",
+      "proof": null,
+      "watched_files": {}
+    }
+  ]
+}
