@@ -9,10 +9,16 @@
       "id": "OLA-CONT-001",
       "title": "Integrate durable task ledger, duplicate prevention, and new-chat instructions",
       "priority": 0,
-      "state": "IN_PROGRESS",
-      "verification": "PARTIAL",
+      "state": "BLOCKED",
+      "verification": "BLOCKED",
       "proof": null,
-      "watched_files": {}
+      "watched_files": {},
+      "scope_note": "Core ledger, CLI, CI and ChatGPT Project instruction files already implemented on PR #108. Do NOT regenerate. Resolve 9/9 unsigned commits, obtain independent review, validate main protections and recheck final SHA before merge. ChatGPT Project instructions still require manual install.",
+      "source_links": [
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/108",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/actions/runs/39035789356",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/blob/feat/project-continuity-ledger-20261017/docs/CHATGPT_PROJECT_INSTRUCTIONS.md"
+      ]
     },
     {
       "id": "OLA-CONT-002",
