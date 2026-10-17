@@ -1,0 +1,21 @@
+name: OLA Project Continuity Guard
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  registry-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Verify continuity CLI and anti-duplicate tests
+        run: |
+          python3 -m unittest discover -s tests -p 'test_project_continuity.py' -v
+          python3 scripts/project_continuity.py status
+          python3 scripts/project_continuity.py next
