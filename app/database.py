@@ -1,5 +1,7 @@
 import os
-import uuid\n\nfrom sqlalchemy import create_engine, event, select
+import uuid
+
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 DB_PATH = os.getenv("OLA_EG_DB_PATH", "ola.db")
