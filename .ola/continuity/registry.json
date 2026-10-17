@@ -2,7 +2,7 @@
   "schema_version": 1,
   "project": "OLA-DI-OS",
   "bootstrap_inventory_incomplete": true,
-  "notes": "BOOTSTRAP ONLY: historical completed tasks have NOT been independently reconciled. Missing registry entry does NOT imply task incomplete. Existing evidence hash-chain and state-continuity runtime remain authoritative for execution events; this is a task index.",
+  "notes": "BOOTSTRAP PARTIAL INVENTORY: selected 2026-10-17 public GitHub PR/Issue/main-code evidence indexed; full history is NOT reconciled. Open PR != absent functionality, CI success != production approval, and missing task != unfinished task. Check exact commit/target/source before any implementation.",
   "source_repository": "https://github.com/krzysztofcieciwa07-ship-it/OLA",
   "tasks": [
     {
@@ -18,19 +18,135 @@
       "id": "OLA-CONT-002",
       "title": "Reconcile existing tasks and artefacts from GitHub, CI and runtime into ledger without re-executing",
       "priority": 0,
-      "state": "TODO",
-      "verification": "UNVERIFIED",
+      "state": "IN_PROGRESS",
+      "verification": "PARTIAL",
       "proof": null,
-      "watched_files": {}
+      "watched_files": {},
+      "scope_note": "First GitHub history/main-code pass completed; inventory of all historical repositories, branches, and artifacts remains incomplete.",
+      "source_links": [
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/108",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/issues/19"
+      ]
     },
     {
       "id": "OLA-RELEASE-001",
       "title": "Re-check actual supply-chain, independent IGOR, source-binding and approval gates before release",
       "priority": 1,
-      "state": "TODO",
-      "verification": "UNVERIFIED",
+      "state": "BLOCKED",
+      "verification": "BLOCKED",
       "proof": null,
-      "watched_files": {}
+      "watched_files": {},
+      "scope_note": "Production GO blocked by missing signed commits, independent review and main protection despite 18/18 PR108 CI successes. This does not mean the whole system is down.",
+      "source_links": [
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/108",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/issues/65",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/issues/70"
+      ]
+    },
+    {
+      "id": "OLA-GOV-001",
+      "title": "Configure enforced protected main: signed commits, required checks and independent review",
+      "priority": 0,
+      "state": "BLOCKED",
+      "verification": "BLOCKED",
+      "proof": null,
+      "watched_files": {},
+      "source_links": [
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/issues/70",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/issues/65"
+      ],
+      "scope_note": "Issue #70 still open; main protected=false and visible rulesets=[] on 2026-10-17. GitHub-connected branch-protection mutation not available. Do not equate 18 green workflows with secured main."
+    },
+    {
+      "id": "OLA-EVIDENCE-002",
+      "title": "Complete hash-chain v2 identity/type binding and independently verify migration",
+      "priority": 0,
+      "state": "IN_PROGRESS",
+      "verification": "PARTIAL",
+      "proof": null,
+      "watched_files": {},
+      "source_links": [
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/issues/78",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/79",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/103"
+      ],
+      "scope_note": "Main app/hashchain.py is v1 and hashes tenant_id|seq|prev_hash|payload_json, excluding id and record_type. Prior proposed v2 work exists in PRs: recover and assess; do not reimplement blindly."
+    },
+    {
+      "id": "OLA-IGOR-002",
+      "title": "Reconcile mixed source/provider/model provenance rejection in IGOR",
+      "priority": 0,
+      "state": "IN_PROGRESS",
+      "verification": "PARTIAL",
+      "proof": null,
+      "watched_files": {},
+      "source_links": [
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/issues/81",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/80",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/107"
+      ],
+      "scope_note": "Issue #81 open; regression described; staging work in PR #80/#107. Verify target branch and do not call staged changes production fixed."
+    },
+    {
+      "id": "OLA-RUNTIME-002",
+      "title": "Inventory current six-agent runtime and persistent evidence checkpoints",
+      "priority": 1,
+      "state": "IN_PROGRESS",
+      "verification": "PARTIAL",
+      "proof": null,
+      "watched_files": {},
+      "source_links": [
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/blob/main/scripts/state_continuity_runtime.py",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/blob/main/.github/workflows/state-continuity.yml",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/issues/20"
+      ],
+      "scope_note": "Code and CI workflow exist on main; deterministic local model explicitly used in state-continuity script. Do not rebuild checkpoints or claim they prove external LLM/real customer operations."
+    },
+    {
+      "id": "OLA-AURORA-002",
+      "title": "Validate and integrate existing AURORA ZBook API/Ollama live proof, without recreating UI",
+      "priority": 1,
+      "state": "IN_PROGRESS",
+      "verification": "PARTIAL",
+      "proof": null,
+      "watched_files": {},
+      "source_links": [
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/106",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/107"
+      ],
+      "scope_note": "UI/API integration scripts and live proof described in open draft PR #106 and carried into #107; no verified ZBook live deployment or main integration."
+    },
+    {
+      "id": "OLA-REVENUE-002",
+      "title": "Confirm real Stripe payment-to-evidence customer transaction",
+      "priority": 1,
+      "state": "BLOCKED",
+      "verification": "BLOCKED",
+      "proof": null,
+      "watched_files": {},
+      "source_links": [
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/issues/24",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/issues/38",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/101"
+      ],
+      "scope_note": "Real successful production payment not independently confirmed. Revenue pipeline issue open; no live payment claim."
+    },
+    {
+      "id": "OLA-RELEASE-002",
+      "title": "Reconcile staged release candidates #102 #103 #105 #106 #107 with main and signed owner policy",
+      "priority": 1,
+      "state": "IN_PROGRESS",
+      "verification": "PARTIAL",
+      "proof": null,
+      "watched_files": {},
+      "source_links": [
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/102",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/103",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/105",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/106",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/107"
+      ],
+      "scope_note": "Overlapping staged features, most unmerged and draft. Avoid creating separate duplicate replacement implementations; integration depends on review/signatures."
     }
   ]
 }
