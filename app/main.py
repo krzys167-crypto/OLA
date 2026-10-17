@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Request
 from starlette.responses import FileResponse
 from sqlalchemy import select
-from .database import Base, engine, SessionLocal, install_append_only_triggers
+from .database import Base, engine, SessionLocal, install_append_only_triggers, append_evidence_atomic
 from .models import Tenant, ApiKey, EvidenceRecord, StripeEvent
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
 from .agent_runtime import run_agent_task
@@ -55,32 +55,7 @@ def bearer_identity(authorization):
 
 
 def append_record(tenant_id, record_type, payload):
-    payload_json = canonical_json(payload)
-    with SessionLocal() as db:
-        last = db.scalar(
-            select(EvidenceRecord)
-            .where(EvidenceRecord.tenant_id == tenant_id)
-            .order_by(EvidenceRecord.seq.desc())
-        )
-        seq = 0 if last is None else last.seq + 1
-        prev_hash = GENESIS_HASH if last is None else last.record_hash
-        record = EvidenceRecord(
-            id=str(uuid.uuid4()),
-            tenant_id=tenant_id,
-            seq=seq,
-            record_type=record_type,
-            payload_json=payload_json,
-            prev_hash=prev_hash,
-            record_hash=compute_record_hash(tenant_id, seq, prev_hash, payload_json),
-        )
-        db.add(record)
-        db.commit()
-        return {
-            "id": record.id,
-            "tenant_id": record.tenant_id,
-            "seq": record.seq,
-            "record_hash": record.record_hash,
-        }
+    return append_evidence_atomic(tenant_id, record_type, payload)
 
 
 def read_tenant_evidence(tenant_id):
