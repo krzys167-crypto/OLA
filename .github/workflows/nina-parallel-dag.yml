@@ -47,7 +47,7 @@ jobs:
       OLA_LLM_TIMEOUT: '120'
       OLA_OLLAMA_NUM_PREDICT: '64'
       OLA_RUNTIME_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-      OLA_EG_DB_PATH: ${{ runner.temp }}/ola-parallel-ollama.db
+      OLA_EG_DB_PATH: ola-parallel-ollama.db
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
