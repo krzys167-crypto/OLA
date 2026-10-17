@@ -82,6 +82,21 @@ def append_record(tenant_id, record_type, payload):
         }
 
 
+def read_tenant_evidence(tenant_id):
+    """Read the complete tenant chain, not only current-run rows."""
+    with SessionLocal() as db:
+        rows = db.scalars(
+            select(EvidenceRecord)
+            .where(EvidenceRecord.tenant_id == tenant_id)
+            .order_by(EvidenceRecord.seq.asc())
+        ).all()
+    return [{
+        "id": row.id, "tenant_id": row.tenant_id, "seq": row.seq,
+        "record_type": row.record_type, "prev_hash": row.prev_hash,
+        "record_hash": row.record_hash, "payload_json": row.payload_json,
+    } for row in rows]
+
+
 def run_controlled_audit(tenant_id, task, scenario):
     if scenario != "fault_then_recovery":
         raise HTTPException(status_code=400, detail="unsupported scenario")
@@ -281,6 +296,7 @@ def create_nina_workflow(body: dict, x_api_key: str | None = Header(default=None
             goal=task_text,
             allowed_tools=policy.allowed_tools,
             append=append_record,
+            fetch_records=read_tenant_evidence,
         )
     except WorkflowPlanError as exc:
         return {"status": "BLOCK", "reason": str(exc), "verified": False}
