@@ -266,7 +266,7 @@ def create_nina_workflow(body: dict, x_api_key: str | None = Header(default=None
     task_text = body.get("task")
     if not isinstance(task_text, str) or not task_text.strip():
         raise HTTPException(status_code=400, detail="task is required")
-    requested_tools = body.get("requested_tools", ["safe_expression"])
+    requested_tools = body.get("requested_tools", ["llm_agent"])
     if (not isinstance(requested_tools, list) or not requested_tools
             or not all(isinstance(tool, str) for tool in requested_tools)):
         raise HTTPException(status_code=400, detail="requested_tools must be nonempty strings")
