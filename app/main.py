@@ -12,6 +12,8 @@ from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify
 from .agent_runtime import run_agent_task
 from .business_runtime import run_invoice_task
 from .nina import NinaOrchestrator, NinaTask
+from .nina_workflow import run_nina_workflow
+from .workflow_engine import WorkflowPlanError
 from .igor import IgorVerifier
 from .replay import build_replay, verify_replay
 from .human_gate import HumanGate, ReviewDecision
@@ -252,6 +254,38 @@ def create_agent_run(body: dict, x_api_key: str | None = Header(default=None)):
     if not task:
         raise HTTPException(status_code=400, detail="task is required")
     return run_agent_task(tenant_id, task)
+
+
+
+@app.post("/nina-workflow")
+def create_nina_workflow(body: dict, x_api_key: str | None = Header(default=None)):
+    """Opt-in bounded DAG execution. No automatic production approval."""
+    tenant_id, requester_id = identity_from_key(x_api_key)
+    if os.getenv("OLA_PARALLEL_WORKFLOWS_ENABLED", "0") != "1":
+        raise HTTPException(status_code=503, detail="parallel NINA workflows are disabled")
+    task_text = body.get("task")
+    if not isinstance(task_text, str) or not task_text.strip():
+        raise HTTPException(status_code=400, detail="task is required")
+    requested_tools = body.get("requested_tools", ["safe_expression"])
+    if (not isinstance(requested_tools, list) or not requested_tools
+            or not all(isinstance(tool, str) for tool in requested_tools)):
+        raise HTTPException(status_code=400, detail="requested_tools must be nonempty strings")
+    nina_task = NinaTask.create(tenant_id, task_text, requested_tools)
+    policy = NinaOrchestrator().plan(nina_task)
+    if policy.status != "ALLOW":
+        return {"status": "BLOCK", "reason": policy.reason, "verified": False}
+    try:
+        return run_nina_workflow(
+            tenant_id=tenant_id,
+            requester_id=requester_id,
+            goal=task_text,
+            allowed_tools=policy.allowed_tools,
+            append=append_record,
+        )
+    except WorkflowPlanError as exc:
+        return {"status": "BLOCK", "reason": str(exc), "verified": False}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"workflow runtime failed: {type(exc).__name__}") from exc
 
 
 @app.post("/nina-run")
