@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import re
+import time
 import uuid
 
 
@@ -92,6 +93,12 @@ class WorkflowEngine:
         results = {}
         failures = {}
         running = {}
+        def measured_execution(node, deps):
+            started = time.perf_counter_ns()
+            value = execute(node, deps)
+            finished = time.perf_counter_ns()
+            return value, started, finished
+
         with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="ola-nina") as pool:
             while pending or running:
                 if not failures:
@@ -103,7 +110,7 @@ class WorkflowEngine:
                         deps = {dep: results[dep] for dep in node.needs}
                         record({"event": "task.started", "run_id": run_id, "node_id": node_id,
                                 "input_digest": _digest({"task": node.task, "deps": deps})})
-                        running[pool.submit(execute, node, deps)] = node
+                        running[pool.submit(measured_execution, node, deps)] = node
                         del pending[node_id]
                 if not running:
                     break
@@ -111,13 +118,14 @@ class WorkflowEngine:
                 for future in done:
                     node = running.pop(future)
                     try:
-                        value = future.result()
+                        value, started, finished = future.result()
                         serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
                         if len(serialized.encode()) > 8192:
                             raise ValueError("output exceeds policy limit")
                         results[node.id] = value
                         record({"event": "task.completed", "run_id": run_id, "node_id": node.id,
-                                "output_digest": _digest(value), "output": value})
+                                "output_digest": _digest(value), "output": value,
+                                "worker_started_ns": started, "worker_finished_ns": finished})
                     except Exception as exc:
                         failures[node.id] = type(exc).__name__
                         record({"event": "task.failed", "run_id": run_id, "node_id": node.id,
