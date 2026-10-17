@@ -62,3 +62,21 @@ def test_human_gate_rejects_wrong_report_digest(monkeypatch):
     report = result["igor"]
     res = approval_request(keys[1], result["run_id"], report["chain_tip"], "unbound-digest")
     assert res.status_code == 409
+
+
+def test_independent_report_can_reverify_after_human_approval(monkeypatch):
+    from sqlalchemy import select
+    from app.models import ApiKey
+    from app.igor_workflow import verify_dag_records
+    keys, _, result = setup_workflow(monkeypatch)
+    report = result["igor"]
+    decision = approval_request(keys[1], result["run_id"], report["chain_tip"], report["report_digest"])
+    assert decision.status_code == 200, decision.text
+    key_hash = hashlib.sha256(keys[0].encode()).hexdigest()
+    with SessionLocal() as db:
+        row = db.scalar(select(ApiKey).where(ApiKey.key_hash == key_hash))
+        tenant_id = row.tenant_id
+    evidence = read_tenant_evidence(tenant_id)
+    repeated_report = verify_dag_records(evidence, tenant_id=tenant_id,
+                                         run_id=result["run_id"], expected_commit="verified-unit-commit")
+    assert repeated_report["status"] == "VERIFIED", repeated_report
