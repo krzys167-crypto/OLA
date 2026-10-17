@@ -58,7 +58,8 @@ def execute_registered_node(node, deps):
 
 
 def run_nina_workflow(*, tenant_id, requester_id, goal, allowed_tools, append,
-                      planner=model_plan, executor=execute_registered_node):
+                      planner=model_plan, executor=execute_registered_node,
+                      fetch_records=None, require_overlap=False, expected_provider=None):
     # The route checks NINA policy before calling this service. Defence in depth.
     supported = {"safe_expression", "local_mcp_tool_registry.sha256", "llm_agent"}
     if not set(allowed_tools) <= supported:
@@ -78,6 +79,15 @@ def run_nina_workflow(*, tenant_id, requester_id, goal, allowed_tools, append,
         evidence_ids.append(saved["id"])
 
     result = WorkflowEngine(max_workers=4).run(nodes, executor, record)
-    return {**result, "tenant_id": tenant_id, "planner": provenance,
-            "evidence_ids": evidence_ids, "human_gate": "NOT_APPROVED",
+    from .igor_workflow import verify_dag_records
+    igor = {"status": "UNKNOWN", "reason": "independent evidence reader not configured"}
+    if fetch_records is not None:
+        igor = verify_dag_records(
+            fetch_records(tenant_id), tenant_id=tenant_id, run_id=result["run_id"],
+            expected_commit=os.getenv("OLA_RUNTIME_COMMIT") or None,
+            require_overlap=require_overlap, expected_provider=expected_provider,
+        )
+    final_status = result["status"] if igor["status"] in ("VERIFIED", "UNKNOWN") else "BLOCK"
+    return {**result, "status": final_status, "tenant_id": tenant_id, "planner": provenance,
+            "evidence_ids": evidence_ids, "igor": igor, "human_gate": "NOT_APPROVED",
             "verified": False}
