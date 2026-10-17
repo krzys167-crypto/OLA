@@ -13,6 +13,7 @@ from .agent_runtime import run_agent_task
 from .business_runtime import run_invoice_task
 from .nina import NinaOrchestrator, NinaTask
 from .nina_workflow import run_nina_workflow
+from .nina_workflow_gate import approve_workflow, WorkflowApprovalRejected
 from .workflow_engine import WorkflowPlanError
 from .igor import IgorVerifier
 from .replay import build_replay, verify_replay
@@ -302,6 +303,26 @@ def create_nina_workflow(body: dict, x_api_key: str | None = Header(default=None
         return {"status": "BLOCK", "reason": str(exc), "verified": False}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"workflow runtime failed: {type(exc).__name__}") from exc
+
+
+
+@app.post("/nina-workflow/{run_id}/approve")
+def approve_nina_workflow(run_id: str, body: dict,
+                          authorization: str | None = Header(default=None)):
+    """Explicit second-identity review, bound to full IGOR report and evidence tip.
+
+    This does NOT grant deployment authority or approve a GitHub pull request.
+    """
+    tenant_id, approver_id = bearer_identity(authorization)
+    try:
+        return approve_workflow(
+            tenant_id=tenant_id, approver_id=approver_id, run_id=run_id,
+            tip_hash=body.get("tip_hash"),
+            report_digest=body.get("report_digest"),
+            reason=body.get("reason"),
+        )
+    except WorkflowApprovalRejected as exc:
+        raise HTTPException(status_code=exc.code, detail=str(exc)) from exc
 
 
 @app.post("/nina-run")
