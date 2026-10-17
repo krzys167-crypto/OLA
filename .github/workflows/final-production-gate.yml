@@ -72,6 +72,9 @@ jobs:
 
           required_exact = [
               "Nina TDD",
+              "NINA Parallel DAG Gate",
+              "OLA Supply Chain Evidence Gate",
+              "OLA CodeQL",
               "OLA DI-OS Product Gate",
               "NINA IGOR Ollama Full Flow",
               "OLA Decision Evidence Gate",
