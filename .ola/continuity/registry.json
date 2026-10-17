@@ -28,10 +28,11 @@
       "verification": "PARTIAL",
       "proof": null,
       "watched_files": {},
-      "scope_note": "First GitHub history/main-code pass completed; inventory of all historical repositories, branches, and artifacts remains incomplete.",
+      "scope_note": "Deep static audit 2026-10-17: 7 ZIPs (887 file entries), AI STUDIO tar (50), nested historical archive (348) examined; historical manifest 344/344 hashes and lengths independently confirmed; newer Drive candidate 200/200 source files SHA-256 + Git blob verified; 38 ADR001-stage4 identical files found in 2ca9d8f package. Candidate local commits 2ca9d8f and 978fc95 not found in queried GitHub repo. Physical Windows runtime untested. Remain: full Library pages, linked repositories, CI/branch ancestry and real ZBook proof. INVENTORY INCOMPLETE.",
       "source_links": [
         "https://github.com/krzysztofcieciwa07-ship-it/OLA/pull/108",
-        "https://github.com/krzysztofcieciwa07-ship-it/OLA/issues/19"
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/issues/19",
+        "https://github.com/krzysztofcieciwa07-ship-it/OLA/blob/feat/project-continuity-ledger-20261017/docs/continuity/SOURCE_ENVIRONMENT_DEDUP_AUDIT_2026-10-17.md"
       ]
     },
     {
