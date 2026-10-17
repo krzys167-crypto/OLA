@@ -12,6 +12,8 @@ on:
       - 'tests/test_nina_workflow_api.py'
       - '.github/workflows/nina-parallel-dag.yml'
       - 'app/igor_workflow.py'
+      - 'app/nina_workflow_gate.py'
+      - 'tests/test_nina_workflow_gate.py'
       - 'tests/test_igor_workflow.py'
       - 'scripts/verify_nina_parallel_ollama.py'
   workflow_dispatch:
@@ -33,7 +35,7 @@ jobs:
       - name: Install locked requirements
         run: python -m pip install -r requirements.txt
       - name: Verify planner, scheduler, evidence, and API
-        run: python -m pytest -q tests/test_workflow_engine.py tests/test_nina_workflow.py tests/test_nina_workflow_api.py tests/test_igor_workflow.py
+        run: python -m pytest -q tests/test_workflow_engine.py tests/test_nina_workflow.py tests/test_nina_workflow_api.py tests/test_igor_workflow.py tests/test_nina_workflow_gate.py
 
   real-parallel-ollama:
     runs-on: ubuntu-latest
