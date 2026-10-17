@@ -11,6 +11,9 @@ on:
       - 'tests/test_nina_workflow.py'
       - 'tests/test_nina_workflow_api.py'
       - '.github/workflows/nina-parallel-dag.yml'
+      - 'app/igor_workflow.py'
+      - 'tests/test_igor_workflow.py'
+      - 'scripts/verify_nina_parallel_ollama.py'
   workflow_dispatch:
 
 permissions:
@@ -30,4 +33,51 @@ jobs:
       - name: Install locked requirements
         run: python -m pip install -r requirements.txt
       - name: Verify planner, scheduler, evidence, and API
-        run: python -m pytest -q tests/test_workflow_engine.py tests/test_nina_workflow.py tests/test_nina_workflow_api.py
+        run: python -m pytest -q tests/test_workflow_engine.py tests/test_nina_workflow.py tests/test_nina_workflow_api.py tests/test_igor_workflow.py
+
+  real-parallel-ollama:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      OLA_LLM_PROVIDER: ollama
+      OLA_LLM_MODE: required
+      OLA_LLM_MODEL: qwen2.5:0.5b-instruct
+      OLA_LLM_TIMEOUT: '120'
+      OLA_OLLAMA_NUM_PREDICT: '64'
+      OLA_RUNTIME_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      OLA_EG_DB_PATH: ${{ runner.temp }}/ola-parallel-ollama.db
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Install locked requirements
+        run: python -m pip install -r requirements.txt
+      - name: Install and start real Ollama with parallel model capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          OLLAMA_NUM_PARALLEL=2 nohup ollama serve > /tmp/ola-parallel-ollama.log 2>&1 &
+          for i in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:11434/api/tags >/dev/null; then break; fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1:11434/api/tags >/dev/null
+          ollama pull "$OLA_LLM_MODEL"
+      - name: Prove two overlapping live LLM worker invocations and independent IGOR DAG verification
+        run: python scripts/verify_nina_parallel_ollama.py
+      - name: Upload measured execution proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nina-parallel-ollama-${{ github.event.pull_request.head.sha || github.sha }}
+          if-no-files-found: warn
+          path: |
+            nina-parallel-ollama-proof.json
+            nina-parallel-ollama-evidence.json
+      - name: Print Ollama logs on failure
+        if: failure()
+        run: tail -100 /tmp/ola-parallel-ollama.log || true
