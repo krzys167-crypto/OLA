@@ -4,7 +4,7 @@ import uuid
 
 from sqlalchemy import select
 
-from .database import SessionLocal
+from .database import SessionLocal, append_evidence_atomic
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
 from .models import EvidenceRecord
 
@@ -22,27 +22,7 @@ CONTROLLED_VAT_RATE = 0.21
 
 
 def _append(tenant_id, run_id, record_type, payload):
-    payload_json = canonical_json({"run_id": run_id, **payload})
-    with SessionLocal() as db:
-        last = db.scalar(
-            select(EvidenceRecord)
-            .where(EvidenceRecord.tenant_id == tenant_id)
-            .order_by(EvidenceRecord.seq.desc())
-        )
-        seq = 0 if last is None else last.seq + 1
-        prev_hash = GENESIS_HASH if last is None else last.record_hash
-        record = EvidenceRecord(
-            id=str(uuid.uuid4()),
-            tenant_id=tenant_id,
-            seq=seq,
-            record_type=record_type,
-            payload_json=payload_json,
-            prev_hash=prev_hash,
-            record_hash=compute_record_hash(tenant_id, seq, prev_hash, payload_json),
-        )
-        db.add(record)
-        db.commit()
-        return record.id
+    return append_evidence_atomic(tenant_id, record_type, {"run_id": run_id, **payload})["id"]
 
 
 def _invoice_from_task(task):
