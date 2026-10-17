@@ -39,20 +39,28 @@ def model_plan(goal, tools):
 
 
 def execute_registered_node(node, deps):
-    from .agent_runtime import _mcp_tool_call, _safe_expression
-
     if node.tool == "safe_expression":
+        from .agent_runtime import _safe_expression
         return _safe_expression(node.task)
     if node.tool == "local_mcp_tool_registry.sha256":
+        from .agent_runtime import _mcp_tool_call
         value = json.dumps(deps, sort_keys=True) if deps else node.task
         return _mcp_tool_call("sha256", {"value": value})
+    if node.tool == "llm_agent":
+        from .agent_runtime import _invoke_llm
+        response = _invoke_llm(node.id, node.task, {"upstream_results": deps})
+        if (not response or response.get("invocation_type") != "real_llm"
+                or not response.get("response_id") or not response.get("output")):
+            raise WorkflowPlanError("real subagent execution and response provenance required")
+        return {"output": response["output"], "provider": response["provider"],
+                "model": response["model"], "response_id": response["response_id"]}
     raise WorkflowPlanError("tool not permitted by workflow executor")
 
 
 def run_nina_workflow(*, tenant_id, requester_id, goal, allowed_tools, append,
                       planner=model_plan, executor=execute_registered_node):
     # The route checks NINA policy before calling this service. Defence in depth.
-    supported = {"safe_expression", "local_mcp_tool_registry.sha256"}
+    supported = {"safe_expression", "local_mcp_tool_registry.sha256", "llm_agent"}
     if not set(allowed_tools) <= supported:
         raise WorkflowPlanError("unregistered workflow tool")
     nodes, provenance = planner(goal, tuple(allowed_tools))
