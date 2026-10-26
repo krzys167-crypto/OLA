@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # CI fixture only; NEVER use as a production secret.
+  OLA_API_KEY_PEPPER: ${{ github.sha }}
+
 jobs:
   runtime-proof:
     runs-on: ubuntu-latest
@@ -64,7 +68,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          docker run --detach --rm --name ola-nina-e2e --publish 8000:8000 \
+          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" --name ola-nina-e2e --publish 8000:8000 \
             -e OPENAI_API_KEY="$OPENAI_API_KEY" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
             -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
@@ -78,11 +82,12 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i -e EXPECTED_COMMIT="${EXPECTED_COMMIT}" -e OPENAI_API_KEY="${OPENAI_API_KEY}" -e OLA_LLM_MODE="${OLA_LLM_MODE}" -e OLA_LLM_MODEL="${OLA_LLM_MODEL}" ola-nina-e2e python - <<'PY' > runtime-proof.json
+          from app.api_key_hashing import api_key_fingerprint
           import hashlib,json,os,sqlite3,subprocess,urllib.request,uuid
           db_path="/data/ola.db"; tenant_id=str(uuid.uuid4()); raw_key="ci-real-runtime-key"
           db=sqlite3.connect(db_path)
           db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tenant_id,"ci-exact-runtime"))
-          db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tenant_id,hashlib.sha256(raw_key.encode()).hexdigest()))
+          db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tenant_id,api_key_fingerprint(raw_key)))
           db.commit(); db.close()
           task="Calculate 17 * 23 and return the verified result."
           def call():
@@ -102,11 +107,11 @@ jobs:
           for expected_seq,row in enumerate(rows):
             _,row_tenant,seq,_,payload_json,prev_hash,record_hash=row
             assert row_tenant==tenant_id and seq==expected_seq and prev_hash==expected_prev
-            assert record_hash==hashlib.sha256(f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode()).hexdigest()
+            assert record_hash==hashlib.sha256(f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")).hexdigest()
             expected_prev=record_hash
           verifier=subprocess.run(["python","scripts/verify_agent_runtime.py","--tenant-id",tenant_id,"--run-id",result["run_id"],"--expected-commit",os.environ["EXPECTED_COMMIT"],"--expected-task",task,"--expected-result","391","--expected-provider","openai","--expected-model",os.environ["OLA_LLM_MODEL"],"--expected-invocation-type","real_llm"],capture_output=True,text=True)
           assert verifier.returncode==0,(verifier.stdout,verifier.stderr)
-          print(json.dumps({"status":"VERIFIED","commit":os.environ["EXPECTED_COMMIT"],"task":task,"final_result":"391","agents":result["agents"],"evidence_ids":result["evidence_ids"],"evidence_count":len(rows),"hash_chain":"PASS","independent_verifier":"PASS","human_gate":"VERIFIED","provider":"openai","model":os.environ["OLA_LLM_MODEL"],"invocation_type":"real_llm","llm_invocations":len(result["execution"]),"response_ids":[item["response_id"] for item in result["execution"]],"run_id":result["run_id"]},sort_keys=True))
+          print(json.dumps({"status":"VERIFIED","commit":os.environ["EXPECTED_COMMIT"],"task":task,"final_result":"391","agents":result["agents"],"evidence_ids":result["evidence_ids"],"evidence_count":len(rows),"hash_chain":"PASS","independent_verifier":"PASS","human_gate":"PENDING","provider":"openai","model":os.environ["OLA_LLM_MODEL"],"invocation_type":"real_llm","llm_invocations":len(result["execution"]),"response_ids":[item["response_id"] for item in result["execution"]],"run_id":result["run_id"]},sort_keys=True))
           PY
           cat runtime-proof.json
       - name: Independent artifact verifier
@@ -117,7 +122,7 @@ jobs:
           python - <<'PY'
           import hashlib,json,os
           d=json.load(open("runtime-proof.json")); expected=os.environ["EXPECTED_COMMIT"]
-          assert d["status"]=="VERIFIED" and d["commit"]==expected and d["hash_chain"]=="PASS" and d["independent_verifier"]=="PASS" and d["human_gate"]=="VERIFIED"
+          assert d["status"]=="VERIFIED" and d["commit"]==expected and d["hash_chain"]=="PASS" and d["independent_verifier"]=="PASS" and d["human_gate"]=="PENDING"
           assert d["provider"]=="openai" and d["model"]=="gpt-5.6-luna" and d["invocation_type"]=="real_llm"
           assert d["llm_invocations"]==6 and len(d["response_ids"])==6 and all(d["response_ids"])
           print("INDEPENDENT_ARTIFACT=VERIFIED")
@@ -169,7 +174,7 @@ jobs:
         run: |
           python - <<'PY'
           import json
-          d=json.load(open("runtime-proof.json")); assert d["human_gate"]=="VERIFIED"; print("HUMAN_GATE=VERIFIED")
+          d=json.load(open("runtime-proof.json")); assert d["human_gate"]=="PENDING"; print("HUMAN_GATE=PENDING — not independently approved")
           PY
       - name: Write provenance and hashes
         if: ${{ env.OPENAI_AVAILABLE == 'true' }}

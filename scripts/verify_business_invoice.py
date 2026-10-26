@@ -66,13 +66,20 @@ def main():
             fail("tenant or sequence mismatch")
         if prev_hash != expected_prev:
             fail("hash-chain predecessor mismatch")
-        expected_hash = hashlib.sha256(
-            f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")
-        ).hexdigest()
+        payload = json.loads(payload_json)
+        # Independent V2 verification binds the producer and record type.
+        if payload.get("__ola_evidence_v2__") != {
+                "version": 2, "record_type": record_type, "producer": "ola_runtime"}:
+            fail("legacy or unauthenticated agent evidence")
+        material = canonical({
+            "domain": "OLA-EVIDENCE-CHAIN-V2", "tenant_id": tenant_id,
+            "seq": seq, "prev_hash": prev_hash, "record_type": record_type,
+            "producer": "ola_runtime", "payload_json": payload_json,
+        })
+        expected_hash = hashlib.sha256(material.encode("utf-8")).hexdigest()
         if record_hash != expected_hash:
             fail("hash-chain record hash mismatch")
         expected_prev = record_hash
-        payload = json.loads(payload_json)
         payloads.append(payload)
         agent = payload.get("agent")
         if agent != ROLES[expected_seq]:

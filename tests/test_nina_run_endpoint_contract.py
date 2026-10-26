@@ -1,3 +1,4 @@
+from app.api_key_hashing import api_key_fingerprint
 import hashlib
 import os
 import uuid
@@ -25,7 +26,7 @@ def test_nina_run_executes_chain_but_does_not_self_approve():
         db.add(ApiKey(
             id=str(uuid.uuid4()),
             tenant_id=tenant_id,
-            key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
+            key_hash=api_key_fingerprint(api_key),
         ))
         db.commit()
 
@@ -62,3 +63,32 @@ def test_nina_run_executes_chain_but_does_not_self_approve():
     assert body["status"] == "REVIEW", body
     assert body["replay_verification"]["status"] == "VERIFIED", body
     assert len(body["replay"]) == 7
+
+
+def test_nina_run_explicit_llm_does_not_promote_deterministic_fallback(monkeypatch):
+    # No real provider credential: the existing agent runtime uses a local
+    # deterministic fallback, which must not be labeled as LLM execution.
+    monkeypatch.setenv("OLA_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OLA_LLM_MODE", "deterministic")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", "TEST_NO_LLM_FALLBACK_SHA")
+
+    tenant_id = str(uuid.uuid4())
+    api_key = "nina-no-fallback-" + uuid.uuid4().hex
+    with SessionLocal() as db:
+        db.add(Tenant(id=tenant_id, name="nina-llm-fallback"))
+        db.add(ApiKey(id=str(uuid.uuid4()), tenant_id=tenant_id,
+                      key_hash=api_key_fingerprint(api_key)))
+        db.commit()
+    response = TestClient(app).post("/nina-run",
+        headers={"X-API-Key": api_key}, json={
+            "task": "Calculate 17 * 23 and verify it",
+            "requested_tools": ["llm_agent"],
+        })
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["nina"]["status"] == "BLOCK", payload
+    assert payload["provenance"]["status"] == "BLOCK", payload
+    assert payload["status_fields"]["EXECUTION_ALLOWED"] == "BLOCK", payload
+    assert payload["status"] == "BLOCK", payload
+    assert payload["human_gate"]["status"] == "BLOCK", payload

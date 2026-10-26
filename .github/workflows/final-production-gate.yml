@@ -34,8 +34,24 @@ jobs:
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          ref: ${{ steps.target.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Assert checkout is the exact release source
+        shell: bash
+        env:
+          TARGET_SOURCE_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          checked_out="$(git rev-parse HEAD)"
+          if [ "$checked_out" != "$TARGET_SOURCE_SHA" ]; then
+            echo "::error::Release source mismatch: $checked_out != $TARGET_SOURCE_SHA"
+            exit 1
+          fi
+
+      - name: Enforce exact-source security checkout contract
+        run: python -m unittest discover -s tests -p "test_release_source_binding.py"
 
       - name: Verify required evidence gates
         env:
@@ -48,7 +64,8 @@ jobs:
           case "${GITHUB_EVENT_NAME}" in
             pull_request|push) event_filter="&event=${GITHUB_EVENT_NAME}" ;;
           esac
-          max_attempts=80
+          # Producer DAG gate permits up to 25 min; cover it plus queue latency.
+          max_attempts=120
           sleep_seconds=15
 
           for attempt in $(seq 1 "$max_attempts"); do
@@ -72,6 +89,9 @@ jobs:
 
           required_exact = [
               "Nina TDD",
+              "NINA Parallel DAG Gate",
+              "OLA Supply Chain Evidence Gate",
+              "OLA CodeQL",
               "OLA DI-OS Product Gate",
               "NINA IGOR Ollama Full Flow",
               "OLA Decision Evidence Gate",
@@ -214,7 +234,7 @@ jobs:
         run: |
           set -euo pipefail
           status="BLOCKED"
-          if [ "${{ job.status }}" = "success" ]; then status="VERIFIED"; fi
+          if [ "${{ job.status }}" = "success" ]; then status="ATTESTED_PENDING_HUMAN"; fi
           cat > production-manifest.json <<EOF
           {
             "schema": "ola-production-evidence-v1",

@@ -21,6 +21,7 @@ def chain_snapshot(tenant_id):
             "seq": r.seq,
             "prev_hash": r.prev_hash,
             "record_hash": r.record_hash,
+            "record_type": r.record_type,
             "payload_json": r.payload_json,
         } for r in rows]
     ok, reason = verify_chain(chain)

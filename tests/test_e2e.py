@@ -1,3 +1,4 @@
+from app.api_key_hashing import api_key_fingerprint
 import hashlib
 import uuid
 
@@ -26,12 +27,12 @@ def _seed_tenants():
             ApiKey(
                 id=str(uuid.uuid4()),
                 tenant_id=tenant_a_id,
-                key_hash=hashlib.sha256(key_a.encode()).hexdigest(),
+                key_hash=api_key_fingerprint(key_a),
             ),
             ApiKey(
                 id=str(uuid.uuid4()),
                 tenant_id=tenant_b_id,
-                key_hash=hashlib.sha256(key_b.encode()).hexdigest(),
+                key_hash=api_key_fingerprint(key_b),
             ),
         ]
     )
@@ -59,7 +60,10 @@ def test_ola_e2e_closed_environment():
         f"/evidence/{record['id']}", headers={"X-API-Key": key_a}
     )
     assert owned.status_code == 200
-    assert owned.json()["payload"] == {"x": 1}
+    assert owned.json()["payload"]["x"] == 1
+    assert owned.json()["payload"]["__ola_evidence_v2__"] == {
+        "version": 2, "record_type": "generic", "producer": "tenant_api"
+    }
 
     cross_tenant = client.get(
         f"/evidence/{record['id']}", headers={"X-API-Key": key_b}
@@ -74,6 +78,7 @@ def test_ola_e2e_closed_environment():
             "seq": row.seq,
             "prev_hash": row.prev_hash,
             "record_hash": row.record_hash,
+            "record_type": row.record_type,
             "payload_json": row.payload_json,
         }
     ]
@@ -163,6 +168,7 @@ def test_product_e2e_customer_audit():
                 "seq": row.seq,
                 "prev_hash": row.prev_hash,
                 "record_hash": row.record_hash,
+                "record_type": row.record_type,
                 "payload_json": row.payload_json,
             }
             for row in rows

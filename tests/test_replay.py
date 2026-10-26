@@ -1,6 +1,6 @@
 import json
 
-from app.hashchain import GENESIS_HASH, compute_record_hash
+from app.hashchain import GENESIS_HASH, compute_record_hash, compute_record_hash_v2, sealed_payload_json
 from app.replay import build_replay, verify_replay
 
 
@@ -12,7 +12,7 @@ def _record(seq, run_id="r1", tenant_id="tenant-1", record_type="agent.codeact",
         "tool": "safe_expression",
         "status": status,
     }
-    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    payload_json = sealed_payload_json(record_type, payload)
     row = {
         "id": f"e{seq}",
         "tenant_id": tenant_id,
@@ -25,7 +25,7 @@ def _record(seq, run_id="r1", tenant_id="tenant-1", record_type="agent.codeact",
     if seq:
         previous = _record(seq - 1, run_id=run_id, tenant_id=tenant_id, record_type=record_type, status=status)
         row["prev_hash"] = previous["record_hash"]
-    row["record_hash"] = compute_record_hash(row["tenant_id"], row["seq"], row["prev_hash"], row["payload_json"])
+    row["record_hash"] = compute_record_hash_v2(row["tenant_id"], row["seq"], row["prev_hash"], row["record_type"], "ola_runtime", row["payload_json"])
     return row
 
 
@@ -55,13 +55,13 @@ def test_replay_regression_checks_record_type_and_status():
     rows[1]["record_type"] = "agent.tampered"
     result = verify_replay(rows, expected_run_id="r1", expected_tenant_id="tenant-1", expected_record_count=2, expected_tip_hash=rows[-1]["record_hash"])
     assert result["status"] == "BLOCK"
-    assert result["reason"] == "run record type mismatch"
+    assert result["reason"] == "record type or producer binding mismatch"
 
     rows = _chain(count=2)
-    rows[1]["payload_json"] = json.dumps({
+    rows[1]["payload_json"] = sealed_payload_json("agent.codeact", {
         "run_id": "r1", "agent": "codeact", "input_digest": "in-1", "tool": "safe_expression", "status": "BLOCK"
-    }, sort_keys=True, separators=(",", ":"))
-    rows[1]["record_hash"] = compute_record_hash(rows[1]["tenant_id"], rows[1]["seq"], rows[1]["prev_hash"], rows[1]["payload_json"])
+    })
+    rows[1]["record_hash"] = compute_record_hash_v2(rows[1]["tenant_id"], rows[1]["seq"], rows[1]["prev_hash"], rows[1]["record_type"], "ola_runtime", rows[1]["payload_json"])
     result = verify_replay(rows, expected_run_id="r1", expected_tenant_id="tenant-1", expected_record_count=2, expected_tip_hash=rows[-1]["record_hash"])
     assert result["status"] == "BLOCK"
     assert result["reason"] == "run record status mismatch"

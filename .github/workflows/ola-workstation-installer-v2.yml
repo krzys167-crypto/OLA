@@ -6,6 +6,11 @@ on:
     paths:
       - "workstation/OLA-Workstation.ps1"
       - ".github/workflows/ola-workstation-installer-v2.yml"
+  pull_request:
+    paths:
+      - "workstation/OLA-Workstation.ps1"
+      - ".github/workflows/ola-workstation-installer-v2.yml"
+      - "tests/test_workstation_source_guard.py"
   workflow_dispatch:
 
 permissions:
@@ -18,7 +23,30 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+
+      - name: Verify exact source and PowerShell syntax
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if ((git rev-parse HEAD).Trim() -ne $env:EXPECTED_SHA) {
+            throw "Workstation source SHA mismatch"
+          }
+          $tokens = $null
+          $parseErrors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "workstation/OLA-Workstation.ps1").Path,
+            [ref]$tokens,
+            [ref]$parseErrors
+          )
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | Format-List | Out-String | Write-Error
+            throw "Workstation PowerShell parse failed"
+          }
+          Write-Host "POWERSHELL_PARSER=PASS"
+
 
       - name: Prepare installer source
         shell: pwsh
@@ -109,10 +137,10 @@ jobs:
 
           dotnet publish OLA-Workstation-Installer.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true
 
-          Copy-Item bin/Release/net8.0/win-x64/publish/OLA-Workstation-Installer-v2.exe ../../OLA-Workstation-Installer-v2.exe
-          Get-FileHash ../../OLA-Workstation-Installer-v2.exe -Algorithm SHA256 |
+          Copy-Item bin/Release/net8.0/win-x64/publish/OLA-Workstation-Installer-v2.exe ../OLA-Workstation-Installer-v2.exe
+          Get-FileHash ../OLA-Workstation-Installer-v2.exe -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash)  OLA-Workstation-Installer-v2.exe" } |
-            Set-Content ../../OLA-Workstation-Installer-v2.sha256 -Encoding ASCII
+            Set-Content ../OLA-Workstation-Installer-v2.sha256 -Encoding ASCII
 
       - name: Verify installer artifact
         shell: pwsh

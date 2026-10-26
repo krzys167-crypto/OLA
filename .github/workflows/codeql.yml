@@ -28,7 +28,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+
+      - name: Assert scan checkout matches immutable source SHA
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          checked_out="$(git rev-parse HEAD)"
+          if [ "$checked_out" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "::error::CodeQL scanned $checked_out instead of $EXPECTED_SOURCE_SHA"
+            exit 1
+          fi
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
@@ -42,42 +55,62 @@ jobs:
           category: "/${{ matrix.language }}"
           output: codeql-results
 
+      - name: Test security policy with high rule metadata
+        run: python -m unittest discover -s tests -p "test_codeql_sarif_gate.py"
+
       - name: Enforce OLA high/critical policy from SARIF
-        shell: bash
+        run: python scripts/check_codeql_sarif.py codeql-results
+
+      - name: Inspect GitHub Advanced Security alerts for exact PR source (read-only)
+        if: ${{ matrix.language == 'python' && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          set -euo pipefail
           python - <<'PY'
-          import glob
           import json
+          import os
           import sys
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
 
-          findings = []
-          files = glob.glob("codeql-results/*.sarif")
-          for path in files:
-              data = json.load(open(path, encoding="utf-8"))
-              for run in data.get("runs", []):
-                  tool = run.get("tool", {}).get("driver", {}).get("name", "CodeQL")
-                  for result in run.get("results", []):
-                      props = result.get("properties", {})
-                      raw = props.get("security-severity")
-                      try:
-                          severity = float(raw)
-                      except (TypeError, ValueError):
-                          severity = 0.0
-                      if severity >= 7.0:
-                          findings.append({
-                              "tool": tool,
-                              "rule": result.get("ruleId"),
-                              "severity": severity,
-                              "message": result.get("message", {}).get("text"),
-                          })
-
-          print(json.dumps({
-              "codeql_sarif_files": sorted(files),
-              "high_or_critical_findings": findings,
-              "status": "BLOCK" if findings else "PASS",
-          }, sort_keys=True))
-
-          if findings:
+          repo = os.environ["GITHUB_REPOSITORY"]
+          expected = os.environ["EXPECTED_SOURCE_SHA"]
+          ref = f'refs/pull/{os.environ["PR_NUMBER"]}/head'
+          url = f"https://api.github.com/repos/{repo}/code-scanning/alerts?ref={quote(ref, safe='')}&state=open&per_page=100"
+          req = Request(url, headers={
+              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          })
+          try:
+              with urlopen(req, timeout=20) as response:
+                  alerts = json.load(response)
+          except Exception as error:
+              print(json.dumps({"status": "BLOCK", "reason": "CODE_SCANNING_ALERT_READ_FAILED",
+                                "error_class": type(error).__name__}))
+              sys.exit(1)
+          if not isinstance(alerts, list) or len(alerts) >= 100:
+              print(json.dumps({"status": "BLOCK", "reason": "ALERT_LIST_INCOMPLETE"}))
+              sys.exit(1)
+          relevant = []
+          for alert in alerts:
+              inst = alert.get("most_recent_instance") or {}
+              rule = alert.get("rule") or {}
+              if (alert.get("tool") or {}).get("name") != "CodeQL":
+                  continue
+              relevant.append({
+                  "number": alert.get("number"), "severity": rule.get("security_severity_level") or rule.get("severity"),
+                  "rule": rule.get("id"), "sha": inst.get("commit_sha"),
+                  "path": (inst.get("location") or {}).get("path"),
+                  "line": (inst.get("location") or {}).get("start_line"),
+                  "url": alert.get("html_url"),
+              })
+          current = [a for a in relevant if a["sha"] == expected]
+          high = [a for a in current if a["severity"] in ("critical", "high")]
+          print(json.dumps({"status": "BLOCK" if high else "INSPECTED",
+                            "expected_sha": expected, "alerts": relevant}, sort_keys=True))
+          if high:
               sys.exit(1)
           PY

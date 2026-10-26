@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import json
 
-from .hashchain import verify_chain
+from .hashchain import verify_chain, trusted_record, is_privileged_type
 
 
 @dataclass(frozen=True)
@@ -28,18 +28,21 @@ class IgorVerifier:
         if not chain_ok:
             return IgorVerification("BLOCK", chain_reason, checks)
 
-        payloads = [json.loads(record["payload_json"]) for record in records]
-        if expected_run_id is not None:
-            payloads = [
-                payload for payload in payloads
-                if payload.get("run_id") == expected_run_id
-            ]
-            scoped_records = [
-                record for record in records
-                if json.loads(record["payload_json"]).get("run_id") == expected_run_id
-            ]
-        else:
-            scoped_records = list(records)
+        # Only server-bound privileged records can authenticate an execution.
+        # V1 hashes remain readable, but not trustworthy execution provenance.
+        scoped_records = []
+        for record in records:
+            if not is_privileged_type(record.get("record_type")):
+                continue
+            payload = json.loads(record["payload_json"])
+            if not isinstance(payload, dict):
+                return IgorVerification("BLOCK", "malformed privileged event", checks)
+            if expected_run_id is not None and payload.get("run_id") != expected_run_id:
+                continue
+            if not trusted_record(record):
+                return IgorVerification("BLOCK", "legacy or untrusted execution evidence", checks)
+            scoped_records.append(record)
+        payloads = [json.loads(record["payload_json"]) for record in scoped_records]
         if not payloads:
             return IgorVerification("UNKNOWN", "missing current-run evidence", checks)
         provenance_values = {payload.get("commit") for payload in payloads if payload.get("commit") is not None}

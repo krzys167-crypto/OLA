@@ -30,9 +30,12 @@ class ExecutionSafetyGate:
         # gate does not yet maintain an agent registry.
         _ = agent_id
 
-        # High-risk actions require explicit human-owner approval before any
-        # allow-list check can result in execution.
-        if risk.upper() == "HIGH" and not human_approved:
+        # A caller-controlled boolean is NOT an authenticated, action-bound
+        # Human Gate approval. Deny high-risk execution until a trusted
+        # approval verifier is integrated at this execution boundary.
+        if not isinstance(risk, str) or risk.upper() not in {"LOW", "MEDIUM", "HIGH"}:
+            return ExecutionDecision(status="BLOCK")
+        if risk.upper() == "HIGH":
             return ExecutionDecision(
                 status="REVIEW",
                 required_approval="HUMAN_OWNER",

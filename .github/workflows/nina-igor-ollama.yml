@@ -13,6 +13,9 @@ permissions:
   contents: read
 
 env:
+  # CI fixture only; NEVER use as a production secret.
+  EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  OLA_API_KEY_PEPPER: ${{ github.event.pull_request.head.sha || github.sha }}
   OLA_LLM_PROVIDER: ollama
   OLA_LLM_MODE: required
   OLLAMA_MODEL: qwen2.5:0.5b-instruct
@@ -32,7 +35,17 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Assert checkout matches trusted source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          if [ "$actual" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "::error::Source checkout mismatch: $actual != $EXPECTED_SOURCE_SHA"
+            exit 1
+          fi
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
@@ -46,8 +59,19 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Assert checkout matches trusted source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          if [ "$actual" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "::error::Source checkout mismatch: $actual != $EXPECTED_SOURCE_SHA"
+            exit 1
+          fi
 
       - name: Set up Ollama
         shell: bash
@@ -71,11 +95,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --detach --rm \
+          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" \
             --name ola-nina-ollama \
             --network host \
             -e OLA_EG_DB_PATH=/data/ola.db \
-            -e OLA_RUNTIME_COMMIT="$GITHUB_SHA" \
+            -e OLA_RUNTIME_COMMIT="$EXPECTED_SOURCE_SHA" \
             -e OLA_LLM_PROVIDER="$OLA_LLM_PROVIDER" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
             -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
@@ -98,8 +122,10 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i ola-nina-ollama python - <<'PY' > nina-igor-ollama-proof.json
+          from app.api_key_hashing import api_key_fingerprint
           import hashlib
           import json
+          import os
           import sqlite3
           import urllib.request
           import uuid
@@ -111,7 +137,7 @@ jobs:
           db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tenant_id,"ci-nina-ollama"))
           db.execute(
               "INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",
-              (str(uuid.uuid4()),tenant_id,hashlib.sha256(raw_key.encode()).hexdigest()),
+              (str(uuid.uuid4()),tenant_id,api_key_fingerprint(raw_key)),
           )
           db.commit()
           db.close()
@@ -146,7 +172,7 @@ jobs:
           assert body["igor"]["checks"]["provider"] is True, body
           assert body["igor"]["checks"]["model"] is True, body
           assert body["provenance"]["status"]=="VERIFIED", body
-          assert body["provenance"]["commit"]=="${{ github.sha }}", body
+          assert body["provenance"]["commit"]==os.environ["OLA_RUNTIME_COMMIT"], body
           assert body["provenance"]["provider"]=="ollama", body
           assert body["provenance"]["model"]=="qwen2.5:0.5b-instruct", body
           assert body["provenance"]["invocation_type"]=="real_llm", body
@@ -177,7 +203,7 @@ jobs:
               "human_gate_status":body["human_gate"]["status"],
               "run_id":body["run_id"],
               "tenant_id":tenant_id,
-              "commit":"${{ github.sha }}",
+              "commit":os.environ["OLA_RUNTIME_COMMIT"],
           }
           print(json.dumps(proof,sort_keys=True))
           with open("/data/nina-ollama-proof-context.json","w",encoding="utf-8") as stream:
@@ -194,7 +220,7 @@ jobs:
             python scripts/verify_agent_runtime.py \
               --tenant-id "$TENANT_ID" \
               --run-id "$RUN_ID" \
-              --expected-commit "$GITHUB_SHA" \
+              --expected-commit "$EXPECTED_SOURCE_SHA" \
               --expected-task "Calculate 17 * 23 and return the exact verified result 391." \
               --expected-result "391" \
               --expected-provider "ollama" \
@@ -210,7 +236,7 @@ jobs:
       - name: Upload full-flow evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nina-igor-ollama-full-flow-${{ github.sha }}
+          name: nina-igor-ollama-full-flow-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             ollama-models.json
             nina-igor-ollama-proof.json
@@ -229,7 +255,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nina-igor-ollama-failure-${{ github.sha }}
+          name: nina-igor-ollama-failure-${{ github.event.pull_request.head.sha || github.sha }}
           if-no-files-found: warn
           path: |
             nina-igor-runtime-failure.log

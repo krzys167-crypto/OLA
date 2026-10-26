@@ -7,7 +7,7 @@ import uuid
 
 from sqlalchemy import select
 
-from .database import SessionLocal
+from .database import SessionLocal, append_evidence_atomic
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
 from .models import EvidenceRecord
 
@@ -165,6 +165,45 @@ def _invoke_llm(agent, task, context):
             "stream": False,
             "options": options,
         }
+        if agent == "nina_dag_planner":
+            # A JSON DAG needs more room than short worker answers. Ollama's
+            # structured JSON mode keeps the plan machine-readable; validation
+            # of allowed tools, dependencies and sizes still happens separately.
+            allowed = context.get("allowed_tools", [])
+            if (not isinstance(allowed, list) or not allowed
+                    or not all(isinstance(tool, str) and tool for tool in allowed)):
+                raise ValueError("planner requires explicit allowlisted capabilities")
+            payload["format"] = {
+                "type": "object",
+                "properties": {
+                    "nodes": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 16,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "minLength": 1, "maxLength": 40},
+                                "tool": {"type": "string", "enum": allowed},
+                                "task": {"type": "string", "minLength": 1, "maxLength": 1000},
+                                "needs": {"type": "array", "items": {"type": "string"}},
+                            },
+                            "required": ["id", "tool", "task", "needs"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["nodes"],
+                "additionalProperties": False,
+            }
+            if context.get("independent_only") is True:
+                # Independent goal: model still chooses task count/IDs/content,
+                # but cannot hallucinate dependencies on nonexistent DAG nodes.
+                nodes_schema = payload["format"]["properties"]["nodes"]
+                nodes_schema["minItems"] = 2
+                nodes_schema["maxItems"] = 4
+                nodes_schema["items"]["properties"]["needs"]["maxItems"] = 0
+            options["num_predict"] = max(options.get("num_predict", 0), 256)
         response = httpx.post(
             f"{base_url}/api/chat",
             headers={"Content-Type": "application/json"},
@@ -267,15 +306,8 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
         "status": "VERIFIED",
         "llm_required": os.getenv("OLA_LLM_MODE", "deterministic") == "required",
     }
-    with SessionLocal() as db:
-        last = db.scalar(select(EvidenceRecord).where(EvidenceRecord.tenant_id == tenant_id).order_by(EvidenceRecord.seq.desc()))
-        seq = 0 if last is None else last.seq + 1
-        prev_hash = GENESIS_HASH if last is None else last.record_hash
-        payload_json = canonical_json({"run_id": run_id, **output})
-        record = EvidenceRecord(id=str(uuid.uuid4()), tenant_id=tenant_id, seq=seq, record_type=f"agent.{agent}", payload_json=payload_json, prev_hash=prev_hash, record_hash=compute_record_hash(tenant_id, seq, prev_hash, payload_json))
-        db.add(record)
-        db.commit()
-        return record.id, output
+    saved = append_evidence_atomic(tenant_id, f"agent.{agent}", {"run_id": run_id, **output})
+    return saved["id"], output
 
 
 def run_agent_task(tenant_id, task):
@@ -400,8 +432,12 @@ def verify_agent_run(tenant_id, run_id):
         context_digests.add(payload["context_digest"])
     if len(instance_ids) != len(AGENT_ROLES) or len(context_digests) != len(AGENT_ROLES):
         return {"status": "BLOCK", "reason": "agent instances or contexts are not unique", "evidence_count": len(run_rows)}
-    chain = [{"tenant_id": row.tenant_id, "seq": row.seq, "prev_hash": row.prev_hash, "record_hash": row.record_hash, "payload_json": row.payload_json} for row in rows]
+    chain = [{"tenant_id": row.tenant_id, "seq": row.seq, "prev_hash": row.prev_hash, "record_hash": row.record_hash, "record_type": row.record_type, "payload_json": row.payload_json} for row in rows]
     chain_ok, reason = verify_chain(chain)
+    from .hashchain import trusted_record
+    if chain_ok and not all(trusted_record({"record_type": row.record_type, "payload_json": row.payload_json})
+                            for row in run_rows):
+        return {"status": "BLOCK", "reason": "legacy or untrusted agent evidence", "evidence_count": len(run_rows)}
     if not chain_ok:
         return {"status": "BLOCK", "reason": reason, "evidence_count": len(run_rows)}
     return {"status": "VERIFIED", "reason": "independent agent identities, contexts, execution evidence and hash-chain verification passed", "evidence_count": len(run_rows)}

@@ -4,7 +4,7 @@ import uuid
 from .agent_runtime import run_agent_task
 
 
-REGISTERED_TOOLS = ("safe_expression", "local_mcp_tool_registry.sha256")
+REGISTERED_TOOLS = ("safe_expression", "local_mcp_tool_registry.sha256", "llm_agent")
 
 
 @dataclass(frozen=True)
@@ -69,9 +69,22 @@ class NinaOrchestrator:
                 "reason": decision.reason,
             }
         runtime = run_agent_task(task.tenant_id, task.task)
+        status = runtime.get("status", "UNKNOWN")
+        # The legacy six-agent executor can fall back to a deterministic model.
+        # That trace may be internally consistent, but is not evidence that an
+        # explicitly requested LLM capability actually ran.
+        if "llm_agent" in task.requested_tools:
+            events = runtime.get("execution")
+            if (not isinstance(events, list) or not events
+                    or any(not isinstance(event, dict)
+                           or event.get("invocation_type") != "real_llm"
+                           or not isinstance(event.get("response_id"), str)
+                           or not event["response_id"]
+                           for event in events)):
+                status = "BLOCK"
         return {
             "task_id": task.task_id,
             "decision": decision,
-            "status": runtime.get("status", "UNKNOWN"),
+            "status": status,
             "runtime": runtime,
         }

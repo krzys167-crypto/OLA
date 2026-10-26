@@ -14,16 +14,20 @@ contaminate the result.
 """
 import atexit
 import os
+import secrets
 import shutil
 import sys
 import tempfile
 import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from app.api_key_hashing import api_key_fingerprint
 
 TEST_DIR = tempfile.mkdtemp(prefix="ola_readme_claims_")
 TEST_DB = os.path.join(TEST_DIR, "claims.db")
 os.environ["OLA_EG_DB_PATH"] = TEST_DB
+# Standalone test fixture; never use this ephemeral pepper for production.
+os.environ["OLA_API_KEY_PEPPER"] = secrets.token_hex(32)
 
 FAILURES = []
 
@@ -118,8 +122,8 @@ def _c3():
     db.add_all([tA, tB]); db.commit()
     kA_raw, kB_raw = "key-a", "key-b"
     db.add_all([
-        ApiKey(id=str(uuid.uuid4()), tenant_id=tA.id, key_hash=hashlib.sha256(kA_raw.encode()).hexdigest()),
-        ApiKey(id=str(uuid.uuid4()), tenant_id=tB.id, key_hash=hashlib.sha256(kB_raw.encode()).hexdigest()),
+        ApiKey(id=str(uuid.uuid4()), tenant_id=tA.id, key_hash=api_key_fingerprint(kA_raw)),
+        ApiKey(id=str(uuid.uuid4()), tenant_id=tB.id, key_hash=api_key_fingerprint(kB_raw)),
     ])
     db.commit()
 

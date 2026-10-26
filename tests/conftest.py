@@ -11,6 +11,8 @@ if str(REPO_ROOT) not in sys.path:
 
 TEST_DB_PATH = os.path.join(tempfile.mkdtemp(prefix="ola_pytest_"), "pytest.db")
 os.environ["OLA_EG_DB_PATH"] = TEST_DB_PATH
+# Test fixtures only; never use this pepper in production.
+os.environ.setdefault("OLA_API_KEY_PEPPER", "test-only-api-key-pepper-not-for-production")
 
 # Import the application database only after the test DB path is fixed.
 from app.database import Base, engine

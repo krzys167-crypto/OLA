@@ -1,6 +1,6 @@
 import json
 
-from .hashchain import verify_chain
+from .hashchain import verify_chain, trusted_record
 
 
 def build_replay(records):
@@ -75,6 +75,8 @@ def verify_replay(records, expected_run_id, expected_tenant_id,
     for record in records:
         payload = json.loads(record["payload_json"])
         if payload.get("run_id") == expected_run_id and record.get("record_type", "").startswith("agent."):
+            if not trusted_record(record):
+                return {"status": "BLOCK", "reason": "legacy or untrusted agent evidence", "event_count": len(records)}
             expected_type = f"agent.{payload.get('agent', '')}"
             if payload.get("agent") is None or record["record_type"] != expected_type:
                 return {"status": "BLOCK", "reason": "run record type mismatch", "event_count": len(records)}

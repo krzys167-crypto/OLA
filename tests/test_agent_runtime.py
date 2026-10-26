@@ -1,3 +1,4 @@
+from app.api_key_hashing import api_key_fingerprint
 import hashlib
 import uuid
 
@@ -17,7 +18,7 @@ def _seed_tenant(api_key="agent-key"):
     db.add(ApiKey(
         id=str(uuid.uuid4()),
         tenant_id=tenant_id,
-        key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
+        key_hash=api_key_fingerprint(api_key),
     ))
     db.commit()
     db.close()

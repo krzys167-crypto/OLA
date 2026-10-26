@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # CI fixture only; NEVER use as a production secret.
+  OLA_API_KEY_PEPPER: ${{ github.sha }}
+
 jobs:
   e2e:
     runs-on: ubuntu-latest
@@ -44,7 +48,7 @@ jobs:
 
       - name: Run deployment image
         run: |
-          docker run --detach --rm --name ola-e2e --publish 8000:8000 -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola:${GITHUB_SHA}
+          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" --name ola-e2e --publish 8000:8000 -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola:${GITHUB_SHA}
           for i in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
               exit 0
@@ -59,11 +63,12 @@ jobs:
           EXPECTED_COMMIT: ${{ github.sha }}
         run: |
           docker exec -i -e EXPECTED_COMMIT="$EXPECTED_COMMIT" ola-e2e python - <<'PY'
+          from app.api_key_hashing import api_key_fingerprint
           import hashlib, json, os, sqlite3, urllib.request, uuid
           db_path = "/data/ola.db"
           tenant_id = str(uuid.uuid4())
           raw_key = "ci-runtime-key"
-          key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+          key_hash = api_key_fingerprint(raw_key)
           db = sqlite3.connect(db_path)
           db.execute("INSERT INTO tenants(id, name) VALUES (?, ?)", (tenant_id, "ci-runtime"))
           db.execute("INSERT INTO api_keys(id, tenant_id, key_hash) VALUES (?, ?, ?)", (str(uuid.uuid4()), tenant_id, key_hash))
@@ -82,9 +87,19 @@ jobs:
           assert [r[0] for r in rows] == result["evidence_ids"], (rows, result)
           expected_prev = "0" * 64
           for expected_seq, row in enumerate(rows):
-              _, row_tenant, seq, _, payload_json, prev_hash, record_hash = row
+              _, row_tenant, seq, record_type, payload_json, prev_hash, record_hash = row
               assert row_tenant == tenant_id; assert seq == expected_seq; assert prev_hash == expected_prev
-              expected_hash = hashlib.sha256(f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")).hexdigest()
+              # Independent V2 ledger verifier — never import the producer's hash function.
+              payload = json.loads(payload_json)
+              meta = payload.get("__ola_evidence_v2__")
+              assert meta == {"version": 2, "record_type": record_type, "producer": "ola_runtime"}, meta
+              material = json.dumps({
+                  "domain": "OLA-EVIDENCE-CHAIN-V2",
+                  "tenant_id": tenant_id, "seq": seq, "prev_hash": prev_hash,
+                  "record_type": record_type, "producer": "ola_runtime",
+                  "payload_json": payload_json,
+              }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+              expected_hash = hashlib.sha256(material.encode("utf-8")).hexdigest()
               assert record_hash == expected_hash, (seq, record_hash, expected_hash); expected_prev = record_hash
           print(json.dumps({"gate":"INDEPENDENT_RUNTIME_E2E","status":"VERIFIED","container_health":"PASS","http_audit":"PASS","evidence_count":len(rows),"hash_chain":"PASS","result_ids_match_db":True,"commit":os.environ["EXPECTED_COMMIT"]}, sort_keys=True))
           PY
@@ -98,11 +113,12 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola-e2e python - <<'PY'
+          from app.api_key_hashing import api_key_fingerprint
           import hashlib, json, os, sqlite3, urllib.request, uuid
           db_path="/data/ola.db"; tenant_id=str(uuid.uuid4()); raw_key="ci-real-llm-key"
           db=sqlite3.connect(db_path)
           db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tenant_id,"ci-real-llm"))
-          db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tenant_id,hashlib.sha256(raw_key.encode()).hexdigest()))
+          db.execute("INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",(str(uuid.uuid4()),tenant_id,api_key_fingerprint(raw_key)))
           db.commit(); db.close()
           task="Calculate 17 * 23 and return the exact verified result 391."
           req=urllib.request.Request("http://127.0.0.1:8000/agent-run",data=json.dumps({"task":task}).encode(),headers={"Content-Type":"application/json","X-API-Key":raw_key},method="POST")
@@ -128,11 +144,12 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" -e EXPECTED_COMMIT="$EXPECTED_COMMIT" -e EXPECTED_TASK="$EXPECTED_TASK" -e EXPECTED_RESULT="$EXPECTED_RESULT" ola-e2e python - <<'PY' > agent-runtime-proof.json
+          from app.api_key_hashing import api_key_fingerprint
           import hashlib, json, os, sqlite3, subprocess, urllib.request, uuid
           db_path = "/data/ola.db"
           tenant_id = str(uuid.uuid4())
           raw_key = "ci-agent-key"
-          key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+          key_hash = api_key_fingerprint(raw_key)
           db = sqlite3.connect(db_path)
           db.execute("INSERT INTO tenants(id, name) VALUES (?, ?)", (tenant_id, "ci-real-task"))
           db.execute("INSERT INTO api_keys(id, tenant_id, key_hash) VALUES (?, ?, ?)", (str(uuid.uuid4()), tenant_id, key_hash))
@@ -158,9 +175,19 @@ jobs:
           assert payloads[-1]["final_result"] == expected_result, payloads[-1]
           expected_prev = "0" * 64
           for expected_seq, row in enumerate(rows):
-              _, row_tenant, seq, _, payload_json, prev_hash, record_hash = row
+              _, row_tenant, seq, record_type, payload_json, prev_hash, record_hash = row
               assert row_tenant == tenant_id; assert seq == expected_seq; assert prev_hash == expected_prev
-              expected_hash = hashlib.sha256(f"{tenant_id}|{seq}|{prev_hash}|{payload_json}".encode("utf-8")).hexdigest()
+              # Independent V2 ledger verifier — never import the producer's hash function.
+              payload = json.loads(payload_json)
+              meta = payload.get("__ola_evidence_v2__")
+              assert meta == {"version": 2, "record_type": record_type, "producer": "ola_runtime"}, meta
+              material = json.dumps({
+                  "domain": "OLA-EVIDENCE-CHAIN-V2",
+                  "tenant_id": tenant_id, "seq": seq, "prev_hash": prev_hash,
+                  "record_type": record_type, "producer": "ola_runtime",
+                  "payload_json": payload_json,
+              }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+              expected_hash = hashlib.sha256(material.encode("utf-8")).hexdigest()
               assert record_hash == expected_hash; expected_prev = record_hash
           verifier = subprocess.run(
               ["python", "scripts/verify_agent_runtime.py", "--tenant-id", tenant_id,
@@ -183,13 +210,14 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i -e EXPECTED_COMMIT="$EXPECTED_COMMIT" -e INVOICE_JSON="$INVOICE_JSON" ola-e2e python - <<'PY' > business-invoice-proof.json
+          from app.api_key_hashing import api_key_fingerprint
           import json, os, sqlite3, subprocess, sys, urllib.request, uuid
           db_path = "/data/ola.db"
           invoice = json.loads(os.environ["INVOICE_JSON"])
           raw_key = "ci-business-key"
           tenant_id = str(uuid.uuid4())
           import hashlib
-          key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+          key_hash = api_key_fingerprint(raw_key)
           db = sqlite3.connect(db_path)
           db.execute("INSERT INTO tenants(id, name) VALUES (?, ?)", (tenant_id, "ci-business-invoice"))
           db.execute("INSERT INTO api_keys(id, tenant_id, key_hash) VALUES (?, ?, ?)", (str(uuid.uuid4()), tenant_id, key_hash))

@@ -11,6 +11,9 @@ permissions:
   contents: read
 
 env:
+  # CI fixture only; NEVER use as a production secret.
+  EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  OLA_API_KEY_PEPPER: ${{ github.event.pull_request.head.sha || github.sha }}
   OLA_LLM_PROVIDER: ollama
   OLA_LLM_MODE: required
   OLLAMA_MODEL: qwen2.5:0.5b-instruct
@@ -25,8 +28,19 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Assert checkout matches trusted source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          if [ "$actual" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "::error::Source checkout mismatch: $actual != $EXPECTED_SOURCE_SHA"
+            exit 1
+          fi
 
       - name: Set up Ollama
         shell: bash
@@ -63,11 +77,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --detach --rm \
+          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" \
             --name ola-ollama-e2e \
             --network host \
             -e OLA_EG_DB_PATH=/data/ola.db \
-            -e OLA_RUNTIME_COMMIT="$GITHUB_SHA" \
+            -e OLA_RUNTIME_COMMIT="$EXPECTED_SOURCE_SHA" \
             -e OLA_LLM_PROVIDER="$OLA_LLM_PROVIDER" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
             -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
@@ -90,9 +104,10 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i \
-            -e EXPECTED_COMMIT="$GITHUB_SHA" \
+            -e EXPECTED_COMMIT="$EXPECTED_SOURCE_SHA" \
             -e OLLAMA_MODEL="$OLLAMA_MODEL" \
             ola-ollama-e2e python - <<'PY' > ollama-runtime-proof.json
+          from app.api_key_hashing import api_key_fingerprint
           import hashlib
           import json
           import os
@@ -111,7 +126,7 @@ jobs:
           )
           db.execute(
               "INSERT INTO api_keys(id,tenant_id,key_hash) VALUES (?,?,?)",
-              (str(uuid.uuid4()),tenant_id,hashlib.sha256(raw_key.encode()).hexdigest()),
+              (str(uuid.uuid4()),tenant_id,api_key_fingerprint(raw_key)),
           )
           db.commit()
           db.close()
@@ -162,7 +177,7 @@ jobs:
             python scripts/verify_agent_runtime.py \
               --tenant-id "$TENANT_ID" \
               --run-id "$RUN_ID" \
-              --expected-commit "$GITHUB_SHA" \
+              --expected-commit "$EXPECTED_SOURCE_SHA" \
               --expected-task "Calculate 17 * 23 and return the exact verified result 391." \
               --expected-result "391" \
               --expected-provider "ollama" \
@@ -180,7 +195,7 @@ jobs:
       - name: Upload Ollama LLM evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ollama-real-llm-proof-${{ github.sha }}
+          name: ollama-real-llm-proof-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             ollama-tags-before-pull.json
             ollama-models.json
@@ -201,7 +216,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ollama-real-llm-failure-${{ github.sha }}
+          name: ollama-real-llm-failure-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             ola-ollama-runtime-failure.log
             ollama-service-failure.log

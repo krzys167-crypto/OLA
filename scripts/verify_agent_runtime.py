@@ -28,13 +28,42 @@ def compute_record_hash(tenant_id, seq, prev_hash, payload_json):
     ).hexdigest()
 
 
+V2_KEY = "__ola_evidence_v2__"
+
+
+def independent_record_hash(tenant_id, seq, record_type, payload_json, prev_hash):
+    """Independent hash protocol implementation; no app/hashchain imports."""
+    payload = json.loads(payload_json)
+    if not isinstance(payload, dict):
+        return None
+    metadata = payload.get(V2_KEY)
+    if metadata is None:
+        return compute_record_hash(tenant_id, seq, prev_hash, payload_json)
+    if (not isinstance(metadata, dict)
+            or metadata != {"version": 2, "record_type": record_type,
+                            "producer": metadata.get("producer")}
+            or metadata.get("producer") not in ("ola_runtime", "tenant_api")
+            or (record_type.startswith(("agent.", "workflow.", "task.", "human.",
+                                        "provenance.", "decision.", "execution.", "verification."))
+                and metadata.get("producer") != "ola_runtime")):
+        return None
+    material = json.dumps({
+        "domain": "OLA-EVIDENCE-CHAIN-V2",
+        "tenant_id": tenant_id, "seq": seq, "prev_hash": prev_hash,
+        "record_type": record_type, "producer": metadata["producer"],
+        "payload_json": payload_json,
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
 def verify_hash_chain(rows):
     expected_prev = GENESIS_HASH
     for expected_seq, row in enumerate(rows):
-        tenant_id, seq, _, payload_json, prev_hash, record_hash = row
+        tenant_id, seq, record_type, payload_json, prev_hash, record_hash = row
         if seq != expected_seq or prev_hash != expected_prev:
             return False, "sequence or predecessor mismatch"
-        expected = compute_record_hash(tenant_id, seq, prev_hash, payload_json)
+        expected = independent_record_hash(tenant_id, seq, record_type,
+                                           payload_json, prev_hash)
         if record_hash != expected:
             return False, "record hash mismatch"
         expected_prev = record_hash
@@ -88,6 +117,9 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
     for row in run_rows:
         payload = json.loads(row[3])
         payloads.append(payload)
+        if payload.get(V2_KEY) != {"version": 2, "record_type": row[2],
+                                   "producer": "ola_runtime"}:
+            return fail("legacy or unbound agent evidence")
         agent = payload.get("agent")
         required = {
             "capability", "tool", "tool_output", "result", "status",

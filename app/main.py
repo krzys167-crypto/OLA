@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import uuid
@@ -6,12 +5,16 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Request
 from starlette.responses import FileResponse
 from sqlalchemy import select
-from .database import Base, engine, SessionLocal, install_append_only_triggers
+from .database import Base, engine, SessionLocal, install_append_only_triggers, append_evidence_atomic
 from .models import Tenant, ApiKey, EvidenceRecord, StripeEvent
+from .api_key_hashing import api_key_fingerprint
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
 from .agent_runtime import run_agent_task
 from .business_runtime import run_invoice_task
-from .nina import NinaOrchestrator, NinaTask
+from .nina import NinaOrchestrator, NinaTask, REGISTERED_TOOLS
+from .nina_workflow import run_nina_workflow
+from .nina_workflow_gate import approve_workflow, WorkflowApprovalRejected
+from .workflow_engine import WorkflowPlanError
 from .igor import IgorVerifier
 from .replay import build_replay, verify_replay
 from .human_gate import HumanGate, ReviewDecision
@@ -29,7 +32,12 @@ install_append_only_triggers()
 def identity_from_key(raw_key):
     if not raw_key:
         raise HTTPException(status_code=401, detail="missing API key")
-    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    try:
+        key_hash = api_key_fingerprint(raw_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="invalid API key") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="API key verification unavailable") from exc
     with SessionLocal() as db:
         key = db.scalar(select(ApiKey).where(ApiKey.key_hash == key_hash))
         if key is None:
@@ -52,32 +60,22 @@ def bearer_identity(authorization):
 
 
 def append_record(tenant_id, record_type, payload):
-    payload_json = canonical_json(payload)
+    return append_evidence_atomic(tenant_id, record_type, payload)
+
+
+def read_tenant_evidence(tenant_id):
+    """Read the complete tenant chain, not only current-run rows."""
     with SessionLocal() as db:
-        last = db.scalar(
+        rows = db.scalars(
             select(EvidenceRecord)
             .where(EvidenceRecord.tenant_id == tenant_id)
-            .order_by(EvidenceRecord.seq.desc())
-        )
-        seq = 0 if last is None else last.seq + 1
-        prev_hash = GENESIS_HASH if last is None else last.record_hash
-        record = EvidenceRecord(
-            id=str(uuid.uuid4()),
-            tenant_id=tenant_id,
-            seq=seq,
-            record_type=record_type,
-            payload_json=payload_json,
-            prev_hash=prev_hash,
-            record_hash=compute_record_hash(tenant_id, seq, prev_hash, payload_json),
-        )
-        db.add(record)
-        db.commit()
-        return {
-            "id": record.id,
-            "tenant_id": record.tenant_id,
-            "seq": record.seq,
-            "record_hash": record.record_hash,
-        }
+            .order_by(EvidenceRecord.seq.asc())
+        ).all()
+    return [{
+        "id": row.id, "tenant_id": row.tenant_id, "seq": row.seq,
+        "record_type": row.record_type, "prev_hash": row.prev_hash,
+        "record_hash": row.record_hash, "payload_json": row.payload_json,
+    } for row in rows]
 
 
 def run_controlled_audit(tenant_id, task, scenario):
@@ -112,6 +110,7 @@ def run_controlled_audit(tenant_id, task, scenario):
             "seq": row.seq,
             "prev_hash": row.prev_hash,
             "record_hash": row.record_hash,
+            "record_type": row.record_type,
             "payload_json": row.payload_json,
         }
         for row in rows
@@ -173,9 +172,9 @@ def create_checkout_session(body: dict, x_api_key: str | None = Header(default=N
     try:
         session = create_checkout(task.strip(), success_url, cancel_url, tenant_id)
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail="checkout unavailable") from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"checkout creation failed: {exc.__class__.__name__}") from exc
+        raise HTTPException(status_code=502, detail="checkout unavailable") from exc
     append_record(tenant_id, "revenue.checkout_created", {"session_id": session.get("id"), "task": task.strip(), "amount": session.get("amount_total")})
     return {"status": "READY_FOR_PAYMENT", "session_id": session.get("id"), "checkout_url": session.get("url")}
 
@@ -185,7 +184,7 @@ def payment_success(session_id: str):
     try:
         session = retrieve_checkout(session_id)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"payment lookup failed: {exc.__class__.__name__}") from exc
+        raise HTTPException(status_code=502, detail="payment lookup unavailable") from exc
     tenant_id = session.get("metadata", {}).get("tenant_id")
     if not tenant_id:
         raise HTTPException(status_code=403, detail="payment session has no tenant provenance")
@@ -196,15 +195,32 @@ def payment_success(session_id: str):
     if not task:
         return {"status": "BLOCK", "reason": "paid session has no task", "session_id": session_id}
 
+    # Different customers can buy the same audit task. Task text is not an
+    # order identity: only a webhook result for THIS Checkout Session may be
+    # returned to the caller. Legacy rows without checkout_session_id fail closed.
     with SessionLocal() as db:
-        completed = db.scalar(
+        candidates = db.scalars(
             select(StripeEvent).where(
                 StripeEvent.status == "COMPLETED",
                 StripeEvent.task == task,
             )
-        )
+        ).all()
+        matches = []
+        for candidate in candidates:
+            if not candidate.result_json:
+                continue
+            try:
+                recorded = json.loads(candidate.result_json)
+            except (ValueError, TypeError):
+                continue
+            if (isinstance(recorded, dict)
+                    and recorded.get("checkout_session_id") == session_id
+                    and recorded.get("status") == "COMPLETED"):
+                matches.append((candidate.run_id, recorded))
 
-    if completed is None:
+    if len(matches) > 1:
+        raise HTTPException(status_code=409, detail="conflicting Checkout Session executions")
+    if not matches:
         return {
             "status": "PAYMENT_CONFIRMED_EXECUTION_PENDING",
             "session_id": session_id,
@@ -217,19 +233,29 @@ def payment_success(session_id: str):
         "session_id": session_id,
         "task": task,
         "execution": "STRIPE_WEBHOOK",
-        "run_id": completed.run_id,
-        "result": json.loads(completed.result_json) if completed.result_json else None,
+        "run_id": matches[0][0],
+        "result": matches[0][1],
     }
 
 
 @app.post("/evidence")
 def create_evidence(body: dict, x_api_key: str | None = Header(default=None)):
     tenant_id = tenant_from_key(x_api_key)
-    return append_record(
-        tenant_id,
-        body.get("record_type", "generic"),
-        body.get("payload", {}),
-    )
+    record_type = body.get("record_type", "generic")
+    if not isinstance(record_type, str) or not record_type.strip():
+        raise HTTPException(status_code=400, detail="record_type must be a nonempty string")
+    # Public tenant keys may submit customer evidence, but cannot impersonate
+    # trusted NINA execution, DAG timing, or Human Gate producers. The local
+    # hash chain proves record integrity, not who caused a record to be written.
+    from .hashchain import is_privileged_type, EVIDENCE_META_KEY
+    if is_privileged_type(record_type):
+        raise HTTPException(status_code=403, detail="reserved internal evidence type")
+    payload = body.get("payload", {})
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="evidence payload must be a JSON object")
+    if EVIDENCE_META_KEY in payload:
+        raise HTTPException(status_code=400, detail="reserved evidence metadata")
+    return append_evidence_atomic(tenant_id, record_type, payload, producer_id="tenant_api")
 
 
 @app.post("/audit")
@@ -252,6 +278,89 @@ def create_agent_run(body: dict, x_api_key: str | None = Header(default=None)):
     if not task:
         raise HTTPException(status_code=400, detail="task is required")
     return run_agent_task(tenant_id, task)
+
+
+
+@app.post("/nina-workflow")
+def create_nina_workflow(body: dict, x_api_key: str | None = Header(default=None)):
+    """Opt-in bounded DAG execution. No automatic production approval."""
+    tenant_id, requester_id = identity_from_key(x_api_key)
+    if os.getenv("OLA_PARALLEL_WORKFLOWS_ENABLED", "0") != "1":
+        raise HTTPException(status_code=503, detail="parallel NINA workflows are disabled")
+    task_text = body.get("task")
+    if not isinstance(task_text, str) or not task_text.strip():
+        raise HTTPException(status_code=400, detail="task is required")
+    requested_tools = body.get("requested_tools", ["llm_agent"])
+    if (not isinstance(requested_tools, list) or not requested_tools
+            or not all(isinstance(tool, str) and tool.strip() for tool in requested_tools)):
+        raise HTTPException(status_code=400, detail="requested_tools must be nonempty strings")
+    # Bound provider prompt size and prevent duplicate capability amplification.
+    # This must happen before NINA or the LLM planner is invoked.
+    if len(requested_tools) > len(REGISTERED_TOOLS) or len(set(requested_tools)) != len(requested_tools):
+        raise HTTPException(status_code=400, detail="requested_tools must be unique and bounded")
+    nina_task = NinaTask.create(tenant_id, task_text, requested_tools)
+    policy = NinaOrchestrator().plan(nina_task)
+    if policy.status != "ALLOW":
+        return {"status": "BLOCK", "reason": policy.reason, "verified": False}
+    try:
+        return run_nina_workflow(
+            tenant_id=tenant_id,
+            requester_id=requester_id,
+            goal=task_text,
+            allowed_tools=policy.allowed_tools,
+            append=append_record,
+            fetch_records=read_tenant_evidence,
+        )
+    except WorkflowPlanError as exc:
+        return {"status": "BLOCK", "reason": "workflow plan rejected", "verified": False}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="workflow runtime unavailable") from exc
+
+
+
+@app.get("/nina-workflow/{run_id}/report")
+def refresh_nina_workflow_report(run_id: str,
+                                 authorization: str | None = Header(default=None)):
+    """Read-only, tenant-scoped refresh for a stale tip-bound IGOR report."""
+    from .igor_workflow import verify_dag_records
+
+    tenant_id, _ = bearer_identity(authorization)
+    expected_commit = os.getenv("OLA_RUNTIME_COMMIT")
+    if not expected_commit:
+        raise HTTPException(status_code=409, detail="runtime source commit unknown")
+    evidence = read_tenant_evidence(tenant_id)
+    if any(row["record_type"] == "human.workflow_approval"
+           and json.loads(row["payload_json"]).get("run_id") == run_id for row in evidence):
+        raise HTTPException(status_code=409, detail="workflow already reviewed")
+    report = verify_dag_records(evidence, tenant_id=tenant_id, run_id=run_id,
+                                expected_commit=expected_commit)
+    if report["status"] != "VERIFIED":
+        raise HTTPException(status_code=409, detail="independent workflow verification unavailable")
+    return {
+        "run_id": run_id, "status": report["status"],
+        "tip_hash": report["chain_tip"], "report_digest": report["report_digest"],
+        "trust_scope": report["trust_scope"],
+        "human_gate": "NOT_APPROVED", "production_authorized": False,
+    }
+
+
+@app.post("/nina-workflow/{run_id}/approve")
+def approve_nina_workflow(run_id: str, body: dict,
+                          authorization: str | None = Header(default=None)):
+    """Explicit second-identity review, bound to full IGOR report and evidence tip.
+
+    This does NOT grant deployment authority or approve a GitHub pull request.
+    """
+    tenant_id, approver_id = bearer_identity(authorization)
+    try:
+        return approve_workflow(
+            tenant_id=tenant_id, approver_id=approver_id, run_id=run_id,
+            tip_hash=body.get("tip_hash"),
+            report_digest=body.get("report_digest"),
+            reason=body.get("reason"),
+        )
+    except WorkflowApprovalRejected as exc:
+        raise HTTPException(status_code=exc.code, detail=str(exc)) from exc
 
 
 @app.post("/nina-run")
@@ -370,7 +479,8 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
     igor_summary = {"status": igor.status, "reason": igor.reason, "checks": igor.checks}
     provenance = {
         "status": "VERIFIED" if (
-            runtime_commit
+            runtime.get("status") == "VERIFIED"
+            and runtime_commit
             and provider
             and model
             and invocation_type
@@ -535,7 +645,7 @@ def create_business_invoice_run(body: dict, x_api_key: str | None = Header(defau
     try:
         return run_invoice_task(tenant_id, task)
     except (ValueError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail="invalid invoice input") from exc
 
 
 @app.get("/evidence/{record_id}")

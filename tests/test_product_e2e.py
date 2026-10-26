@@ -1,3 +1,4 @@
+from app.api_key_hashing import api_key_fingerprint
 import hashlib
 import uuid
 
@@ -20,7 +21,7 @@ def _seed_tenant():
         ApiKey(
             id=str(uuid.uuid4()),
             tenant_id=tenant_id,
-            key_hash=hashlib.sha256(f"product-key-{tenant_id}".encode()).hexdigest(),
+            key_hash=api_key_fingerprint(f"product-key-{tenant_id}"),
         )
     )
     db.commit()
@@ -68,6 +69,7 @@ def test_product_e2e_task_fault_recovery_verification():
             "seq": row.seq,
             "prev_hash": row.prev_hash,
             "record_hash": row.record_hash,
+            "record_type": row.record_type,
             "payload_json": row.payload_json,
         }
         for row in rows
