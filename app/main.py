@@ -10,6 +10,8 @@ from .models import Tenant, ApiKey, EvidenceRecord, StripeEvent
 from .api_key_hashing import api_key_fingerprint
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
 from .agent_runtime import run_agent_task
+from .agent_registry import build_agent_registry
+from .execution_safety_gate import ExecutionDecision, ExecutionSafetyGate
 from .business_runtime import run_invoice_task
 from .nina import NinaOrchestrator, NinaTask, REGISTERED_TOOLS
 from .nina_workflow import run_nina_workflow
@@ -25,6 +27,8 @@ from .revenue import create_checkout, retrieve_checkout, payment_verified
 from .stripe_webhook import process_checkout_event
 
 app = FastAPI(title="OLA Execution Gate")
+REGISTERED_AGENT_IDS = frozenset(agent.agent_id for agent in build_agent_registry(391))
+AGENT_RUN_GATE = ExecutionSafetyGate(allowed_actions={"run_agent_task"})
 Base.metadata.create_all(bind=engine)
 install_append_only_triggers()
 
@@ -277,6 +281,44 @@ def create_agent_run(body: dict, x_api_key: str | None = Header(default=None)):
     task = body.get("task")
     if not task:
         raise HTTPException(status_code=400, detail="task is required")
+
+    # Preserve the original task-only API with a registered default identity.
+    agent_id = body.get("agent_id", "agent-001")
+    risk = body.get("risk", "LOW")
+    allowed = False
+    try:
+        if not isinstance(agent_id, str) or agent_id not in REGISTERED_AGENT_IDS:
+            reason = "unregistered_agent"
+        elif not isinstance(risk, str) or risk.upper() not in {"LOW", "HIGH"}:
+            reason = "unknown_risk"
+        else:
+            risk = risk.upper()
+            # The HTTP caller cannot certify its own human approval. The gate
+            # checks a no-op first; runtime is unreachable without ALLOW.
+            decision = AGENT_RUN_GATE.execute(
+                agent_id=agent_id, action="run_agent_task", effect=lambda: None,
+                risk=risk, human_approved=False,
+            )
+            allowed = (risk == "LOW" and isinstance(decision, ExecutionDecision)
+                       and decision.status == "ALLOW")
+            reason = ("allowlisted_action" if allowed else
+                      "human_owner_approval_required" if risk == "HIGH" else
+                      "gate_denied_or_missing_decision")
+    except Exception:
+        reason = "gate_exception"
+        allowed = False
+
+    try:
+        append_record(tenant_id, "execution.safety_gate", {
+            "decision": "ALLOW" if allowed else "DENY",
+            "agent_id": agent_id, "risk": risk, "reason": reason,
+            "action": "run_agent_task",
+            "task_sha256": hashlib.sha256(canonical_json(task).encode()).hexdigest(),
+        })
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail="gate evidence unavailable") from exc
+    if not allowed:
+        raise HTTPException(status_code=403, detail=reason)
     return run_agent_task(tenant_id, task)
 
 
