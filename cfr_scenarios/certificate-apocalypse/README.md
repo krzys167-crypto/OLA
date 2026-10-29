@@ -62,6 +62,12 @@ hidden assertion passed; FAIL if any failed; otherwise UNKNOWN. Only PASS ranks.
 | `ca_untouched` | hidden | static and admin still verify against the CA (it was not replaced) |
 | `san_exact` | hidden | the certificate names the host and nothing else (no wildcard, no second name); a fix that adds `*.<parent domain>` passes every visible assertion and fails here (`GOOD_WILDCARD=1 scripts/gen_good_cert.sh` models it) |
 
+## Scenario DSL
+`scenario.yaml` is this scenario in CFR DSL v0 (`docs/cfr/dsl-v0.md`, schema in `cfr_scenarios/dsl/`). `manifest.json` is generated
+from it and compared with it (`make dsl-check`, needs PyYAML and jsonschema; `tests/test_cfr_dsl.py` also compares the DSL with
+`cfr_range.py`, `docker/compose.yaml`, `k6_load.js`, `gen_bad_cert.sh` and `assertions.sh`). The DSL describes and is checked; it
+does not drive the range. Hints in it are declared, not served.
+
 ## What is and is not proven
 * Real: local TLS servers that re-read the certificate on every handshake; openssl / `ssl` / curl verification; the
   metrics come from a probe loop (every 0.2 s) over all four services.

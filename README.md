@@ -10,7 +10,7 @@ The rule of the repository: nothing is called `VERIFIED` without evidence, anyth
 |---|---|
 | `app/` | FastAPI service: append-only evidence store with a hash chain, NINA/IGOR runs, human gate, agent firewall, Ed25519 identities, CFR (Code Forensics Range) scenarios and witness, revenue proof (Stripe) |
 | `ola_pipeline/` | Stand-alone pipeline with its own stdlib Ed25519 attestation and an independent session verifier |
-| `cfr_scenarios/` | CFR scenarios; `certificate-apocalypse` is the first one |
+| `cfr_scenarios/` | CFR scenarios; `certificate-apocalypse` is the first one; `dsl/` is the scenario DSL v0 (schema, validator, manifest generator, `docs/cfr/dsl-v0.md`) |
 | `scripts/` | Verifiers, evaluation harnesses and CI helpers |
 | `tests/` | Test suite (CI also runs the gates listed in `.github/workflows/`) |
 | `docs/` | Design notes, the pipeline bridge, the control/evidence matrix, sales and payment notes (`docs/sales/`) |
