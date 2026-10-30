@@ -1,5 +1,6 @@
 import json
 import os
+import urllib.error
 import uuid
 from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -184,14 +185,25 @@ def create_checkout_session(body: dict, x_api_key: str | None = Header(default=N
 
 
 @app.get("/payment-success")
-def payment_success(session_id: str):
+def payment_success(session_id: str, x_api_key: str | None = Header(default=None)):
+    # A Checkout Session ID is not a credential: it travels in the redirect
+    # URL, browser history, logs and Referer headers. Authenticate first, so
+    # anonymous callers never reach Stripe or any tenant's evidence chain.
+    tenant_id = tenant_from_key(x_api_key)
     try:
         session = retrieve_checkout(session_id)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise HTTPException(status_code=404, detail="order not found") from exc
+        raise HTTPException(status_code=502, detail="payment lookup unavailable") from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail="payment lookup unavailable") from exc
-    tenant_id = session.get("metadata", {}).get("tenant_id")
-    if not tenant_id:
-        raise HTTPException(status_code=403, detail="payment session has no tenant provenance")
+    metadata = session.get("metadata") if isinstance(session, dict) else None
+    if (not isinstance(metadata, dict)
+            or session.get("id") != session_id
+            or metadata.get("tenant_id") != tenant_id):
+        # Same answer for a foreign, unbound or unknown session: no oracle.
+        raise HTTPException(status_code=404, detail="order not found")
     if not payment_verified(session):
         append_record(tenant_id, "revenue.payment_blocked", {"session_id": session_id, "payment_status": session.get("payment_status"), "status": session.get("status")})
         return {"status": "BLOCK", "reason": "payment not verified", "session_id": session_id}
