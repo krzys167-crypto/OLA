@@ -54,7 +54,8 @@ jobs:
           python-version: "3.13"
 
       - name: Install the repository requirements (and PyYAML for the structure tests)
-        run: python -m pip install --quiet -r requirements.txt PyYAML==6.0.2
+        # jsonschema: tests/test_cfr_dsl.py (scenario DSL, control EC-17); like PyYAML it is not a runtime dependency
+        run: python -m pip install --quiet -r requirements.txt PyYAML==6.0.2 jsonschema==4.26.0
 
       - name: Tool versions
         run: |
@@ -195,6 +196,15 @@ jobs:
           python -m pytest tests/test_cfr_containers.py -q -rs -p no:cacheprovider 2>&1 | tee ci-out/pytest-containers.txt
           if grep -qi "skipped" ci-out/pytest-containers.txt; then
             echo "::error title=container tests skipped::a test of the container range was skipped"
+            exit 1
+          fi
+
+      - name: Offline tests of the scenario DSL (PyYAML and jsonschema installed, no test may be skipped)
+        if: always()
+        run: |
+          python -m pytest tests/test_cfr_dsl.py -q -rs -p no:cacheprovider 2>&1 | tee ci-out/pytest-dsl.txt
+          if grep -qi "skipped" ci-out/pytest-dsl.txt; then
+            echo "::error title=scenario DSL tests skipped::a test of the scenario DSL was skipped"
             exit 1
           fi
 

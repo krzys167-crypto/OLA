@@ -377,6 +377,44 @@
         }
       ],
       "limits": "The tests check the files and run the roles as processes: that Docker accepts compose.yaml and the image builds is measured only by the cfr-docker job. The participant shares the machine with the range; a restart through the daemon is observed, a participant with root on the host is not contained. Not Kubernetes."
+    },
+    {
+      "id": "EC-17",
+      "statement": "CFR scenario DSL: a scenario document is checked against a versioned schema and cross-reference rules, the manifest the server pins is generated from it, and it is compared with the code that runs the scenario, so the description cannot drift from what runs.",
+      "mechanism": [
+        {
+          "file": "cfr_scenarios/dsl/scenario.schema.json"
+        },
+        {
+          "file": "cfr_scenarios/dsl/cfr_dsl.py",
+          "symbol": "semantic_errors"
+        },
+        {
+          "file": "cfr_scenarios/dsl/cfr_dsl.py",
+          "symbol": "to_manifest"
+        },
+        {
+          "file": "cfr_scenarios/certificate-apocalypse/scenario.yaml"
+        }
+      ],
+      "tests": [
+        "tests/test_cfr_dsl.py::test_certificate_apocalypse_is_valid_and_its_files_exist",
+        "tests/test_cfr_dsl.py::test_the_generated_manifest_is_the_manifest_the_server_pins",
+        "tests/test_cfr_dsl.py::test_services_match_the_range",
+        "tests/test_cfr_dsl.py::test_fault_ids_are_the_range_variants_in_the_same_order",
+        "tests/test_cfr_dsl.py::test_assertion_ids_are_exactly_those_assertions_sh_emits",
+        "tests/test_cfr_dsl.py::test_container_limits_and_published_ports_match_compose",
+        "tests/test_cfr_dsl.py::test_k3d_is_declared_not_provided_and_nothing_k8s_is_shipped",
+        "tests/test_cfr_dsl.py::test_the_schema_rejects",
+        "tests/test_cfr_dsl.py::test_the_semantic_rules_reject"
+      ],
+      "ci": [
+        {
+          "workflow": "cfr-docker.yml",
+          "job": "cfr-docker"
+        }
+      ],
+      "limits": "The DSL describes the scenario and is compared with the code by tests; it does not drive the range, so a property no test compares is not covered. Hints are declared, not served. Hidden assertions are hidden in the run output, not in the repository. k3d is declared not provided. The tests need PyYAML and jsonschema (neither is a runtime dependency): they skip without them, which the cfr-docker and controls workflows treat as a failure."
     }
   ]
 }

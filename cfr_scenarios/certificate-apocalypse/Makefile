@@ -5,7 +5,7 @@ STATE ?= state
 PY    ?= python3
 CD    := cfr_range.py --state $(STATE)
 
-.PHONY: up break fix assert score metrics restart down brief witness-up witness-observe witness-submit witness-down
+.PHONY: up break fix assert score metrics restart down brief witness-up witness-observe witness-submit witness-down dsl-check
 .PHONY: docker-up docker-restart docker-down docker-logs
 up:        ; $(PY) $(CD) up
 break:     ; $(PY) $(CD) break
@@ -19,6 +19,10 @@ witness-up:      ; $(PY) witness.py --state $(STATE)-witness --range-state $(STA
 witness-observe: ; $(PY) witness.py --state $(STATE)-witness --range-state $(STATE) observe
 witness-submit:  ; $(PY) witness.py --state $(STATE)-witness --range-state $(STATE) submit
 witness-down:    ; $(PY) witness.py --state $(STATE)-witness --range-state $(STATE) down
+# scenario.yaml (DSL v0) must validate and must generate exactly the manifest.json the server pins. Needs PyYAML and jsonschema.
+dsl-check:
+	$(PY) ../dsl/cfr_dsl.py validate scenario.yaml
+	$(PY) ../dsl/cfr_dsl.py manifest scenario.yaml --check manifest.json
 brief:
 	@echo "Two of four services (api, billing) fail TLS verification. Find out why and fix it WITHOUT touching the CA"
 	@echo "or the other services. Verify with: make assert. A restart works but costs a penalty."

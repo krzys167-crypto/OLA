@@ -1,1 +1,17 @@
+name: main
 
+# Placeholder. The file was committed empty ("Create main"), which GitHub cannot load as a workflow and which the
+# least-privilege test (tests/test_security_review5.py) reports as a workflow without `permissions:`. It runs nothing
+# on push or pull_request; delete it if it is not needed.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "placeholder workflow, nothing to do"

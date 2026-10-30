@@ -1,0 +1,443 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ola:cfr:dsl:0:scenario",
+  "title": "CFR scenario DSL v0",
+  "description": "A Code Forensics Range scenario. Every key a v0 runner does not implement is absent from this schema on purpose: a scenario cannot declare what no runner can honour. Extension keys start with 'x-' and are ignored by v0.",
+  "type": "object",
+  "required": ["dsl_version", "meta", "env", "services", "faults", "traffic", "tasks", "scoring", "assertions", "evidence", "hints"],
+  "additionalProperties": false,
+  "patternProperties": {"^x-": {}},
+  "properties": {
+    "dsl_version": {"const": "0"},
+    "meta": {
+      "type": "object",
+      "required": ["id", "version", "title", "difficulty", "estimated_minutes", "brief"],
+      "additionalProperties": false,
+      "patternProperties": {"^x-": {}},
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "version": {"type": "string", "pattern": "^[0-9]+$"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 120},
+        "difficulty": {"enum": ["intro", "standard", "hard", "expert"]},
+        "tags": {"type": "array", "uniqueItems": true, "maxItems": 16, "items": {"$ref": "#/$defs/id"}},
+        "estimated_minutes": {"type": "integer", "minimum": 1, "maximum": 480},
+        "brief": {"type": "string", "minLength": 1, "maxLength": 600}
+      }
+    },
+    "env": {
+      "type": "object",
+      "required": ["modes", "seed", "user_mutation", "limits"],
+      "additionalProperties": false,
+      "patternProperties": {"^x-": {}},
+      "properties": {
+        "modes": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"enum": ["process", "docker", "k3d"]},
+          "additionalProperties": {"$ref": "#/$defs/mode"}
+        },
+        "seed": {
+          "type": "object",
+          "required": ["source"],
+          "additionalProperties": false,
+          "patternProperties": {"^x-": {}},
+          "properties": {"source": {"const": "server_per_run"}}
+        },
+        "user_mutation": {
+          "type": "object",
+          "required": ["host", "fault_variant"],
+          "additionalProperties": false,
+          "patternProperties": {"^x-": {}},
+          "properties": {
+            "host": {
+              "type": "object",
+              "required": ["seed_prefix_chars", "template"],
+              "additionalProperties": false,
+              "patternProperties": {"^x-": {}},
+              "properties": {
+                "seed_prefix_chars": {"type": "integer", "minimum": 1, "maximum": 64},
+                "template": {"type": "string", "pattern": "^[a-z0-9.-]*\\{seed_prefix\\}[a-z0-9.-]*$"}
+              }
+            },
+            "fault_variant": {
+              "type": "object",
+              "required": ["chosen_by"],
+              "additionalProperties": false,
+              "patternProperties": {"^x-": {}},
+              "properties": {"chosen_by": {"const": "server"}}
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "required": ["mem_mb", "pids", "tmpfs_mb", "read_only", "cap_drop_all", "no_new_privileges", "publish_on"],
+          "additionalProperties": false,
+          "patternProperties": {"^x-": {}},
+          "properties": {
+            "mem_mb": {"type": "integer", "minimum": 16, "maximum": 8192},
+            "pids": {"type": "integer", "minimum": 16, "maximum": 4096},
+            "tmpfs_mb": {"type": "integer", "minimum": 1, "maximum": 1024},
+            "read_only": {"type": "boolean"},
+            "cap_drop_all": {"type": "boolean"},
+            "no_new_privileges": {"type": "boolean"},
+            "publish_on": {"const": "127.0.0.1"}
+          }
+        }
+      }
+    },
+    "services": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "required": ["name", "role", "tls", "ports"],
+        "additionalProperties": false,
+        "patternProperties": {"^x-": {}},
+        "properties": {
+          "name": {"$ref": "#/$defs/id"},
+          "role": {"const": "tls_server"},
+          "tls": {
+            "type": "object",
+            "required": ["cert_file"],
+            "additionalProperties": false,
+            "patternProperties": {"^x-": {}},
+            "properties": {"cert_file": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.pem$"}}
+          },
+          "ports": {
+            "type": "object",
+            "required": ["container", "host_default", "host_env"],
+            "additionalProperties": false,
+            "patternProperties": {"^x-": {}},
+            "properties": {
+              "container": {"type": "integer", "minimum": 1, "maximum": 65535},
+              "host_default": {"type": "integer", "minimum": 1024, "maximum": 65535},
+              "host_env": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"}
+            }
+          }
+        }
+      }
+    },
+    "faults": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "targets", "params", "injector", "schedule"],
+        "additionalProperties": false,
+        "patternProperties": {"^x-": {}},
+        "properties": {
+          "id": {"$ref": "#/$defs/id"},
+          "kind": {"enum": ["tls_cert_expired", "tls_cert_untrusted_chain", "tls_cert_wrong_san"]},
+          "targets": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+          "params": {"type": "object"},
+          "injector": {
+            "type": "object",
+            "required": ["script"],
+            "additionalProperties": false,
+            "patternProperties": {"^x-": {}},
+            "properties": {"script": {"$ref": "#/$defs/path"}}
+          },
+          "schedule": {
+            "type": "object",
+            "required": ["at"],
+            "additionalProperties": false,
+            "patternProperties": {"^x-": {}},
+            "properties": {"at": {"const": "break"}}
+          }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"kind": {"const": "tls_cert_expired"}}, "required": ["kind"]},
+            "then": {
+              "properties": {
+                "params": {
+                  "type": "object",
+                  "required": ["not_before", "not_after"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "not_before": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+                    "not_after": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {"properties": {"kind": {"const": "tls_cert_untrusted_chain"}}, "required": ["kind"]},
+            "then": {
+              "properties": {
+                "params": {
+                  "type": "object",
+                  "required": ["self_signed"],
+                  "additionalProperties": false,
+                  "properties": {"self_signed": {"const": true}}
+                }
+              }
+            }
+          },
+          {
+            "if": {"properties": {"kind": {"const": "tls_cert_wrong_san"}}, "required": ["kind"]},
+            "then": {
+              "properties": {
+                "params": {
+                  "type": "object",
+                  "required": ["san_prefix"],
+                  "additionalProperties": false,
+                  "properties": {"san_prefix": {"type": "string", "pattern": "^[a-z0-9-]{1,32}$"}}
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "traffic": {
+      "type": "object",
+      "required": ["probe", "load"],
+      "additionalProperties": false,
+      "patternProperties": {"^x-": {}},
+      "properties": {
+        "probe": {
+          "type": "object",
+          "required": ["interval_s", "path", "verifies"],
+          "additionalProperties": false,
+          "patternProperties": {"^x-": {}},
+          "properties": {
+            "interval_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 60},
+            "path": {"type": "string", "pattern": "^/[A-Za-z0-9/_.-]*$"},
+            "verifies": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["chain", "hostname"]}}
+          }
+        },
+        "load": {
+          "type": "object",
+          "required": ["tool", "script", "vus", "duration_s", "think_time_s", "thresholds", "scored"],
+          "additionalProperties": false,
+          "patternProperties": {"^x-": {}},
+          "properties": {
+            "tool": {"const": "k6"},
+            "script": {"$ref": "#/$defs/path"},
+            "vus": {"type": "integer", "minimum": 1, "maximum": 1000},
+            "duration_s": {"type": "integer", "minimum": 1, "maximum": 3600},
+            "think_time_s": {"type": "number", "minimum": 0, "maximum": 60},
+            "thresholds": {
+              "type": "object",
+              "required": ["error_rate_lt", "p95_ms_lt"],
+              "additionalProperties": false,
+              "patternProperties": {"^x-": {}},
+              "properties": {
+                "error_rate_lt": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+                "p95_ms_lt": {"type": "number", "exclusiveMinimum": 0}
+              }
+            },
+            "scored": {"const": false}
+          }
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "brief", "constraints"],
+        "additionalProperties": false,
+        "patternProperties": {"^x-": {}},
+        "properties": {
+          "id": {"$ref": "#/$defs/id"},
+          "title": {"type": "string", "minLength": 1, "maxLength": 120},
+          "brief": {"type": "string", "minLength": 1, "maxLength": 1000},
+          "constraints": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "object",
+              "required": ["statement", "visible", "enforced_by"],
+              "additionalProperties": false,
+              "patternProperties": {"^x-": {}},
+              "properties": {
+                "statement": {"type": "string", "minLength": 1, "maxLength": 300},
+                "visible": {"type": "boolean"},
+                "enforced_by": {"type": "string", "pattern": "^(assertion|scoring):[a-z0-9_-]+$"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "scoring": {
+      "type": "object",
+      "required": ["weights", "limits", "penalties", "tiers"],
+      "additionalProperties": false,
+      "patternProperties": {"^x-": {}},
+      "properties": {
+        "weights": {
+          "type": "object",
+          "required": ["availability", "latency", "time_to_recover", "blast_radius"],
+          "additionalProperties": false,
+          "properties": {
+            "availability": {"type": "number", "minimum": 0, "maximum": 1},
+            "latency": {"type": "number", "minimum": 0, "maximum": 1},
+            "time_to_recover": {"type": "number", "minimum": 0, "maximum": 1},
+            "blast_radius": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "limits": {
+          "type": "object",
+          "required": ["availability_zero", "latency_p95_ms_full", "latency_p95_ms_zero", "mttr_s_full", "mttr_s_zero", "blast_radius_full", "blast_radius_zero"],
+          "additionalProperties": false,
+          "properties": {
+            "availability_zero": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+            "latency_p95_ms_full": {"type": "number", "minimum": 0},
+            "latency_p95_ms_zero": {"type": "number", "minimum": 0},
+            "mttr_s_full": {"type": "number", "minimum": 0},
+            "mttr_s_zero": {"type": "number", "minimum": 0},
+            "blast_radius_full": {"type": "number", "minimum": 0},
+            "blast_radius_zero": {"type": "number", "minimum": 0}
+          }
+        },
+        "penalties": {
+          "type": "object",
+          "required": ["per_restart", "max_restarts_penalty", "downtime_over_s", "downtime_penalty"],
+          "additionalProperties": false,
+          "properties": {
+            "per_restart": {"type": "number", "minimum": 0, "maximum": 1},
+            "max_restarts_penalty": {"type": "number", "minimum": 0, "maximum": 1},
+            "downtime_over_s": {"type": "number", "minimum": 0},
+            "downtime_penalty": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "tiers": {
+          "type": "object",
+          "required": ["pass", "merit", "elite"],
+          "additionalProperties": false,
+          "properties": {
+            "pass": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+            "merit": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+            "elite": {"type": "number", "exclusiveMinimum": 0, "maximum": 1}
+          }
+        }
+      }
+    },
+    "assertions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "description", "check"],
+        "additionalProperties": false,
+        "patternProperties": {"^x-": {}},
+        "properties": {
+          "id": {"$ref": "#/$defs/id"},
+          "kind": {"enum": ["required", "hidden"]},
+          "description": {"type": "string", "minLength": 1, "maxLength": 300},
+          "check": {
+            "type": "object",
+            "required": ["script", "observes"],
+            "additionalProperties": false,
+            "patternProperties": {"^x-": {}},
+            "properties": {
+              "script": {"$ref": "#/$defs/path"},
+              "observes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+              "window_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 3600}
+            }
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["collect", "signing"],
+      "additionalProperties": false,
+      "patternProperties": {"^x-": {}},
+      "properties": {
+        "collect": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["id", "file"],
+            "additionalProperties": false,
+            "patternProperties": {"^x-": {}},
+            "properties": {
+              "id": {"enum": ["timeline", "events", "ca_crt"]},
+              "file": {"$ref": "#/$defs/path"}
+            }
+          }
+        },
+        "signing": {
+          "type": "object",
+          "required": ["algorithm", "signed_by", "verified_by"],
+          "additionalProperties": false,
+          "patternProperties": {"^x-": {}},
+          "properties": {
+            "algorithm": {"const": "ed25519"},
+            "signed_by": {"const": "runner"},
+            "verified_by": {"const": "server"}
+          }
+        },
+        "independent_measurement": {
+          "type": "object",
+          "required": ["witness", "required", "confirm_assertions", "tolerance"],
+          "additionalProperties": false,
+          "patternProperties": {"^x-": {}},
+          "properties": {
+            "witness": {
+              "type": "object",
+              "required": ["script", "role"],
+              "additionalProperties": false,
+              "patternProperties": {"^x-": {}},
+              "properties": {"script": {"$ref": "#/$defs/path"}, "role": {"const": "witness"}}
+            },
+            "required": {"type": "boolean"},
+            "confirm_assertions": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+            "tolerance": {
+              "type": "object",
+              "required": ["availability", "latency_p95_rel", "mttr_s", "downtime_s"],
+              "additionalProperties": false,
+              "properties": {
+                "availability": {"type": "number", "minimum": 0, "maximum": 1},
+                "latency_p95_rel": {"type": "number", "minimum": 0},
+                "mttr_s": {"type": "number", "minimum": 0},
+                "downtime_s": {"type": "number", "minimum": 0}
+              }
+            }
+          }
+        }
+      }
+    },
+    "hints": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "required": ["id", "after_s", "text"],
+        "additionalProperties": false,
+        "patternProperties": {"^x-": {}},
+        "properties": {
+          "id": {"$ref": "#/$defs/id"},
+          "after_s": {"type": "number", "minimum": 0, "maximum": 86400},
+          "text": {"type": "string", "minLength": 1, "maxLength": 500}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
+    "path": {"type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_./-]{0,200}$", "not": {"pattern": "\\.\\."}},
+    "mode": {
+      "type": "object",
+      "required": ["status", "files"],
+      "additionalProperties": false,
+      "patternProperties": {"^x-": {}},
+      "properties": {
+        "status": {"enum": ["provided", "not_provided"]},
+        "files": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/path"}}
+      }
+    }
+  }
+}

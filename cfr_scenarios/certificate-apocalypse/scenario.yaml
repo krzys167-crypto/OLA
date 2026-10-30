@@ -1,0 +1,179 @@
+# Certificate Apocalypse in CFR scenario DSL v0 (schema: cfr_scenarios/dsl/scenario.schema.json).
+#
+# manifest.json is GENERATED from this file and checked against it (tests/test_cfr_dsl.py, `cfr_dsl.py manifest --check`).
+# It is what the server pins by digest, so edit this file, regenerate, and treat any change to scoring, assertions or fault
+# order as a new scenario version.
+#
+#   python3 ../dsl/cfr_dsl.py validate scenario.yaml
+#   python3 ../dsl/cfr_dsl.py manifest scenario.yaml --check manifest.json
+dsl_version: "0"
+
+meta:
+  id: certificate-apocalypse
+  version: "1"
+  title: Certificate Apocalypse
+  difficulty: standard
+  tags: [tls, x509, pki, incident-response]
+  estimated_minutes: 20                 # the author's estimate, not measured on participants
+  brief: >-
+    Two of four TLS services fail verification. Find out why and fix them without touching the CA or the other services.
+
+env:
+  modes:
+    process:
+      status: provided
+      files: [cfr_range.py, Makefile]
+    docker:
+      status: provided
+      files: [docker/compose.yaml, docker/Dockerfile]
+    k3d:
+      status: not_provided              # no manifests, never run
+      files: []
+  seed:
+    source: server_per_run              # POST /cfr/runs: HMAC of tenant, participant, scenario, manifest and run id
+  user_mutation:
+    host:
+      seed_prefix_chars: 6
+      template: "svc-{seed_prefix}.range.test"
+    fault_variant:
+      chosen_by: server                 # index = seed mod number of faults, so the order of `faults` is part of the version
+  limits:                               # container mode (docker/compose.yaml)
+    mem_mb: 128
+    pids: 256
+    tmpfs_mb: 16
+    read_only: true
+    cap_drop_all: true
+    no_new_privileges: true
+    publish_on: 127.0.0.1
+
+services:
+  - name: api
+    role: tls_server
+    tls: {cert_file: server.pem}        # shared with billing: the fault hits both
+    ports: {container: 8443, host_default: 18441, host_env: CFR_PORT_API}
+  - name: billing
+    role: tls_server
+    tls: {cert_file: server.pem}
+    ports: {container: 8443, host_default: 18442, host_env: CFR_PORT_BILLING}
+  - name: static
+    role: tls_server
+    tls: {cert_file: static.pem}        # own certificate: collateral damage if the CA is replaced
+    ports: {container: 8443, host_default: 18443, host_env: CFR_PORT_STATIC}
+  - name: admin
+    role: tls_server
+    tls: {cert_file: admin.pem}
+    ports: {container: 8443, host_default: 18444, host_env: CFR_PORT_ADMIN}
+
+faults:                                 # the order is the order of manifest `variants`
+  - id: expired
+    kind: tls_cert_expired
+    targets: [api, billing]
+    params: {not_before: "2020-01-01", not_after: "2020-01-02"}
+    injector: {script: scripts/gen_bad_cert.sh}
+    schedule: {at: break}
+  - id: untrusted-chain
+    kind: tls_cert_untrusted_chain
+    targets: [api, billing]
+    params: {self_signed: true}
+    injector: {script: scripts/gen_bad_cert.sh}
+    schedule: {at: break}
+  - id: wrong-san
+    kind: tls_cert_wrong_san
+    targets: [api, billing]
+    params: {san_prefix: other-}
+    injector: {script: scripts/gen_bad_cert.sh}
+    schedule: {at: break}
+
+traffic:
+  probe:                                # the monitor: the source of every scored number
+    interval_s: 0.2
+    path: /health
+    verifies: [chain, hostname]
+  load:                                 # k6: a second, independent source of the same kind of number; NOT scored
+    tool: k6
+    script: k6_load.js
+    vus: 5
+    duration_s: 30
+    think_time_s: 0.2
+    thresholds: {error_rate_lt: 0.01, p95_ms_lt: 250}
+    scored: false
+
+tasks:
+  - id: restore-tls
+    title: Restore TLS on api and billing
+    brief: >-
+      Two of four services (api, billing) fail TLS verification. Find out why and fix it without touching the CA or the other
+      services. Verify with: make assert. A restart works but costs a penalty.
+    constraints:
+      - {statement: Do not replace or regenerate the range CA., visible: true, enforced_by: "assertion:ca_untouched"}
+      - {statement: Do not break static or admin while fixing api and billing., visible: true, enforced_by: "scoring:blast_radius"}
+      - {statement: A restart is allowed but costs a penalty., visible: true, enforced_by: "scoring:per_restart"}
+      - {statement: The certificate names this run's host and nothing else., visible: false, enforced_by: "assertion:san_exact"}
+
+scoring:
+  weights: {availability: 0.25, latency: 0.1, time_to_recover: 0.45, blast_radius: 0.2}
+  limits:
+    availability_zero: 0.2
+    latency_p95_ms_full: 25
+    latency_p95_ms_zero: 500
+    mttr_s_full: 20
+    mttr_s_zero: 300
+    blast_radius_full: 0
+    blast_radius_zero: 2
+  penalties: {per_restart: 0.05, max_restarts_penalty: 0.2, downtime_over_s: 60, downtime_penalty: 0.1}
+  tiers: {pass: 0.5, merit: 0.75, elite: 0.9}
+
+assertions:
+  - id: tls_handshake_ok
+    kind: required
+    description: A TLS session is established with api and billing.
+    check: {script: assertions.sh, observes: [api, billing]}
+  - id: x509_not_expired
+    kind: required
+    description: The certificate of api and billing is within its validity period.
+    check: {script: assertions.sh, observes: [api, billing]}
+  - id: x509_chain_ok
+    kind: required
+    description: The chain of api and billing verifies against the range CA.
+    check: {script: assertions.sh, observes: [api, billing]}
+  - id: health_stable_10s
+    kind: required
+    description: All four services answer a verified /health for 10 seconds.
+    check: {script: assertions.sh, observes: [api, billing, static, admin], window_s: 10}
+  - id: san_matches_host
+    kind: hidden
+    description: The certificate of api and billing names this run's host.
+    check: {script: assertions.sh, observes: [api, billing]}
+  - id: ca_untouched
+    kind: hidden
+    description: static and admin still verify against the CA the range created.
+    check: {script: assertions.sh, observes: [static, admin]}
+  - id: san_exact
+    kind: hidden
+    description: The certificate names the host and nothing else (no wildcard, no second name).
+    check: {script: assertions.sh, observes: [api, billing]}
+
+evidence:
+  collect:
+    - {id: timeline, file: timeline.jsonl}
+    - {id: events, file: events.jsonl}
+    - {id: ca_crt, file: certs/ca.crt}
+  signing: {algorithm: ed25519, signed_by: runner, verified_by: server}
+  independent_measurement:
+    witness: {script: witness.py, role: witness}
+    required: false                     # shipped as optional: in local modes the witness shares the participant's machine
+    confirm_assertions: [tls_handshake_ok, x509_not_expired, x509_chain_ok, health_stable_10s]
+    tolerance: {availability: 0.05, latency_p95_rel: 0.5, mttr_s: 10.0, downtime_s: 10.0}
+
+# DECLARED, NOT SERVED: the v0 runner does not release hints yet. The text is here so that the lint (no hidden assertion is
+# named in anything the participant sees) already covers it.
+hints:
+  - id: compare-services
+    after_s: 180
+    text: Compare what the verifier says about api and billing with what it says about static and admin.
+  - id: shared-certificate
+    after_s: 420
+    text: The fault is in the certificate the two affected services share. Look at its validity dates, its issuer and the names it carries.
+  - id: reissue
+    after_s: 900
+    text: Issue a new server certificate from the range CA for the host this run was given. The CA itself is not the problem.
