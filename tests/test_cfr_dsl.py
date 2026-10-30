@@ -5,8 +5,10 @@ document of Certificate Apocalypse with the range (cfr_range.py), the container 
 load script (k6_load.js), the fault injector, the assertion script and the manifest the server pins; and they feed the
 validator documents that are wrong in one way each, which it must reject for that reason.
 
-Needs PyYAML and jsonschema, neither of which is a runtime dependency of the service: without them the module is skipped
-(pip install PyYAML jsonschema).
+Needs PyYAML and jsonschema, neither of which is a runtime dependency of the service (pip install PyYAML jsonschema).
+Without them EVERY test here is skipped one by one, not the module at collection: `check_controls.py --run` hands pytest
+node ids, and a module skipped at collection makes pytest abort the whole run, so every control would read FAILING instead
+of only EC-17. cfr-docker.yml and controls.yml install both and treat a skip as a failure.
 """
 import copy
 import json
@@ -17,8 +19,14 @@ from pathlib import Path
 
 import pytest
 
-yaml = pytest.importorskip("yaml", reason="PyYAML missing: pip install PyYAML")
-jsonschema = pytest.importorskip("jsonschema", reason="jsonschema missing: pip install jsonschema")
+try:
+    import yaml
+except ImportError:
+    yaml = None
+try:
+    import jsonschema
+except ImportError:
+    jsonschema = None
 
 from app import cfr  # noqa: E402
 
@@ -32,7 +40,15 @@ import score as ca_score  # noqa: E402
 
 SCENARIO = DIR / "scenario.yaml"
 MANIFEST = json.loads((DIR / "manifest.json").read_text())
-DOC = yaml.safe_load(SCENARIO.read_text())
+DOC = yaml.safe_load(SCENARIO.read_text()) if yaml else None
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _needs_pyyaml_and_jsonschema():
+    if yaml is None:
+        pytest.skip("PyYAML missing: pip install PyYAML")
+    if jsonschema is None:
+        pytest.skip("jsonschema missing: pip install jsonschema")
 
 
 def mutated(fn):
@@ -286,3 +302,24 @@ def test_cli_exits_2_unknown_when_a_dependency_is_missing(monkeypatch, capsys):
     monkeypatch.setattr(dsl, "load_yaml", boom)
     assert dsl.main(["validate", str(SCENARIO)]) == 2
     assert "UNKNOWN" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ CI: the tests must run there, and a skip must not pass
+def test_ci_installs_what_the_dsl_tests_need_and_treats_a_skip_as_a_failure():
+    wf = ROOT / ".github" / "workflows"
+    docker, controls = (wf / "cfr-docker.yml").read_text(), (wf / "controls.yml").read_text()
+    pin = re.search(r"jsonschema==\d+(?:\.\d+)+", docker)
+    assert pin, "cfr-docker.yml pins jsonschema"
+    for name, text in (("cfr-docker.yml", docker), ("controls.yml", controls)):      # the same pins in both
+        installs = [l for l in text.splitlines() if "pip install" in l and not l.strip().startswith("#")]
+        assert any("requirements.txt" in l and "PyYAML==" in l and pin.group(0) in l for l in installs), (name, installs)
+    steps = yaml.safe_load(docker)["jobs"]["cfr-docker"]["steps"]
+    step = next(s for s in steps if s.get("name", "").startswith("Offline tests of the scenario DSL"))
+    assert step["if"] == "always()" and "tests/test_cfr_dsl.py" in step["run"]
+    assert 'grep -qi "skipped"' in step["run"] and "exit 1" in step["run"]
+
+
+def test_the_workflow_that_had_no_permissions_block_is_a_valid_unprivileged_manual_workflow():
+    w = yaml.safe_load((ROOT / ".github" / "workflows" / "main.yml").read_text())
+    assert w["permissions"] == {"contents": "read"} and set(w[True]) == {"workflow_dispatch"}   # never push / pull_request_target
+    assert set(w["jobs"]) == {"noop"} and "uses" not in str(w["jobs"])

@@ -88,6 +88,9 @@ rank people sensibly is **UNKNOWN**: they are a transparent heuristic, not calib
 ## Not done / UNKNOWN
 
 * k3d / Kubernetes: not provided, not run. `env.modes.k3d` says so, and a test fails if k3d/Kubernetes files appear in the scenario directory, so adding the mode means changing the DSL and that test together.
-* CI: `tests/test_cfr_dsl.py` is skipped where PyYAML and jsonschema are not installed (neither is in `requirements.txt`); no
-  workflow installs jsonschema yet, so the DSL tests do not run in CI until one does.
+* CI: `tests/test_cfr_dsl.py` needs PyYAML and jsonschema (neither is in `requirements.txt`) and skips test by test without
+  them. `cfr-docker.yml` (own step, a skip fails it) and `controls.yml` (control EC-17: a skipped test makes the control
+  FAILING) install both with pinned versions. Checked locally, including that without jsonschema only EC-17 turns FAILING.
+  Whether it is green **on a runner** is UNKNOWN: at the time of writing GitHub Actions assigned no runner to any job of
+  this repository, `main` included. Elsewhere (plain `pytest -q`) the tests still skip silently.
 * Hints are declared, not served. The estimate `estimated_minutes: 20` is the author's, not measured.
