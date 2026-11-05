@@ -13,9 +13,11 @@ from app.models import Tenant
 
 TASK = "Calculate 17 * 23 and return the verified result."
 RESULT = "391"
+TEST_SOURCE_COMMIT = "c" * 40
 
 
-def test_standalone_verifier_blocks_tampered_evidence():
+def test_standalone_verifier_blocks_tampered_evidence(monkeypatch):
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", TEST_SOURCE_COMMIT)
     tenant_id = str(uuid.uuid4())
     with SessionLocal() as db:
         db.add(Tenant(id=tenant_id, name="tamper-proof-test"))
@@ -47,7 +49,7 @@ def test_standalone_verifier_blocks_tampered_evidence():
                 "--db-path", tampered_db,
                 "--tenant-id", tenant_id,
                 "--run-id", runtime["run_id"],
-                "--expected-commit", "TEST_COMMIT",
+                "--expected-commit", TEST_SOURCE_COMMIT,
                 "--expected-task", TASK,
                 "--expected-result", RESULT,
             ],
