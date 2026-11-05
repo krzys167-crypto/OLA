@@ -29,6 +29,7 @@ def _paid_session():
         "status": "complete",
         "amount_total": 9900,
         "currency": "eur",
+        "line_items": {"data": [{"price": {"id": "price_ola_test"}, "quantity": 1}]},
     }
 
 
@@ -50,7 +51,8 @@ def test_stripe_signature_rejects_old_timestamp():
     assert not verify_stripe_signature(payload, signature, SECRET, now=TIMESTAMP + 301)
 
 
-def test_paid_ola_checkout_extracts_audit_task():
+def test_paid_ola_checkout_extracts_audit_task(monkeypatch):
+    monkeypatch.setenv("OLA_STRIPE_PRICE_ID", "price_ola_test")
     assert _validate_checkout(_paid_session()) == "Audit this company workflow for evidence gaps."
 
 
@@ -60,17 +62,20 @@ def test_paid_ola_checkout_extracts_audit_task():
         {"payment_status": "unpaid"},
         {"amount_total": 9800},
         {"currency": "usd"},
+        {"line_items": {"data": []}},
         {"metadata": {"offer": "other-offer", "product": "OLA Execution Audit", "task": "x"}},
     ],
 )
-def test_invalid_checkout_is_rejected(override):
+def test_invalid_checkout_is_rejected(override, monkeypatch):
+    monkeypatch.setenv("OLA_STRIPE_PRICE_ID", "price_ola_test")
     session = _paid_session()
     session.update(override)
     with pytest.raises(Exception):
         _validate_checkout(session)
 
 
-def test_paid_checkout_uses_metadata_task_without_custom_fields():
+def test_paid_checkout_uses_metadata_task_without_custom_fields(monkeypatch):
+    monkeypatch.setenv("OLA_STRIPE_PRICE_ID", "price_ola_test")
     session = _paid_session()
     assert "custom_fields" not in session
     assert _validate_checkout(session) == "Audit this company workflow for evidence gaps."
@@ -121,6 +126,7 @@ def test_paid_webhook_only_queues_human_review_and_uses_fresh_stripe_session(mon
     monkeypatch.setattr(
         stripe_webhook, "run_agent_task",
         lambda *args, **kwargs: executed.append(args) or {"status": "COMPLETED"},
+        raising=False,
     )
 
     result = stripe_webhook.process_checkout_event(event_payload, "test-signature")
