@@ -16,7 +16,7 @@ def test_nina_run_route_exists():
 
 
 def test_nina_run_executes_chain_but_does_not_self_approve():
-    commit = "TEST_NINA_E2E_COMMIT"
+    commit = "a" * 40
     os.environ["OLA_RUNTIME_COMMIT"] = commit
 
     tenant_id = str(uuid.uuid4())
@@ -71,7 +71,7 @@ def test_nina_run_explicit_llm_does_not_promote_deterministic_fallback(monkeypat
     monkeypatch.setenv("OLA_LLM_PROVIDER", "openai")
     monkeypatch.setenv("OLA_LLM_MODE", "deterministic")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setenv("OLA_RUNTIME_COMMIT", "TEST_NO_LLM_FALLBACK_SHA")
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", "b" * 40)
 
     tenant_id = str(uuid.uuid4())
     api_key = "nina-no-fallback-" + uuid.uuid4().hex
