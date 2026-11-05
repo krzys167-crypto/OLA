@@ -107,7 +107,7 @@ def validate_check_runs(payload, expected_sha):
         matching = [
             item for item in observed
             if item.get("name") == context
-            and (item.get("head_sha") in (None, expected_sha))
+            and (item.get("head_sha") == expected_sha)
             and (item.get("app") or {}).get("id") == GITHUB_ACTIONS_INTEGRATION_ID
         ]
         if not matching:
