@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .database import SessionLocal, append_evidence_atomic
 from .hashchain import canonical_json
-from .models import EvidenceRecord, StripeEvent
+from .models import StripeEvent
 from .revenue import retrieve_checkout
 
 
@@ -78,7 +78,9 @@ def _validate_checkout(session: dict) -> str:
     if not isinstance(items, list) or len(items) != 1 or not expected_price:
         raise HTTPException(status_code=400, detail="Stripe line items or configured price are invalid")
     item = items[0]
-    price = item.get("price") if isinstance(item, dict) else None
+    if not isinstance(item, dict):
+        raise HTTPException(status_code=400, detail="invalid Stripe line item")
+    price = item.get("price")
     price_id = price.get("id") if isinstance(price, dict) else None
     if price_id != expected_price or item.get("quantity") != 1:
         raise HTTPException(status_code=400, detail="unexpected Stripe price or quantity")
