@@ -285,6 +285,14 @@ def _execute_agent(agent, tenant_id, task, previous_output, execution):
     return result
 
 
+def _runtime_source_commit():
+    commit = os.getenv("OLA_RUNTIME_COMMIT")
+    if (not isinstance(commit, str) or len(commit) != 40
+            or any(character not in "0123456789abcdef" for character in commit)):
+        return None
+    return commit
+
+
 def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution):
     agent_instance_id = str(uuid.uuid4())
     context = {
@@ -312,6 +320,19 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
 
 
 def run_agent_task(tenant_id, task):
+    source_commit = _runtime_source_commit()
+    if source_commit is None:
+        return {
+            "run_id": None,
+            "task": task,
+            "final_result": None,
+            "status": "BLOCK",
+            "reason": "runtime source commit missing or invalid",
+            "agents": AGENT_ROLES,
+            "evidence_count": 0,
+            "evidence_ids": [],
+            "execution": [],
+        }
     run_id = str(uuid.uuid4())
     evidence_ids = []
     execution = []
@@ -404,9 +425,8 @@ def run_multi_agent_task(tenant_id, task, agents):
 
 
 def verify_agent_run(tenant_id, run_id):
-    expected_commit = os.getenv("OLA_RUNTIME_COMMIT")
-    if (not isinstance(expected_commit, str) or len(expected_commit) != 40
-            or any(character not in "0123456789abcdef" for character in expected_commit)):
+    expected_commit = _runtime_source_commit()
+    if expected_commit is None:
         return {"status": "BLOCK", "reason": "runtime source commit missing or invalid"}
 
     with SessionLocal() as db:
