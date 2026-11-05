@@ -328,6 +328,7 @@ def run_agent_task(tenant_id, task):
         "task": task,
         "final_result": final_result,
         "status": verification["status"],
+        "reason": verification.get("reason"),
         "agents": AGENT_ROLES,
         "evidence_count": len(evidence_ids),
         "evidence_ids": evidence_ids,
@@ -403,6 +404,11 @@ def run_multi_agent_task(tenant_id, task, agents):
 
 
 def verify_agent_run(tenant_id, run_id):
+    expected_commit = os.getenv("OLA_RUNTIME_COMMIT")
+    if (not isinstance(expected_commit, str) or len(expected_commit) != 40
+            or any(character not in "0123456789abcdef" for character in expected_commit)):
+        return {"status": "BLOCK", "reason": "runtime source commit missing or invalid"}
+
     with SessionLocal() as db:
         rows = db.scalars(select(EvidenceRecord).where(EvidenceRecord.tenant_id == tenant_id).order_by(EvidenceRecord.seq.asc())).all()
     run_rows = []
@@ -422,9 +428,11 @@ def verify_agent_run(tenant_id, run_id):
     context_digests = set()
     for row in run_rows:
         payload = json.loads(row.payload_json)
-        required = {"capability", "tool", "tool_output", "result", "status", "agent_instance_id", "execution_boundary", "context_digest", "invocation_type", "model", "provider", "response_id"}
+        required = {"capability", "tool", "tool_output", "result", "status", "agent_instance_id", "execution_boundary", "context_digest", "invocation_type", "model", "provider", "response_id", "commit"}
         if not required.issubset(payload):
             return {"status": "BLOCK", "reason": "agent execution evidence incomplete", "evidence_count": len(run_rows)}
+        if payload.get("commit") != expected_commit:
+            return {"status": "BLOCK", "reason": "runtime commit provenance mismatch", "evidence_count": len(run_rows)}
         if payload["status"] != "VERIFIED":
             return {"status": "BLOCK", "reason": "agent execution not verified", "evidence_count": len(run_rows)}
         if payload["execution_boundary"] != "independent":
@@ -441,4 +449,4 @@ def verify_agent_run(tenant_id, run_id):
         return {"status": "BLOCK", "reason": "legacy or untrusted agent evidence", "evidence_count": len(run_rows)}
     if not chain_ok:
         return {"status": "BLOCK", "reason": reason, "evidence_count": len(run_rows)}
-    return {"status": "VERIFIED", "reason": "independent agent identities, contexts, execution evidence and hash-chain verification passed", "evidence_count": len(run_rows)}
+    return {"status": "VERIFIED", "reason": "runtime commit, independent agent identities, contexts, execution evidence and hash-chain verification passed", "commit": expected_commit, "evidence_count": len(run_rows)}
