@@ -2,6 +2,7 @@ import hashlib
 import hmac
 
 import pytest
+from sqlalchemy import select
 
 from app.stripe_webhook import _validate_checkout, verify_stripe_signature
 
