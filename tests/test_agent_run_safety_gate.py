@@ -33,6 +33,7 @@ def _evidence(tenant_id):
         ).order_by(EvidenceRecord.seq.asc())).all()
         return [(row.record_type, json.loads(row.payload_json), {
             "tenant_id": row.tenant_id, "seq": row.seq,
+            "record_type": row.record_type,
             "prev_hash": row.prev_hash, "record_hash": row.record_hash,
             "payload_json": row.payload_json,
         }) for row in rows]
