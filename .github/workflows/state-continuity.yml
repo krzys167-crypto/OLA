@@ -24,7 +24,7 @@ jobs:
         run: |
           set -euo pipefail
           docker volume create ola-state-data
-          docker run -d --name ola-state --mount source=ola-state-data,target=/data -p 8000:8000 ola-state-continuity
+          docker run -d --name ola-state --mount source=ola-state-data,target=/data -e OLA_RUNTIME_COMMIT="$GITHUB_SHA" -p 8000:8000 ola-state-continuity
           for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:8000/health >/dev/null; then exit 0; fi; sleep 2; done
           docker logs ola-state
           exit 1
