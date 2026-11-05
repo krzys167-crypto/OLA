@@ -23,9 +23,15 @@ jobs:
           set -euo pipefail
           test -f revenue/index.html
           grep -q "OLA Execution Audit" revenue/index.html
-          grep -q "https://buy.stripe.com/test_cNi28t0yN5Sd2B20ufdjO00" revenue/index.html
-          grep -qi "sandbox" revenue/index.html
-          grep -q "NOT" docs/revenue-marketing-flow.md
-          echo "REVENUE_SURFACE=VERIFIED"
-          echo "STRIPE_MODE=SANDBOX"
+          if grep -Fq 'https://buy.stripe.com/' revenue/index.html; then
+            echo "::error::Unverified Stripe Payment Link must not be published as a working CTA."
+            exit 1
+          fi
+          grep -q "CI-VERIFIED" revenue/index.html
+          grep -q "CHECKOUT NOT AVAILABLE" revenue/index.html
+          grep -Fq 'aria-disabled="true"' revenue/index.html
+          grep -qi "Checkout remains disabled" revenue/index.html
+          grep -qi 'public customer-onboarding path' docs/revenue-marketing-flow.md
+          echo "REVENUE_SURFACE=HONEST_DISABLED"
+          echo "STRIPE_MODE=NOT_CONFIGURED"
           echo "PRODUCTION_REVENUE=NOT_PROVEN"
