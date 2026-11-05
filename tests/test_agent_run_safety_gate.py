@@ -42,6 +42,7 @@ def _evidence(tenant_id):
 def test_registered_low_risk_agent_is_allowed_and_decision_is_chained(monkeypatch):
     monkeypatch.setenv("OLA_LLM_PROVIDER", "none")
     monkeypatch.setenv("OLA_LLM_MODE", "deterministic")
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", "8" * 40)
     tenant_id, headers = _tenant()
 
     response = TestClient(main_module.app).post(
