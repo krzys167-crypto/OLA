@@ -299,6 +299,7 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
         "agent": agent,
         "agent_instance_id": agent_instance_id,
         "execution_boundary": "independent",
+        "commit": os.getenv("OLA_RUNTIME_COMMIT", "UNKNOWN"),
         "context_digest": _digest(canonical_json(context)),
         "task": task,
         "input_digest": _digest(json.dumps(previous_output, sort_keys=True)),
