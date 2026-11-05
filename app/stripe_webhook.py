@@ -9,10 +9,10 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from .agent_runtime import run_agent_task
 from .database import SessionLocal, append_evidence_atomic
-from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash
+from .hashchain import canonical_json
 from .models import EvidenceRecord, StripeEvent
+from .revenue import retrieve_checkout
 
 
 STRIPE_SIGNATURE_TOLERANCE_SECONDS = 300
@@ -65,26 +65,43 @@ def _validate_checkout(session: dict) -> str:
     metadata = session.get("metadata") or {}
     if metadata.get("offer") != OLA_OFFER:
         raise HTTPException(status_code=400, detail="unsupported Stripe offer")
-    if metadata.get("product") not in {None, OLA_PRODUCT}:
+    if metadata.get("product") != OLA_PRODUCT:
         raise HTTPException(status_code=400, detail="unsupported Stripe product")
-    if session.get("payment_status") != "paid" or session.get("status") not in {None, "complete"}:
+    if session.get("payment_status") != "paid" or session.get("status") != "complete":
         raise HTTPException(status_code=400, detail="payment is not confirmed")
     if session.get("currency") != "eur" or session.get("amount_total") != 9900:
         raise HTTPException(status_code=400, detail="unexpected payment amount or currency")
-    line_items = session.get("line_items") or {}
-    if isinstance(line_items, dict):
-        price_ids = {
-            item.get("price", {}).get("id")
-            for item in line_items.get("data", [])
-            if isinstance(item, dict)
-        }
-        expected_price = os.getenv("OLA_STRIPE_PRICE_ID")
-        if price_ids and expected_price and expected_price not in price_ids:
-            raise HTTPException(status_code=400, detail="unexpected Stripe price")
+
+    line_items = session.get("line_items")
+    items = line_items.get("data") if isinstance(line_items, dict) else None
+    expected_price = os.getenv("OLA_STRIPE_PRICE_ID")
+    if not isinstance(items, list) or len(items) != 1 or not expected_price:
+        raise HTTPException(status_code=400, detail="Stripe line items or configured price are invalid")
+    item = items[0]
+    price = item.get("price") if isinstance(item, dict) else None
+    price_id = price.get("id") if isinstance(price, dict) else None
+    if price_id != expected_price or item.get("quantity") != 1:
+        raise HTTPException(status_code=400, detail="unexpected Stripe price or quantity")
+
     task = _metadata_task(session)
     if not task:
         raise HTTPException(status_code=400, detail="audit task is required")
+    if not metadata.get("tenant_id"):
+        raise HTTPException(status_code=400, detail="tenant provenance is required")
     return task
+
+
+def _existing_result(event_id: str, checkout_session_id: str) -> dict | None:
+    with SessionLocal() as db:
+        existing = db.scalar(select(StripeEvent).where(StripeEvent.event_id == event_id))
+        if existing is None:
+            return None
+        if existing.status == "PAID_PENDING_HUMAN_GATE" and existing.result_json:
+            result = json.loads(existing.result_json)
+            if result.get("checkout_session_id") != checkout_session_id:
+                raise HTTPException(status_code=409, detail="Stripe event/session binding conflict")
+            return result
+        raise HTTPException(status_code=503, detail="Stripe event is not yet safely finalized; retry delivery")
 
 
 def process_checkout_event(payload: bytes, signature_header: str) -> dict:
@@ -104,85 +121,79 @@ def process_checkout_event(payload: bytes, signature_header: str) -> dict:
     if event_type != "checkout.session.completed":
         return {"status": "IGNORED", "event_id": event_id, "event_type": event_type}
 
-    session = event.get("data", {}).get("object", {})
+    event_session = event.get("data", {}).get("object", {})
+    checkout_session_id = event_session.get("id") if isinstance(event_session, dict) else None
+    if not isinstance(checkout_session_id, str) or not checkout_session_id:
+        raise HTTPException(status_code=400, detail="Stripe Checkout Session id is required")
+
+    existing = _existing_result(event_id, checkout_session_id)
+    if existing is not None:
+        return existing
+
+    try:
+        session = retrieve_checkout(checkout_session_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Stripe session verification is temporarily unavailable") from exc
+    if not isinstance(session, dict) or session.get("id") != checkout_session_id:
+        raise HTTPException(status_code=400, detail="Stripe session identity mismatch")
+
     task = _validate_checkout(session)
-    tenant_id = (session.get("metadata") or {}).get("tenant_id") or os.getenv("OLA_STRIPE_TENANT_ID", "")
-    if not tenant_id:
-        raise HTTPException(status_code=500, detail="Stripe session has no tenant provenance")
+    metadata = session.get("metadata") or {}
+    tenant_id = metadata.get("tenant_id")
 
+    record = StripeEvent(
+        id=str(uuid.uuid4()),
+        event_id=event_id,
+        status="PROCESSING",
+        task=task,
+    )
     with SessionLocal() as db:
-        existing = db.scalar(select(StripeEvent).where(StripeEvent.event_id == event_id))
-        if existing is not None:
-            if existing.status == "COMPLETED" and existing.result_json:
-                return json.loads(existing.result_json)
-            raise HTTPException(status_code=409, detail="Stripe event is already being processed")
-
-        record = StripeEvent(
-            id=str(uuid.uuid4()),
-            event_id=event_id,
-            status="PROCESSING",
-            task=task,
-        )
         db.add(record)
         try:
             db.commit()
         except IntegrityError:
             db.rollback()
-            raise HTTPException(status_code=409, detail="Stripe event is already being processed") from None
-
-    payment_evidence_id = _append_evidence(
-        tenant_id,
-        "stripe.payment_confirmed",
-        {
-            "stripe_event_id": event_id,
-            "checkout_session_id": session.get("id"),
-            "offer": OLA_OFFER,
-            "product": OLA_PRODUCT,
-            "amount_total": session.get("amount_total"),
-            "currency": session.get("currency"),
-            "task": task,
-        },
-    )
+            existing = _existing_result(event_id, checkout_session_id)
+            if existing is not None:
+                return existing
+            raise HTTPException(status_code=503, detail="Stripe event is being processed; retry delivery") from None
 
     try:
-        runtime = run_agent_task(tenant_id, task)
-    except Exception:
+        payment_evidence_id = _append_evidence(
+            tenant_id,
+            "stripe.payment_confirmed",
+            {
+                "stripe_event_id": event_id,
+                "checkout_session_id": checkout_session_id,
+                "offer": OLA_OFFER,
+                "product": OLA_PRODUCT,
+                "amount_total": session.get("amount_total"),
+                "currency": session.get("currency"),
+                "task": task,
+                "state": "PAID_PENDING_HUMAN_GATE",
+            },
+        )
+        result = {
+            "status": "PAID_PENDING_HUMAN_GATE",
+            "event_id": event_id,
+            "checkout_session_id": checkout_session_id,
+            "payment": "CONFIRMED",
+            "execution": "NOT_STARTED",
+            "human_gate": "PENDING",
+            "payment_evidence_id": payment_evidence_id,
+        }
+        with SessionLocal() as db:
+            pending = db.scalar(select(StripeEvent).where(StripeEvent.event_id == event_id))
+            if pending is None or pending.status != "PROCESSING":
+                raise RuntimeError("Stripe event state changed before Human Gate handoff")
+            pending.status = "PAID_PENDING_HUMAN_GATE"
+            pending.result_json = canonical_json(result)
+            db.commit()
+        return result
+    except Exception as exc:
         with SessionLocal() as db:
             failed = db.scalar(select(StripeEvent).where(StripeEvent.event_id == event_id))
-            if failed is not None:
-                failed.status = "FAILED"
+            if failed is not None and failed.status == "PROCESSING":
+                failed.status = "FAILED_RETRYABLE"
                 db.commit()
-        raise
-
-    result = {
-        "status": "COMPLETED",
-        "event_id": event_id,
-        "checkout_session_id": session.get("id"),
-        "payment": "CONFIRMED",
-        "ola_status": runtime.get("status", "UNKNOWN"),
-        "ola_run_id": runtime.get("run_id"),
-        "ola_final_result": runtime.get("final_result"),
-        "payment_evidence_id": payment_evidence_id,
-        "ola_evidence_ids": runtime.get("evidence_ids", []),
-    }
-    _append_evidence(
-        tenant_id,
-        "stripe.ola_execution_completed",
-        {
-            "stripe_event_id": event_id,
-            "checkout_session_id": session.get("id"),
-            "ola_run_id": runtime.get("run_id"),
-            "ola_status": runtime.get("status", "UNKNOWN"),
-            "ola_final_result": runtime.get("final_result"),
-            "payment_evidence_id": payment_evidence_id,
-        },
-    )
-
-    with SessionLocal() as db:
-        completed = db.scalar(select(StripeEvent).where(StripeEvent.event_id == event_id))
-        completed.status = "COMPLETED"
-        completed.run_id = runtime.get("run_id")
-        completed.result_json = canonical_json(result)
-        db.commit()
-
-    return result
+        raise HTTPException(status_code=503, detail="Payment verified but Human Gate handoff requires retry") from exc
