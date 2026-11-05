@@ -111,7 +111,7 @@ jobs:
 
       - name: Start runtime
         run: |
-          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" --name ola-igor-e2e --publish 8001:8000 "ola-igor:${SOURCE_COMMIT}"
+          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" -e OLA_RUNTIME_COMMIT="${SOURCE_COMMIT}" --name ola-igor-e2e --publish 8001:8000 "ola-igor:${SOURCE_COMMIT}"
           for i in $(seq 1 30); do curl --fail --silent http://127.0.0.1:8001/health >/dev/null && exit 0; sleep 1; done
           docker logs ola-igor-e2e
           exit 1

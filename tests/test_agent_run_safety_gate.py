@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 import app.main as main_module
+from app.api_key_hashing import api_key_fingerprint
 from app.database import SessionLocal
 from app.hashchain import verify_chain
 from app.execution_safety_gate import ExecutionDecision
@@ -20,7 +21,7 @@ def _tenant():
         db.add(Tenant(id=tenant_id, name="agent-run-gate-test"))
         db.flush()
         db.add(ApiKey(id=str(uuid.uuid4()), tenant_id=tenant_id,
-                      key_hash=hashlib.sha256(key.encode()).hexdigest()))
+                      key_hash=api_key_fingerprint(key)))
         db.commit()
     return tenant_id, {"X-API-Key": key}
 
@@ -32,6 +33,7 @@ def _evidence(tenant_id):
         ).order_by(EvidenceRecord.seq.asc())).all()
         return [(row.record_type, json.loads(row.payload_json), {
             "tenant_id": row.tenant_id, "seq": row.seq,
+            "record_type": row.record_type,
             "prev_hash": row.prev_hash, "record_hash": row.record_hash,
             "payload_json": row.payload_json,
         }) for row in rows]
@@ -40,6 +42,7 @@ def _evidence(tenant_id):
 def test_registered_low_risk_agent_is_allowed_and_decision_is_chained(monkeypatch):
     monkeypatch.setenv("OLA_LLM_PROVIDER", "none")
     monkeypatch.setenv("OLA_LLM_MODE", "deterministic")
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", "8" * 40)
     tenant_id, headers = _tenant()
 
     response = TestClient(main_module.app).post(

@@ -13,7 +13,8 @@ def _tenant():
     return tenant_id
 
 
-def test_six_agents_perform_distinct_runtime_capabilities():
+def test_six_agents_perform_distinct_runtime_capabilities(monkeypatch):
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", "f" * 40)
     result = run_agent_task(_tenant(), "calculate 2+3 and preserve the result")
     assert result["status"] == "VERIFIED"
     capabilities = {item["agent"]: item["capability"] for item in result["execution"]}
@@ -26,7 +27,8 @@ def test_six_agents_perform_distinct_runtime_capabilities():
     assert capabilities["multi_agent"] == "aggregated_agent_outputs"
 
 
-def test_agent_results_are_not_deterministic_placeholder_strings():
+def test_agent_results_are_not_deterministic_placeholder_strings(monkeypatch):
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", "f" * 40)
     result = run_agent_task(_tenant(), "calculate 2+3")
     assert all("deterministic runtime contract" not in item["result"] for item in result["execution"])
     assert result["execution"][0]["tool_output"] == "5"

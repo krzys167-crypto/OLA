@@ -1,5 +1,4 @@
 from app.api_key_hashing import api_key_fingerprint
-import hashlib
 import uuid
 
 from fastapi.testclient import TestClient
@@ -8,6 +7,9 @@ from app.main import app
 from app.database import SessionLocal
 from app.models import ApiKey, Tenant
 from app.agent_runtime import AGENT_ROLES, run_agent_task, verify_agent_run
+
+TEST_SOURCE_COMMIT = "d" * 40
+WRONG_SOURCE_COMMIT = "e" * 40
 
 
 def _seed_tenant(api_key="agent-key"):
@@ -25,7 +27,8 @@ def _seed_tenant(api_key="agent-key"):
     return tenant_id
 
 
-def test_six_agent_runtime_is_ordered_and_verified():
+def test_six_agent_runtime_is_ordered_and_verified(monkeypatch):
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", TEST_SOURCE_COMMIT)
     tenant_id = _seed_tenant("agent-key-1")
     result = run_agent_task(tenant_id, "verify an evidence-backed task")
 
@@ -35,7 +38,8 @@ def test_six_agent_runtime_is_ordered_and_verified():
     assert verify_agent_run(tenant_id, result["run_id"])["status"] == "VERIFIED"
 
 
-def test_six_agents_have_independent_execution_identity_and_context():
+def test_six_agents_have_independent_execution_identity_and_context(monkeypatch):
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", TEST_SOURCE_COMMIT)
     tenant_id = _seed_tenant("agent-key-independence")
     result = run_agent_task(tenant_id, "prove independent agent execution")
 
@@ -48,7 +52,41 @@ def test_six_agents_have_independent_execution_identity_and_context():
     assert all(item["invocation_type"] == "local_deterministic_model" for item in executions)
 
 
-def test_independent_verifier_rejects_missing_agent_evidence():
+def test_internal_verifier_rejects_missing_runtime_commit(monkeypatch):
+    monkeypatch.delenv("OLA_RUNTIME_COMMIT", raising=False)
+    tenant_id = _seed_tenant("agent-key-missing-commit")
+    result = run_agent_task(tenant_id, "task without a trusted source identity")
+
+    assert result["status"] == "BLOCK", result
+    assert result["evidence_count"] == 0
+    assert result["execution"] == []
+    assert "runtime source commit" in result.get("reason", "").lower()
+
+
+def test_internal_verifier_rejects_invalid_runtime_commit(monkeypatch):
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", "not-a-commit")
+    tenant_id = _seed_tenant("agent-key-invalid-commit")
+    result = run_agent_task(tenant_id, "task with malformed source identity")
+
+    assert result["status"] == "BLOCK", result
+    assert result["evidence_count"] == 0
+    assert "runtime source commit" in result.get("reason", "").lower()
+
+
+def test_internal_verifier_rejects_runtime_commit_mismatch(monkeypatch):
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", TEST_SOURCE_COMMIT)
+    tenant_id = _seed_tenant("agent-key-mismatched-commit")
+    result = run_agent_task(tenant_id, "task with a changed source identity")
+    assert result["status"] == "VERIFIED", result
+
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", WRONG_SOURCE_COMMIT)
+    proof = verify_agent_run(tenant_id, result["run_id"])
+    assert proof["status"] == "BLOCK", proof
+    assert "commit" in proof["reason"].lower()
+
+
+def test_independent_verifier_rejects_missing_agent_evidence(monkeypatch):
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", TEST_SOURCE_COMMIT)
     tenant_id = _seed_tenant("agent-key-2")
     result = run_agent_task(tenant_id, "task with complete evidence")
 
@@ -56,7 +94,8 @@ def test_independent_verifier_rejects_missing_agent_evidence():
     assert result["status"] == "VERIFIED"
 
 
-def test_agent_runtime_http_endpoint():
+def test_agent_runtime_http_endpoint(monkeypatch):
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", TEST_SOURCE_COMMIT)
     _seed_tenant("agent-key")
     client = TestClient(app)
     response = client.post(
@@ -66,3 +105,16 @@ def test_agent_runtime_http_endpoint():
     )
     assert response.status_code == 200
     assert response.json()["status"] == "VERIFIED"
+
+
+def test_agent_runtime_http_endpoint_blocks_unknown_commit(monkeypatch):
+    monkeypatch.delenv("OLA_RUNTIME_COMMIT", raising=False)
+    _seed_tenant("agent-key-no-commit")
+    client = TestClient(app)
+    response = client.post(
+        "/agent-run",
+        headers={"X-API-Key": "agent-key-no-commit"},
+        json={"task": "runtime without source identity"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "BLOCK"

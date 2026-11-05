@@ -81,6 +81,10 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
         "model": expected_model,
         "invocation_type": expected_invocation_type,
     }
+
+    if (not isinstance(expected_commit, str) or len(expected_commit) != 40
+            or any(character not in "0123456789abcdef" for character in expected_commit)):
+        return fail("expected commit must be a full 40-character lowercase SHA-1")
     db = sqlite3.connect(db_path)
     rows = db.execute(
         "SELECT tenant_id, seq, record_type, payload_json, prev_hash, record_hash "
@@ -128,6 +132,8 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
         }
         if not required.issubset(payload):
             return fail(f"execution evidence incomplete for {agent}")
+        if payload.get("commit") != expected_commit:
+            return fail(f"runtime commit provenance mismatch for {agent}")
         if payload.get("status") != "VERIFIED":
             return fail(f"execution not verified for {agent}")
         if payload.get("capability") != EXPECTED_CAPABILITIES.get(agent):
@@ -178,7 +184,7 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
         "independent_context_count": len(context_digests),
         "invocations": invocations,
         "evidence_count": len(run_rows),
-        "reason": "standalone verifier recomputed roles, capabilities, invocation metadata, result, identities, contexts and hash chain without importing runtime verification code",
+        "reason": "standalone verifier recomputed source SHA binding, roles, capabilities, invocation metadata, result, identities, contexts and hash chain without importing runtime verification code",
     }
 
 
