@@ -1,0 +1,7 @@
+# Default ownership for OLA source and governance files.
+# Configure the main-branch ruleset to require CODEOWNERS review.
+* @krzysztofcieciwa07-ship-it
+
+/.github/ @krzysztofcieciwa07-ship-it
+/scripts/ @krzysztofcieciwa07-ship-it
+/app/ @krzysztofcieciwa07-ship-it
