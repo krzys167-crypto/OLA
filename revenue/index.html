@@ -35,6 +35,7 @@ ul{padding:0;margin:0 0 30px;list-style:none;color:#c8d0da;font-size:14px;line-h
 li:before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:#dce5ee;margin:0 12px 2px 0;box-shadow:0 0 12px rgba(220,230,245,.5)}
 .offer{display:flex;align-items:center;gap:18px;flex-wrap:wrap}.price{font-size:18px;font-weight:600}.note{margin-top:13px;font-size:11px;color:#68737f}
 .cta{display:inline-block;padding:14px 21px;border:1px solid rgba(255,255,255,.2);border-radius:28px;color:#f4f6f8;text-decoration:none;font-size:12px;letter-spacing:1.5px;transition:.25s}.cta:hover{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.38)}
+.cta-disabled{cursor:not-allowed;opacity:.62;user-select:none}
 .scene{position:absolute;right:5vw;top:50%;width:min(540px,48vw);height:440px;transform:translateY(-50%);perspective:1000px}
 .core{position:absolute;left:50%;top:48%;width:235px;height:235px;transform:translate(-50%,-50%) rotateX(12deg) rotateY(-16deg) scale(.65);border-radius:50%;background:radial-gradient(circle at 34% 27%,rgba(255,255,255,.16),rgba(255,255,255,.045) 25%,rgba(15,20,27,.45) 63%,rgba(0,0,0,.72));border:1px solid rgba(225,235,245,.18);box-shadow:inset 0 0 55px rgba(190,215,240,.08),0 35px 100px rgba(0,0,0,.78);opacity:0;animation:coreReveal 1.8s cubic-bezier(.15,.72,.18,1) 6.9s forwards}
 .core:before{content:"";position:absolute;inset:18px;border-radius:50%;border:1px solid rgba(220,232,245,.1)}
@@ -73,10 +74,10 @@ li:before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%
 <li>niezależna weryfikacja wyniku po wykonaniu</li>
 <li>automatyczne uruchomienie po potwierdzeniu płatności</li>
 </ul>
-<div class="proof"><span>VERIFIED</span><small>Execution · Provenance · Evidence · Replay</small></div>
+<div class="proof"><span>CI-VERIFIED</span><small>Isolated runtime · Provenance · Evidence · Replay</small></div>
 <div class="deliver"><b>WHAT YOU GET</b><span>Execution evidence · Provenance &amp; hashes · Independent verification · Tamper / replay check</span><em>If evidence is missing, OLA says so.</em></div>
-<div class="offer"><span class="price">€99 <small>· one controlled audit</small></span><a class="cta" href="https://buy.stripe.com/test_cNi28t0yN5Sd2B20ufdjO00">START AUDIT</a></div>
-<div class="note">Preview — Stripe Sandbox. To nie jest sprzedaż produkcyjna.</div>
+<div class="offer"><span class="price">€99 <small>· planned one-time audit price</small></span><span class="cta cta-disabled" role="status" aria-disabled="true">CHECKOUT NOT AVAILABLE</span></div>
+<div class="note">Preview only. Checkout remains disabled until a verified Stripe price and public customer onboarding flow are configured. To nie jest aktywna oferta sprzedażowa.</div>
 </section>
 <div class="scene" aria-hidden="true">
 <div class="orbit o1"></div><div class="orbit o2"></div>
