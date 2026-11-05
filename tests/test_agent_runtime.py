@@ -58,6 +58,18 @@ def test_internal_verifier_rejects_missing_runtime_commit(monkeypatch):
     result = run_agent_task(tenant_id, "task without a trusted source identity")
 
     assert result["status"] == "BLOCK", result
+    assert result["evidence_count"] == 0
+    assert result["execution"] == []
+    assert "runtime source commit" in result.get("reason", "").lower()
+
+
+def test_internal_verifier_rejects_invalid_runtime_commit(monkeypatch):
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", "not-a-commit")
+    tenant_id = _seed_tenant("agent-key-invalid-commit")
+    result = run_agent_task(tenant_id, "task with malformed source identity")
+
+    assert result["status"] == "BLOCK", result
+    assert result["evidence_count"] == 0
     assert "runtime source commit" in result.get("reason", "").lower()
 
 
