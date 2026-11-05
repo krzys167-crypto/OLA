@@ -105,7 +105,7 @@ def test_paid_webhook_only_queues_human_review_and_uses_fresh_stripe_session(mon
             "tenant_id": "tenant-human-gate-test",
             "task": task,
         },
-        "line_items": {"data": [{"price": {"id": price_id}}]},
+        "line_items": {"data": [{"price": {"id": price_id}, "quantity": 1}]},
     }
     event_payload = json.dumps({
         "id": event_id,
