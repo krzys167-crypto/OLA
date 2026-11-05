@@ -9,8 +9,9 @@ from app.models import Tenant
 from app.hashchain import verify_chain
 from sqlalchemy import select
 
-def test_frontier_baseline_vector():
+def test_frontier_baseline_vector(monkeypatch):
     os.environ["OLA_LLM_MODE"] = "deterministic"
+    monkeypatch.setenv("OLA_RUNTIME_COMMIT", "9" * 40)
     tenant_id = str(uuid.uuid4())
     with SessionLocal() as db:
         db.add(Tenant(id=tenant_id, name="frontier-baseline"))
