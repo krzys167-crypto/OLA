@@ -126,3 +126,8 @@ Until all required evidence is present, describe production readiness as `UNKNOW
 ## Security
 
 Read [SECURITY.md](SECURITY.md) before reporting vulnerabilities or preparing a release. Never commit API keys, Stripe secrets, signing keys, customer data, or production evidence containing sensitive information.
+
+
+## Portfolio repository map
+
+The current repository ownership and provenance snapshot is maintained in [REPOSITORY_CATALOG.md](docs/REPOSITORY_CATALOG.md), with a machine-readable companion at [REPOSITORY_CATALOG.json](docs/REPOSITORY_CATALOG.json). These files distinguish canonical source repositories, forks, specifications, and experiments; they do not assert production readiness.
