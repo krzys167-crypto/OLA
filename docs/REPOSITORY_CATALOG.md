@@ -65,7 +65,7 @@ Podłączona instalacja GitHub obejmuje konto krzysztofcieciwa07-ship-it; drugie
 
 ## 4. .env w eksperymentalnym chatbotcie
 
-W drzewie main potwierdzono śledzony plik .env zarówno w krzysztofcieciwa07-ship-it/quantum-ai-chatbot, jak i w repo źródłowym krzys167-crypto/quantum-ai-chatbot. Odczytano wyłącznie nazwy zmiennych z forka: VITE_SUPABASE_URL i VITE_SUPABASE_ANON_KEY; wartości nie zostały ujawnione. Nie znaleziono nazw zmiennych sugerujących service-role/private key w tym pliku. Klucz anon jest przeznaczony do użycia klientowego, ale nadal wymaga poprawnych RLS i ograniczeń projektu. Plik należy zastąpić bezpiecznym .env.example, dodać .env do ignore i osobno sprawdzić historię oraz konfigurację Supabase. Nie przypisywać tego eksperymentu do OLA ani NOVA.
+Stan po naprawie bieżącej gałęzi forka (2026-11-09): w krzysztofcieciwa07-ship-it/quantum-ai-chatbot usunięto śledzony .env i zastąpiono wartości .env.example placeholderami; .gitignore już ignoruje .env. Nie czyści to historii Git. W źródłowym repo krzys167-crypto/quantum-ai-chatbot nadal istnieją śledzone .env i .env.example. W .env.example znaleziono wartości o formatach/cechach pasujących do poświadczeń Anthropic, Google OAuth, prywatnego klucza konta serwisowego Google oraz ElevenLabs. Nie testowano ich i nie ujawniano; ich aktywność jest UNKNOWN, ale należy je traktować jak publicznie ujawnione i obrócić. Źródłowy plik i historię Git musi naprawić właściciel drugiego konta po uzyskaniu dostępu. Nie kopiować ani nie używać tych wartości. Klucz VITE_SUPABASE_ANON_KEY jest przeznaczony dla klienta, ale nadal wymaga poprawnych RLS i ograniczeń projektu. Nie przypisywać chatbota do OLA ani NOVA.
 
 ## 5. Evidence Gateway — decyzja architektoniczna
 
