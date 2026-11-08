@@ -120,7 +120,27 @@
         "sales",
         "tools"
       ],
-      "action": "RECOVER_UNIQUE_WORK_SELECTIVELY_DO_NOT_DELETE_OR_MERGE_WHOLE_FORK"
+      "action": "RECOVER_UNIQUE_WORK_SELECTIVELY_DO_NOT_DELETE_OR_MERGE_WHOLE_FORK",
+      "unique_files": 179,
+      "public_content_risk": {
+        "file": "sales/prospects.csv",
+        "rows": 18,
+        "observed_columns": [
+          "company",
+          "sector",
+          "stage",
+          "contact",
+          "last_action",
+          "next_due",
+          "note"
+        ],
+        "other_paths": [
+          "docs/sales/sample"
+        ],
+        "classification": "POTENTIAL_PERSONAL_OR_COMMERCIAL_DATA",
+        "values_disclosed": false,
+        "action": "RESTRICT_OR_REMOVE_PUBLIC_COPY_AFTER OWNER REVIEW; inspect history and rotate any exposed credentials"
+      }
     },
     {
       "full_name": "krzys167-crypto/vantage",
@@ -216,6 +236,7 @@
     "Do not delete or wholesale merge the divergent krzys167-crypto/OLA fork until its 235 ahead commits and unique directories have been reviewed.",
     "Close or archive stale PRs only after classifying unique commits and replacement PRs.",
     "Delete temporary Vantage CI branches for closed unmerged test-trigger PRs after preserving evidence.",
-    "Evidence Gateway remains specification-only unless a real tested service is implemented."
+    "Evidence Gateway remains specification-only unless a real tested service is implemented.",
+    "Do not republish or migrate sales/prospects.csv or docs/sales/sample from the public secondary-account fork until a privacy and provenance review is complete."
   ]
 }
