@@ -1,0 +1,221 @@
+{
+  "schema": "ola.public-repositories.v2",
+  "snapshot_date": "2026-11-09",
+  "canonical_owner": "krzysztofcieciwa07-ship-it",
+  "inspected_secondary_owner": "krzys167-crypto",
+  "scope": "NINE_PUBLIC_REPOSITORIES_PLUS_REFERENCED_SECONDARY_ACCOUNT_REPOS",
+  "canonical_source_of_truth": {
+    "ola": {
+      "full_name": "krzysztofcieciwa07-ship-it/OLA",
+      "default_branch": "main",
+      "main_sha": "6dff9c43ccd5a6892a50d1f59363d232b07ceafb",
+      "branches": 163,
+      "open_pull_requests": 74,
+      "status": "CANONICAL_SOURCE_NOT_RELEASE_ACCEPTED"
+    },
+    "vantage": {
+      "full_name": "krzysztofcieciwa07-ship-it/vantage",
+      "default_branch": "main",
+      "main_sha": "3bd9492861",
+      "branches": 27,
+      "open_pull_requests": 9,
+      "status": "CANONICAL_PROTOTYPE_NOT_PRODUCTION_VERIFIED"
+    }
+  },
+  "private_repository_excluded_from_public_total": [
+    {
+      "full_name": "krzysztofcieciwa07-ship-it/Vantage-v0.3",
+      "visibility": "private",
+      "branches": 0,
+      "source_files": 0,
+      "classification": "EMPTY_PLACEHOLDER_NOT_ACTIVE"
+    }
+  ],
+  "public_repositories": [
+    {
+      "full_name": "krzysztofcieciwa07-ship-it/OLA",
+      "role": "CANONICAL_CORE",
+      "fork": false,
+      "status": "SOURCE_PRESENT_NOT_RELEASE_ACCEPTED",
+      "main_sha": "6dff9c43ccd5a6892a50d1f59363d232b07ceafb",
+      "branches": 163,
+      "open_pull_requests": 74
+    },
+    {
+      "full_name": "krzysztofcieciwa07-ship-it/vantage",
+      "role": "CANONICAL_SECURITY_GATE_PROTOTYPE",
+      "fork": false,
+      "status": "PROTOTYPE_NOT_PRODUCTION_VERIFIED",
+      "main_sha": "3bd9492861",
+      "branches": 27,
+      "open_pull_requests": 9
+    },
+    {
+      "full_name": "krzysztofcieciwa07-ship-it/ola-evidence-gateway",
+      "role": "SPECIFICATION_ONLY",
+      "fork": true,
+      "parent": "krzys167-crypto/ola-evidence-gateway",
+      "main_tree_paths": 5,
+      "status": "NO_RUNTIME_IMPLEMENTATION"
+    },
+    {
+      "full_name": "krzysztofcieciwa07-ship-it/quantum-ai-chatbot",
+      "role": "SEPARATE_CHATBOT_EXPERIMENT",
+      "fork": true,
+      "parent": "krzys167-crypto/quantum-ai-chatbot",
+      "tracked_env": true,
+      "status": "NOT_NOVA_NOT_OLA_VERIFIED"
+    },
+    {
+      "full_name": "krzysztofcieciwa07-ship-it/ai",
+      "role": "EXTERNAL_REFERENCE_FORK",
+      "fork": true,
+      "parent": "vercel/ai",
+      "status": "NOT_OLA_INTEGRATED"
+    },
+    {
+      "full_name": "krzysztofcieciwa07-ship-it/cli",
+      "role": "EXTERNAL_REFERENCE_FORK",
+      "fork": true,
+      "parent": "cli/cli",
+      "status": "NOT_CODEX_CLI_NOT_OLA_INTEGRATED"
+    },
+    {
+      "full_name": "krzysztofcieciwa07-ship-it/MetaGPT",
+      "role": "EXTERNAL_REFERENCE_FORK",
+      "fork": true,
+      "parent": "FoundationAgents/MetaGPT",
+      "status": "NOT_OLA_INTEGRATED"
+    },
+    {
+      "full_name": "krzysztofcieciwa07-ship-it/swarmclaw",
+      "role": "EXTERNAL_REFERENCE_FORK",
+      "fork": true,
+      "parent": "swarmclawai/swarmclaw",
+      "status": "NOT_OLA_INTEGRATED"
+    },
+    {
+      "full_name": "krzysztofcieciwa07-ship-it/uygulamali-kriptografi",
+      "role": "EDUCATIONAL_REFERENCE_FORK",
+      "fork": true,
+      "parent": "hnfgns/uygulamali-kriptografi",
+      "status": "NOT_PRODUCT_COMPONENT"
+    }
+  ],
+  "secondary_account_repositories": [
+    {
+      "full_name": "krzys167-crypto/OLA",
+      "relationship": "FORK_OF_CANONICAL_OLA",
+      "main_sha": "d2dd11c8dd964d4c846bcab4e74b2d02b77a9f4a",
+      "compare_to_canonical": {
+        "status": "diverged",
+        "ahead_by": 235,
+        "behind_by": 54
+      },
+      "branches": 87,
+      "unique_top_level": [
+        "cfr_scenarios",
+        "governance",
+        "ola_pipeline",
+        "sales",
+        "tools"
+      ],
+      "action": "RECOVER_UNIQUE_WORK_SELECTIVELY_DO_NOT_DELETE_OR_MERGE_WHOLE_FORK"
+    },
+    {
+      "full_name": "krzys167-crypto/vantage",
+      "relationship": "FORK_OF_CANONICAL_VANTAGE",
+      "main_sha": "1dc1618879",
+      "compare_to_canonical": {
+        "status": "behind",
+        "ahead_by": 0,
+        "behind_by": 1
+      },
+      "branches": 2,
+      "action": "HISTORICAL_COPY_NO_PARALLEL_DEVELOPMENT"
+    },
+    {
+      "full_name": "krzys167-crypto/ola-evidence-gateway",
+      "relationship": "INDEPENDENT_SPECIFICATION_REPOSITORY",
+      "main_sha": "1103eb6162",
+      "main_tree_paths": 1,
+      "action": "SPECIFICATION_ONLY_MOVE_CONTRACTS_TO_OLA_DOCS_IF_NEEDED"
+    },
+    {
+      "full_name": "krzys167-crypto/quantum-ai-chatbot",
+      "relationship": "CHATBOT_EXPERIMENT_SOURCE",
+      "tracked_env": true,
+      "action": "SEPARATE_FROM_NOVA_AND_OLA"
+    }
+  ],
+  "active_ola_staging_pr_stack": [
+    {
+      "pr": 189,
+      "base": "main",
+      "state": "open",
+      "draft": true
+    },
+    {
+      "pr": 190,
+      "base": "integration/ola-first-five-closure-20261106",
+      "state": "open",
+      "draft": true
+    },
+    {
+      "pr": 191,
+      "base": "integration/ola-first-five-closure-20261106",
+      "state": "open",
+      "draft": true
+    },
+    {
+      "pr": 192,
+      "base": "fix/strict-payment-source-readiness-20261108",
+      "state": "open",
+      "draft": true
+    },
+    {
+      "pr": 194,
+      "base": "main",
+      "state": "open",
+      "draft": true
+    },
+    {
+      "pr": 195,
+      "base": "fix/railway-docker-source-sha-20261108",
+      "state": "open",
+      "draft": true
+    }
+  ],
+  "security_notes": {
+    "active_main_ruleset": {
+      "id": 25853037,
+      "rules": [
+        "deletion",
+        "non_fast_forward"
+      ],
+      "required_reviews": false,
+      "required_status_checks": false
+    },
+    "quantum_chatbot_tracked_env": {
+      "files": [
+        ".env",
+        ".env.example"
+      ],
+      "variable_names_observed": [
+        "VITE_SUPABASE_URL",
+        "VITE_SUPABASE_ANON_KEY"
+      ],
+      "values_disclosed": false,
+      "service_role_key_name_observed": false,
+      "action": "replace tracked .env with .env.example, ensure ignore, verify RLS and history"
+    }
+  },
+  "release_gate": "BLOCKED",
+  "cleanup_policy": [
+    "Only canonical account repositories receive new OLA/Vantage feature work.",
+    "Do not delete or wholesale merge the divergent krzys167-crypto/OLA fork until its 235 ahead commits and unique directories have been reviewed.",
+    "Close or archive stale PRs only after classifying unique commits and replacement PRs.",
+    "Delete temporary Vantage CI branches for closed unmerged test-trigger PRs after preserving evidence.",
+    "Evidence Gateway remains specification-only unless a real tested service is implemented."
+  ]
+}
