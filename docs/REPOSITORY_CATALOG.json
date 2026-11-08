@@ -233,9 +233,16 @@
         "env_example_placeholders": true,
         "remediation_commits": {
           "env_example": "df217a2c69335bd4094fdc430538b509cce1b948",
-          "delete_env": "4c12c36601630215c14cd0a5382fef791f7f5ef5"
+          "delete_env": "4c12c36601630215c14cd0a5382fef791f7f5ef5",
+          "gitignore": "f0f23fec8270fe745754268f26f4c7cdaa7a0dd7"
         },
-        "git_history_still_contains_prior_blobs": true
+        "git_history_still_contains_prior_blobs": true,
+        "head_sha": "f0f23fec8270fe745754268f26f4c7cdaa7a0dd7",
+        "gitignore_rules": [
+          ".env",
+          ".env.*",
+          "!.env.example"
+        ]
       },
       "source_repo": {
         "full_name": "krzys167-crypto/quantum-ai-chatbot",
