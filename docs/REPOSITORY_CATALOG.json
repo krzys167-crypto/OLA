@@ -227,7 +227,35 @@
       ],
       "values_disclosed": false,
       "service_role_key_name_observed": false,
-      "action": "replace tracked .env with .env.example, ensure ignore, verify RLS and history"
+      "action": "replace tracked .env with .env.example, ensure ignore, verify RLS and history",
+      "connected_fork_current_main": {
+        "tracked_env_present": false,
+        "env_example_placeholders": true,
+        "remediation_commits": {
+          "env_example": "df217a2c69335bd4094fdc430538b509cce1b948",
+          "delete_env": "4c12c36601630215c14cd0a5382fef791f7f5ef5"
+        },
+        "git_history_still_contains_prior_blobs": true
+      },
+      "source_repo": {
+        "full_name": "krzys167-crypto/quantum-ai-chatbot",
+        "tracked_env_present": true,
+        "tracked_env_example_present": true,
+        "credential_shaped_fields": [
+          "ANTHROPIC_API_KEY",
+          "GOOGLE_CLIENT_SECRET",
+          "GOOGLE_RISC_SERVICE_ACCOUNT_PRIVATE_KEY",
+          "ELEVENLABS_API_KEY"
+        ],
+        "values_disclosed": false,
+        "validity": "UNKNOWN_NOT_TESTED",
+        "required_actions": [
+          "rotate credentials as exposed",
+          "replace public files with placeholders",
+          "inspect and remediate Git history",
+          "confirm provider/service-account revocation"
+        ]
+      }
     }
   },
   "release_gate": "BLOCKED",
@@ -237,6 +265,7 @@
     "Close or archive stale PRs only after classifying unique commits and replacement PRs.",
     "Delete temporary Vantage CI branches for closed unmerged test-trigger PRs after preserving evidence.",
     "Evidence Gateway remains specification-only unless a real tested service is implemented.",
-    "Do not republish or migrate sales/prospects.csv or docs/sales/sample from the public secondary-account fork until a privacy and provenance review is complete."
+    "Do not republish or migrate sales/prospects.csv or docs/sales/sample from the public secondary-account fork until a privacy and provenance review is complete.",
+    "Treat credential-shaped values found in krzys167-crypto/quantum-ai-chatbot/.env.example as exposed; rotate them and sanitize the source repository and Git history. Do not copy or test the values."
   ]
 }
