@@ -90,3 +90,8 @@ Oba repozytoria Evidence Gateway zawierają dokumentację, nie działający serw
 - RELEASE_ACCEPTED: kod, testy, provenance, niezależny review, deployment i krytyczne E2E są przypięte do tego samego SHA.
 
 Nie wolno utożsamiać zielonego CI, otwartego PR, gotowego Preview ani obecności pliku z ukończonym produktem.
+
+
+## Mapa odzysku rozbieżnego forka
+
+Techniczna klasyfikacja 179 unikalnych ścieżek, ich zależności, ograniczenia CFR/Certificate Apocalypse, ryzyka prywatności i bezpieczna kolejność selektywnego odzysku znajduje się w [FORK_RECOVERY_MAP.md](FORK_RECOVERY_MAP.md).
