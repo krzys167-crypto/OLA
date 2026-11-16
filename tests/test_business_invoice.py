@@ -54,3 +54,34 @@ def test_six_agents_produce_verified_invoice_result_and_external_verifier_passes
     assert proof["verifier_boundary"] == "separate_process"
     assert "isolated_or_independent_agent_processes" in proof["not_established"]
     assert proof["transfer_status"] == "READY_NOT_SENT"
+
+
+
+def test_vat_policy_mismatch_blocks_transfer_and_independent_verifier():
+    tenant_id = str(uuid.uuid4())
+    with SessionLocal() as db:
+        db.add(Tenant(id=tenant_id, name="business-invoice-vat-mismatch"))
+        db.commit()
+
+    invoice = {**INVOICE, "invoice_id": "INV-TEST-VAT-MISMATCH", "vat_rate": 0.25}
+    task = "INVOICE_JSON:" + json.dumps(invoice, sort_keys=True, separators=(",", ":"))
+    result = run_invoice_task(tenant_id, task)
+
+    assert result["status"] == "BLOCK", result
+    assert result["execution"][-2]["tool_output"] == "FAIL", result
+    assert result["final_result"]["payment_decision"] == "BLOCK", result
+    assert result["final_result"]["transfer_amount"] == 0, result
+    assert result["final_result"]["transfer_status"] == "BLOCKED_POLICY_MISMATCH", result
+
+    verifier = subprocess.run(
+        [sys.executable, "scripts/verify_business_invoice.py",
+         "--db", os.environ["OLA_EG_DB_PATH"],
+         "--tenant-id", tenant_id,
+         "--run-id", result["run_id"],
+         "--invoice-json", json.dumps(invoice, sort_keys=True, separators=(",", ":"))],
+        capture_output=True,
+        text=True,
+    )
+    assert verifier.returncode != 0, verifier.stdout + verifier.stderr
+    proof = json.loads(verifier.stderr.strip())
+    assert proof["status"] == "BLOCK"

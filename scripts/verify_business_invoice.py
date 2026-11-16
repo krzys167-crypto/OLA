@@ -18,6 +18,7 @@ EXPECTED_INVOCATION = {
     "invocation_type": "local_deterministic_model",
 }
 GENESIS = "0" * 64
+CONTROLLED_VAT_RATE = 0.21
 
 
 def canonical(value):
@@ -40,6 +41,8 @@ def main():
     expected_net = round(float(invoice["net"]), 2)
     expected_vat = round(expected_net * float(invoice["vat_rate"]), 2)
     expected_gross = round(expected_net + expected_vat, 2)
+    if float(invoice["vat_rate"]) != CONTROLLED_VAT_RATE:
+        fail("controlled VAT policy mismatch; transfer authorization is blocked")
 
     db = sqlite3.connect(args.db)
     rows = db.execute(
@@ -108,9 +111,15 @@ def main():
         fail("agent identities or contexts are not unique")
 
     first = payloads[0]
+    policy = payloads[2]
+    reflection = payloads[4]
     last = payloads[-1]
     if first.get("tool_output") != {"net": expected_net, "vat": expected_vat, "gross": expected_gross}:
         fail("invoice calculation does not match independent recomputation")
+    if policy.get("tool_output") != {"policy": "TEST-BE-VAT", "vat_rate": CONTROLLED_VAT_RATE}:
+        fail("controlled VAT policy evidence mismatch")
+    if reflection.get("tool_output") != "PASS":
+        fail("self-reflection did not pass the controlled VAT policy check")
     final = last.get("final_result")
     expected_final = {
         "invoice_id": invoice["invoice_id"],

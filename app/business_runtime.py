@@ -46,6 +46,7 @@ def run_invoice_task(tenant_id, task):
     vat_rate = float(invoice["vat_rate"])
     expected_vat = round(net * vat_rate, 2)
     gross = round(net + expected_vat, 2)
+    policy_match = vat_rate == CONTROLLED_VAT_RATE
 
     checks = {
         "codeact": {
@@ -75,8 +76,11 @@ def run_invoice_task(tenant_id, task):
         "self_reflection": {
             "capability": "checked_previous_output",
             "tool": "invoice_consistency_check",
-            "tool_output": "PASS" if vat_rate == CONTROLLED_VAT_RATE and gross == round(net + expected_vat, 2) else "FAIL",
-            "result": "reflection accepted the invoice calculation and policy match",
+            "tool_output": "PASS" if policy_match and gross == round(net + expected_vat, 2) else "FAIL",
+            "result": (
+                "invoice matches the controlled VAT policy"
+                if policy_match else "invoice VAT rate conflicts with the controlled VAT policy"
+            ),
         },
         "multi_agent": {
             "capability": "aggregated_agent_outputs",
@@ -89,11 +93,14 @@ def run_invoice_task(tenant_id, task):
                 "net": net,
                 "vat": expected_vat,
                 "gross": gross,
-                "payment_decision": "APPROVE_FOR_TEST_TRANSFER",
-                "transfer_amount": gross,
-                "transfer_status": "READY_NOT_SENT",
+                "payment_decision": "APPROVE_FOR_TEST_TRANSFER" if policy_match else "BLOCK",
+                "transfer_amount": gross if policy_match else 0,
+                "transfer_status": "READY_NOT_SENT" if policy_match else "BLOCKED_POLICY_MISMATCH",
             },
-            "result": f"six-agent invoice decision approved {gross:.2f} {invoice['currency']} for a controlled test transfer",
+            "result": (
+                f"six-agent invoice decision approved {gross:.2f} {invoice['currency']} for a controlled test transfer"
+                if policy_match else "six-agent invoice decision blocked: controlled VAT policy mismatch"
+            ),
         },
     }
 
@@ -132,18 +139,27 @@ def run_invoice_task(tenant_id, task):
         trusted_record({"record_type": r.record_type, "payload_json": r.payload_json})
         for r in current
     )
-    status = "RECORDED" if chain_ok and bound else "BLOCK"
+    evidence_verified = chain_ok and bound
+    status = "RECORDED" if evidence_verified and policy_match else "BLOCK"
+    if not chain_ok or not bound:
+        decision_reason = f"evidence verification failed: {reason if not chain_ok else 'trusted producer binding mismatch'}"
+    elif not policy_match:
+        decision_reason = "controlled VAT policy mismatch"
+    else:
+        decision_reason = reason
     return {
         "run_id": run_id,
         "task": task,
         "status": status,
-        "reason": reason,
+        "reason": decision_reason,
+        "policy_status": "PASS" if policy_match else "FAIL",
+        "evidence_status": "VERIFIED" if evidence_verified else "BLOCK",
         "execution_boundary": "in_process",
         "verification_scope": [
             "six_agent_role_records_created",
             "record_producer_binding",
             "tenant_evidence_hash_chain_integrity",
-        ] if status == "RECORDED" else [],
+        ] if evidence_verified else [],
         "not_established": [
             "isolated_or_independent_agent_processes",
             "real_llm_invocation",
