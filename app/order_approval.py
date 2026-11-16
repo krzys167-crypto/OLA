@@ -15,7 +15,7 @@ from .hashchain import (
     verify_chain,
     trusted_record,
 )
-from .models import CheckoutOrder, CheckoutOrderControl, CheckoutExecutionJob, EvidenceRecord
+from .models import ApiKey, CheckoutOrder, CheckoutOrderControl, CheckoutExecutionJob, EvidenceRecord
 from .runtime_provenance import runtime_source_commit
 
 
@@ -51,6 +51,10 @@ def _validate_paid_order(db, *, tenant_id, order_id, approver_id, tip_hash):
     )
     if order is None or order.tenant_id != tenant_id:
         raise PaidOrderApprovalRejected(404, "paid order not found")
+
+    approver = db.get(ApiKey, approver_id)
+    if approver is None or approver.tenant_id != tenant_id or approver.role != "execution_approver":
+        raise PaidOrderApprovalRejected(403, "a tenant-scoped execution_approver API identity is required")
 
     control = db.scalar(select(CheckoutOrderControl).where(
         CheckoutOrderControl.order_id == order_id,
@@ -190,6 +194,7 @@ def approve_paid_order(*, tenant_id: str, approver_id: str, order_id: str,
             "tenant_id": tenant_id,
             "requester_id": control.requester_id,
             "approver_id": approver_id,
+            "approver_role": "execution_approver",
             "reason": reason.strip(),
             "checkout_session_id": order.stripe_session_id,
             "stripe_event_id": payment["event_id"],

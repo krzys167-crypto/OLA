@@ -39,7 +39,7 @@ def _seed_paid_order(monkeypatch, *, include_checkout_proof=True):
             ApiKey(id=requester_id, tenant_id=tenant_id,
                    key_hash=api_key_fingerprint(requester_key)),
             ApiKey(id=approver_id, tenant_id=tenant_id,
-                   key_hash=api_key_fingerprint(approver_key)),
+                   key_hash=api_key_fingerprint(approver_key), role="execution_approver"),
             ApiKey(id=reviewer_id, tenant_id=tenant_id,
                    key_hash=api_key_fingerprint(reviewer_key), role="report_reviewer"),
         ])
@@ -339,7 +339,7 @@ def test_checkout_webhook_success_redirect_and_human_approval_form_one_bound_cha
             ApiKey(id=requester_id, tenant_id=tenant_id,
                    key_hash=api_key_fingerprint(requester_key)),
             ApiKey(id=approver_id, tenant_id=tenant_id,
-                   key_hash=api_key_fingerprint(approver_key)),
+                   key_hash=api_key_fingerprint(approver_key), role="execution_approver"),
         ])
         db.commit()
 
@@ -535,3 +535,35 @@ def test_evidence_tip_requires_tenant_api_key_and_returns_only_tip(monkeypatch):
     assert len(body["tip_hash"]) == 64
     assert body["record_count"] >= 2
     assert set(body) == {"tip_hash", "record_count"}
+
+
+def test_paid_order_approval_rejects_ordinary_tenant_key_without_side_effects(monkeypatch):
+    ctx = _seed_paid_order(monkeypatch)
+    ordinary_key = f"ordinary-{uuid.uuid4()}"
+    ordinary_id = str(uuid.uuid4())
+    with SessionLocal() as db:
+        db.add(ApiKey(
+            id=ordinary_id,
+            tenant_id=ctx["tenant_id"],
+            key_hash=api_key_fingerprint(ordinary_key),
+            role="tenant",
+        ))
+        db.commit()
+
+    response = _approve(ctx, key=ordinary_key)
+    assert response.status_code == 403, response.text
+    with SessionLocal() as db:
+        control = db.scalar(select(CheckoutOrderControl).where(
+            CheckoutOrderControl.order_id == ctx["order_id"]
+        ))
+        jobs = db.scalars(select(CheckoutExecutionJob).where(
+            CheckoutExecutionJob.order_id == ctx["order_id"]
+        )).all()
+        approvals = db.scalars(select(EvidenceRecord).where(
+            EvidenceRecord.tenant_id == ctx["tenant_id"],
+            EvidenceRecord.record_type == "human.revenue_execution_approval",
+        )).all()
+    assert control.status == "PAID_PENDING_REVIEW"
+    assert control.approver_id is None
+    assert jobs == []
+    assert approvals == []

@@ -47,3 +47,18 @@ Production credentials must not be committed to the repository. Keys used for re
 ## Security claims
 
 CI success is evidence for the executed checks only. It is not a claim of absolute security or immunity from compromise. `UNKNOWN` remains `UNKNOWN` until independently verified.
+
+
+## Execution identity and approval roles
+
+Paid-order execution uses separate tenant-scoped API identities:
+
+- `tenant`: may submit work; cannot approve execution or customer report delivery.
+- `execution_approver`: may approve a paid sandbox execution only when distinct from the requester. The role is checked when approval is created and rechecked immediately before worker dispatch.
+- `report_reviewer`: may review the exact report digest and evidence tip only when distinct from both requester and execution approver.
+
+Role assignment is an administrative operation. The application does not allow a tenant API key to promote itself or another key. Provision or revoke these roles only through a trusted database-administration path, record the change, and preserve the separation of duties.
+
+The internal worker token authenticates the execution service; it is not a human approval and must not be shared with tenant clients. The paid-order worker is restricted to the registered `safe_expression` capability. A successful execution approval does not authorize deployment, production financial transfers, or external side effects.
+
+If an approver role is removed or changed after approval but before dispatch, the worker must block the job and require manual reconciliation.

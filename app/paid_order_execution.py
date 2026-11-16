@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from .database import SessionLocal, begin_write_transaction, lock_tenant_evidence_chain
 from .hashchain import GENESIS_HASH, compute_record_hash_v2, sealed_payload_json, trusted_record, verify_chain
-from .models import CheckoutExecutionJob, CheckoutOrder, CheckoutOrderControl, EvidenceRecord
+from .models import ApiKey, CheckoutExecutionJob, CheckoutOrder, CheckoutOrderControl, EvidenceRecord
 from .runtime_provenance import runtime_source_commit
 
 
@@ -90,9 +90,13 @@ def _execution_context(db, job: CheckoutExecutionJob):
         payment_result = json.loads(order.payment_result_json or "")
     except (ValueError, TypeError):
         raise PaidOrderExecutionRejected(409, "Human Gate or payment evidence is invalid") from None
+    approver = db.get(ApiKey, control.approver_id) if control.approver_id else None
     current_source = runtime_source_commit()
-    if (not isinstance(current_source, str) or len(current_source) != 40
-            or not isinstance(approval_payload, dict)
+    if (not isinstance(approval_payload, dict)
+            or approver is None or approver.tenant_id != job.tenant_id
+            or approver.role != "execution_approver"
+            or approval_payload.get("approver_role") != "execution_approver"
+            or not isinstance(current_source, str) or len(current_source) != 40
             or approval_payload.get("source_commit") != current_source
             or approval_payload.get("order_id") != job.order_id
             or approval_payload.get("tenant_id") != job.tenant_id
