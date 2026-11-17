@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Independent evidence V2 hash-chain verifier, without importing producer code."""
+"""Independent V1/V2/V3/V4 evidence verifier, without importing writer code."""
 import argparse
 import hashlib
 import json
 import os
 import sqlite3
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.igor_evidence_verifier import verify_chain as verify_evidence_chain
 
 
 def verify_chain(db_path, tenant_id, expected_count, *, tamper=False):
@@ -16,23 +21,15 @@ def verify_chain(db_path, tenant_id, expected_count, *, tamper=False):
         ).fetchall()
         if expected_count < 1 or len(rows) != expected_count:
             raise ValueError("record count mismatch")
-        previous = "0" * 64
-        for expected_seq, (record_id, tenant, seq, record_type, payload, prev, digest) in enumerate(rows):
-            if tenant != tenant_id or seq != expected_seq or prev != previous:
-                raise ValueError("sequence or predecessor mismatch")
-            value = json.loads(payload)
-            if value.get("__ola_evidence_v2__") != {
-                "version": 2, "record_type": record_type, "producer": "ola_runtime"
-            }:
-                raise ValueError("untrusted record type or producer binding")
-            material = json.dumps({
-                "domain": "OLA-EVIDENCE-CHAIN-V2", "tenant_id": tenant,
-                "seq": seq, "prev_hash": prev, "record_type": record_type,
-                "producer": "ola_runtime", "payload_json": payload,
-            }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-            if hashlib.sha256(material.encode("utf-8")).hexdigest() != digest:
-                raise ValueError("record hash mismatch")
-            previous = digest
+        records = [{
+            "id": row[0], "tenant_id": row[1], "seq": row[2],
+            "record_type": row[3], "payload_json": row[4],
+            "prev_hash": row[5], "record_hash": row[6],
+        } for row in rows]
+        valid, reason = verify_evidence_chain(records)
+        if not valid:
+            raise ValueError(reason)
+        previous = rows[-1][6]
         if tamper:
             try:
                 conn.execute(

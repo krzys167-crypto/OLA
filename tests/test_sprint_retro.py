@@ -6,6 +6,27 @@ import pytest
 
 from app.main import append_record, read_tenant_evidence
 from app.sprint_retro import run_sprint_retro, RetroBlocked
+from app.evidence_v4 import V4_META_KEY, canonical_json, load_keyring, sign_record
+
+
+def _forge_v4_chain(tenant_id, events):
+    """Re-sign mutated test evidence with the configured test-only V4 key."""
+    keyring = load_keyring()
+    records = []
+    previous = "0" * 64
+    for seq, event in enumerate(events):
+        metadata = event[V4_META_KEY]
+        record = {
+            "tenant_id": tenant_id,
+            "seq": seq,
+            "prev_hash": previous,
+            "record_type": metadata["record_type"],
+            "payload_json": canonical_json(event),
+        }
+        record["record_hash"] = sign_record(record, keyring)
+        records.append(record)
+        previous = record["record_hash"]
+    return records
 
 
 CYCLE = "cycle-test-2026w42"
@@ -131,7 +152,6 @@ def test_document_never_promoted_when_igor_rejects_trace(monkeypatch):
 def test_igor_rejects_rehashed_evidence_with_invented_citation(monkeypatch):
     """A recomputed local chain alone cannot authorize a fabricated link."""
     import json
-    from app.hashchain import canonical_json, compute_record_hash_v2, EVIDENCE_META_KEY
     from app.workflow_engine import _digest
     from app.igor_sprint_retro import verify_sprint_retro_records
     monkeypatch.setenv("OLA_RUNTIME_COMMIT", "retro-ci-head")
@@ -165,16 +185,7 @@ def test_igor_rejects_rehashed_evidence_with_invented_citation(monkeypatch):
         "task": "Produce one Markdown draft",
         "deps": {"synthesis": synthesis["output"]},
     })
-    previous = "0" * 64
-    forged = []
-    for seq, event in enumerate(events):
-        raw = canonical_json(event)
-        meta = event[EVIDENCE_META_KEY]
-        digest = compute_record_hash_v2(tenant, seq, previous, meta["record_type"], meta["producer"], raw)
-        forged.append({"tenant_id": tenant, "seq": seq, "prev_hash": previous,
-                       "record_hash": digest, "payload_json": raw,
-                       "record_type": event["event"]})
-        previous = digest
+    forged = _forge_v4_chain(tenant, events)
     verdict = verify_sprint_retro_records(forged, tenant_id=tenant,
          run_id=result["run_id"], cycle_id=CYCLE, expected_commit="retro-ci-head")
     assert verdict["status"] == "BLOCK", verdict
@@ -196,7 +207,6 @@ def test_igor_accepts_fast_nonoverlapping_parallel_reads(monkeypatch):
     # topology is parallel, but instant reads do not guarantee clock overlap.
     from app.igor_sprint_retro import verify_sprint_retro_records
     import json
-    from app.hashchain import canonical_json, compute_record_hash_v2, EVIDENCE_META_KEY
     import app.sprint_retro as retro
     monkeypatch.setenv("OLA_RUNTIME_COMMIT", "retro-ci-head")
     tickets, messages = source_items()
@@ -214,15 +224,7 @@ def test_igor_accepts_fast_nonoverlapping_parallel_reads(monkeypatch):
     completed["linear"]["worker_finished_ns"] = 200
     completed["slack"]["worker_started_ns"] = 300
     completed["slack"]["worker_finished_ns"] = 400
-    forged, prev = [], "0" * 64
-    for seq, event in enumerate(events):
-        raw = canonical_json(event)
-        meta = event[EVIDENCE_META_KEY]
-        digest = compute_record_hash_v2(tenant, seq, prev, meta["record_type"], meta["producer"], raw)
-        forged.append({"tenant_id": tenant, "seq": seq, "prev_hash": prev,
-                       "record_hash": digest, "record_type": event["event"],
-                       "payload_json": raw})
-        prev = digest
+    forged = _forge_v4_chain(tenant, events)
     verdict = verify_sprint_retro_records(forged, tenant_id=tenant,
         run_id=out["run_id"], cycle_id=CYCLE, expected_commit="retro-ci-head")
     assert verdict["status"] == "VERIFIED", verdict
@@ -234,7 +236,6 @@ def test_igor_accepts_fast_nonoverlapping_parallel_reads(monkeypatch):
 def test_rehashed_retrospective_document_must_match_recorded_synthesis(monkeypatch):
     from app.igor_sprint_retro import verify_sprint_retro_records
     from app.workflow_engine import _digest
-    from app.hashchain import canonical_json, compute_record_hash_v2, EVIDENCE_META_KEY
     import hashlib
     import json
     monkeypatch.setenv("OLA_RUNTIME_COMMIT", "retro-ci-head")
@@ -255,15 +256,7 @@ def test_rehashed_retrospective_document_must_match_recorded_synthesis(monkeypat
     document["output"]["sha256"] = hashlib.sha256(
         document["output"]["markdown"].encode()).hexdigest()
     document["output_digest"] = _digest(document["output"])
-    records, prev = [], "0" * 64
-    for seq, event in enumerate(events):
-        raw = canonical_json(event)
-        meta = event[EVIDENCE_META_KEY]
-        digest = compute_record_hash_v2(tenant, seq, prev, meta["record_type"], meta["producer"], raw)
-        records.append({"tenant_id": tenant, "seq": seq, "prev_hash": prev,
-                        "record_hash": digest, "record_type": event["event"],
-                        "payload_json": raw})
-        prev = digest
+    records = _forge_v4_chain(tenant, events)
     verdict = verify_sprint_retro_records(records, tenant_id=tenant,
         run_id=out["run_id"], cycle_id=CYCLE, expected_commit="retro-ci-head")
     assert verdict["status"] == "BLOCK", verdict

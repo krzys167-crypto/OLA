@@ -6,7 +6,7 @@ attestation that requests were truly handled by the named LLM provider.
 import hashlib
 import json
 
-from .hashchain import verify_chain, trusted_record
+from .igor_evidence_verifier import verify_chain, trusted_record
 
 
 def _hash(value):

@@ -14,7 +14,8 @@ from .runtime_provenance import runtime_source_commit
 from .database import Base, engine, SessionLocal, append_evidence_atomic, prepare_runtime_schema, verify_postgres_schema
 from .models import Tenant, ApiKey, EvidenceRecord, CheckoutOrder, CheckoutOrderControl, CheckoutExecutionJob
 from .api_key_hashing import api_key_fingerprint
-from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
+from .hashchain import canonical_json
+from .igor_evidence_verifier import verify_chain
 from .agent_runtime import run_agent_task
 from .agent_registry import build_agent_registry
 from .execution_safety_gate import ExecutionDecision, ExecutionSafetyGate
@@ -102,12 +103,11 @@ def run_controlled_audit(tenant_id, task, scenario):
         evidence_ids.append(append_record(tenant_id, record_type, payload)["id"])
 
     with SessionLocal() as db:
+        # Verify the complete tenant chain, not a selected suffix whose first
+        # sequence may be nonzero after earlier activity.
         rows = db.scalars(
             select(EvidenceRecord)
-            .where(
-                EvidenceRecord.tenant_id == tenant_id,
-                EvidenceRecord.id.in_(evidence_ids),
-            )
+            .where(EvidenceRecord.tenant_id == tenant_id)
             .order_by(EvidenceRecord.seq.asc())
         ).all()
 
@@ -128,7 +128,7 @@ def run_controlled_audit(tenant_id, task, scenario):
             "audit_id": audit_id,
             "status": "FAILED",
             "outcome": "evidence_chain_invalid",
-            "evidence_count": len(rows),
+            "evidence_count": len(evidence_ids),
             "evidence_ids": evidence_ids,
             "reason": reason,
         }
@@ -137,7 +137,7 @@ def run_controlled_audit(tenant_id, task, scenario):
         "audit_id": audit_id,
         "status": "VERIFIED",
         "outcome": "recovered_and_verified",
-        "evidence_count": len(rows),
+        "evidence_count": len(evidence_ids),
         "evidence_ids": evidence_ids,
         "reason": reason,
     }
@@ -637,12 +637,13 @@ def create_evidence(body: dict, x_api_key: str | None = Header(default=None)):
     # trusted NINA execution, DAG timing, or Human Gate producers. The local
     # hash chain proves record integrity, not who caused a record to be written.
     from .hashchain import is_privileged_type, EVIDENCE_META_KEY
+    from .evidence_v4 import V4_META_KEY
     if is_privileged_type(record_type):
         raise HTTPException(status_code=403, detail="reserved internal evidence type")
     payload = body.get("payload", {})
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="evidence payload must be a JSON object")
-    if EVIDENCE_META_KEY in payload:
+    if EVIDENCE_META_KEY in payload or V4_META_KEY in payload:
         raise HTTPException(status_code=400, detail="reserved evidence metadata")
     return append_evidence_atomic(tenant_id, record_type, payload, producer_id="tenant_api")
 

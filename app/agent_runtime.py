@@ -10,7 +10,8 @@ from urllib.parse import urlsplit
 from sqlalchemy import select
 
 from .database import SessionLocal, append_evidence_atomic
-from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
+from .hashchain import canonical_json
+from .igor_evidence_verifier import verify_chain, trusted_record
 from .models import EvidenceRecord
 from .runtime_provenance import runtime_source_commit
 
@@ -711,7 +712,6 @@ def verify_agent_run(tenant_id, run_id):
         "payload_json": row.payload_json,
     } for row in rows]
     chain_ok, reason = verify_chain(chain)
-    from .hashchain import trusted_record
     if chain_ok and not all(
         trusted_record({"record_type": row.record_type, "payload_json": row.payload_json})
         for row in run_rows

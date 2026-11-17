@@ -13,27 +13,15 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - .github/workflows/ola-12h-autoflow.yml
-      - .github/workflows/nina-igor-ollama.yml
-      - .github/workflows/igor-independent-ollama-evidence.yml
-      - app/agent_runtime.py
-      - app/igor.py
-      - app/replay.py
-      - app/main.py
   push:
     branches:
       - main
-    paths:
-      - .github/workflows/ola-12h-autoflow.yml
-      - .github/workflows/nina-igor-ollama.yml
-      - app/agent_runtime.py
-      - app/igor.py
-      - app/replay.py
-      - app/main.py
 
+# A PR run must never replace a queued main/scheduled evidence run.
+# All main triggers intentionally share one group to prevent overlapping
+# schedule, push and Watchdog-dispatched full flows.
 concurrency:
-  group: ola-12h-autoflow
+  group: ola-12h-autoflow-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 permissions:

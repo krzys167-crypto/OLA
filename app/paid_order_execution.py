@@ -9,7 +9,8 @@ import uuid
 from sqlalchemy import select
 
 from .database import SessionLocal, begin_write_transaction, lock_tenant_evidence_chain
-from .hashchain import GENESIS_HASH, compute_record_hash_v2, sealed_payload_json, trusted_record, verify_chain
+from .evidence_writer import append_evidence_v4_locked
+from .igor_evidence_verifier import trusted_record, verify_chain
 from .models import ApiKey, CheckoutExecutionJob, CheckoutOrder, CheckoutOrderControl, EvidenceRecord
 from .runtime_provenance import runtime_source_commit
 
@@ -31,26 +32,10 @@ def verify_worker_token(token: str | None) -> None:
 
 
 def _append_locked(db, tenant_id: str, record_type: str, payload: dict) -> dict:
-    """Append trusted evidence under the caller's tenant-chain transaction lock."""
-    rows = db.scalars(
-        select(EvidenceRecord).where(EvidenceRecord.tenant_id == tenant_id)
-        .order_by(EvidenceRecord.seq.desc()).limit(1)
-    ).all()
-    latest = rows[0] if rows else None
-    seq = latest.seq + 1 if latest else 0
-    previous_hash = latest.record_hash if latest else GENESIS_HASH
-    raw = sealed_payload_json(record_type, payload)
-    digest = compute_record_hash_v2(
-        tenant_id, seq, previous_hash, record_type, "ola_runtime", raw,
+    """Append trusted V4 evidence under the caller's tenant-chain transaction lock."""
+    return append_evidence_v4_locked(
+        db, tenant_id, record_type, payload, producer_id="ola_runtime",
     )
-    row = EvidenceRecord(
-        id=str(uuid.uuid4()), tenant_id=tenant_id, seq=seq,
-        record_type=record_type, payload_json=raw,
-        prev_hash=previous_hash, record_hash=digest,
-    )
-    db.add(row)
-    db.flush()
-    return {"id": row.id, "record_hash": digest, "seq": seq}
 
 
 def _execution_context(db, job: CheckoutExecutionJob):

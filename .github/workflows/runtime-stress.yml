@@ -9,6 +9,11 @@ on:
 
 permissions:
   contents: read
+env:
+  OLA_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  OLA_API_KEY_PEPPER: ${{ github.event.pull_request.head.sha || github.sha }}
+  OLA_EVIDENCE_V4_KEYRING_JSON: '{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}'
+  OLA_EVIDENCE_V4_ACTIVE_KEY_ID: ci-v4-2026
 
 jobs:
   stress:
@@ -16,14 +21,17 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          ref: ${{ env.OLA_SOURCE_SHA }}
           persist-credentials: false
       - name: Build runtime image
-        run: docker build -t ola-stress .
+        run: docker build --build-arg OLA_SOURCE_COMMIT="${OLA_SOURCE_SHA}" -t ola-stress .
+      - name: Assert runtime image source label
+        run: test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' ola-stress)" = "${OLA_SOURCE_SHA}"
       - name: Start runtime
         shell: bash
         run: |
           set -euo pipefail
-          docker run -d --name ola-stress -p 8000:8000 ola-stress
+          docker run -d --name ola-stress -e OLA_RUNTIME_COMMIT="$OLA_SOURCE_SHA" -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" -e OLA_EVIDENCE_V4_KEYRING_JSON="$OLA_EVIDENCE_V4_KEYRING_JSON" -e OLA_EVIDENCE_V4_ACTIVE_KEY_ID="$OLA_EVIDENCE_V4_ACTIVE_KEY_ID" -p 8000:8000 ola-stress
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null && exit 0; sleep 2; done
           docker logs ola-stress
           exit 1
@@ -37,7 +45,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ola-runtime-stress-${{ github.sha }}
+          name: ola-runtime-stress-${{ env.OLA_SOURCE_SHA }}
           path: |
             stress-evidence.json
             stress-summary.log

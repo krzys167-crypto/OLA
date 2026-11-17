@@ -48,6 +48,8 @@ jobs:
       OLA_OLLAMA_NUM_PREDICT: '64'
       OLA_RUNTIME_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       OLA_EG_DB_PATH: ola-parallel-ollama.db
+      OLA_EVIDENCE_V4_KEYRING_JSON: '{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}'
+      OLA_EVIDENCE_V4_ACTIVE_KEY_ID: ci-v4-2026
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

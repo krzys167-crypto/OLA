@@ -8,14 +8,9 @@ import uuid
 from sqlalchemy import select
 
 from .database import SessionLocal, begin_write_transaction
-from .hashchain import (
-    GENESIS_HASH,
-    compute_record_hash_v2,
-    sealed_payload_json,
-    trusted_record,
-    verify_chain,
-    canonical_json,
-)
+from .hashchain import canonical_json
+from .evidence_writer import append_evidence_v4_locked
+from .igor_evidence_verifier import verify_chain, trusted_record
 from .models import (
     CheckoutExecutionJob,
     CheckoutOrder,
@@ -51,27 +46,9 @@ def _tenant_records(db, tenant_id):
 
 
 def _append_locked(db, tenant_id, record_type, payload):
-    rows = db.scalars(
-        select(EvidenceRecord)
-        .where(EvidenceRecord.tenant_id == tenant_id)
-        .order_by(EvidenceRecord.seq.desc())
-        .limit(1)
-    ).all()
-    latest = rows[0] if rows else None
-    seq = latest.seq + 1 if latest else 0
-    prev_hash = latest.record_hash if latest else GENESIS_HASH
-    payload_json = sealed_payload_json(record_type, payload)
-    digest = compute_record_hash_v2(
-        tenant_id, seq, prev_hash, record_type, "ola_runtime", payload_json,
+    return append_evidence_v4_locked(
+        db, tenant_id, record_type, payload, producer_id="ola_runtime",
     )
-    record = EvidenceRecord(
-        id=str(uuid.uuid4()), tenant_id=tenant_id, seq=seq,
-        record_type=record_type, payload_json=payload_json,
-        prev_hash=prev_hash, record_hash=digest,
-    )
-    db.add(record)
-    db.flush()
-    return {"id": record.id, "record_hash": digest, "seq": seq}
 
 
 def _verified_report_digest(report):

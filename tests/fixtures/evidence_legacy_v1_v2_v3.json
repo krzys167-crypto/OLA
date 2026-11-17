@@ -1,0 +1,44 @@
+{
+  "fixture_schema": "ola-evidence-legacy-compatibility-fixture-v1",
+  "provenance": {
+    "v1_v2_algorithm_source_commit": "c46b469836fc841638654850158c82d728164f3c",
+    "v1_v2_algorithm_source_path": "app/hashchain.py",
+    "v1_v2_algorithm_source_blob": "60f12f96bcb0291201b432747cfd16b12921d2c3",
+    "v3_algorithm_source_commit": "c46b469836fc841638654850158c82d728164f3c",
+    "v3_algorithm_source_path": "app/hashchain.py",
+    "v3_algorithm_source_blob": "60f12f96bcb0291201b432747cfd16b12921d2c3",
+    "v3_test_source_path": "tests/test_staging_verify.py",
+    "v3_test_source_blob": "eb62f06dd4c1f8c994226fabdbd1f61fca155b5c",
+    "v3_test_pepper": "staging-v3-test-pepper-material-0123456789",
+    "note": "Deterministic compatibility fixture generated from the historical V1/V2/V3 hash formulas. It is not a production tenant export."
+  },
+  "records": [
+    {
+      "id": "fixture-v1",
+      "tenant_id": "fixture-tenant",
+      "seq": 0,
+      "record_type": "task.received",
+      "payload_json": "{\"fixture\":\"legacy-v1\",\"run_id\":\"fixture-run\"}",
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "record_hash": "5c3c35fc210107143c3fce894365a5bcfa1a0f46da870930a5a801e5970d317b"
+    },
+    {
+      "id": "fixture-v2",
+      "tenant_id": "fixture-tenant",
+      "seq": 1,
+      "record_type": "task.received",
+      "payload_json": "{\"__ola_evidence_v2__\":{\"producer\":\"ola_runtime\",\"record_type\":\"task.received\",\"version\":2},\"fixture\":\"legacy-v2\",\"run_id\":\"fixture-run\"}",
+      "prev_hash": "5c3c35fc210107143c3fce894365a5bcfa1a0f46da870930a5a801e5970d317b",
+      "record_hash": "db61f0ff4d6bbe4a04a2341c3e28f0d2a82276294861a1dbc64d51a77cb6b907"
+    },
+    {
+      "id": "fixture-v3",
+      "tenant_id": "fixture-tenant",
+      "seq": 2,
+      "record_type": "task.received",
+      "payload_json": "{\"__ola_evidence_v2__\":{\"producer\":\"ola_runtime\",\"record_type\":\"task.received\",\"version\":3},\"fixture\":\"legacy-v3\",\"run_id\":\"fixture-run\"}",
+      "prev_hash": "db61f0ff4d6bbe4a04a2341c3e28f0d2a82276294861a1dbc64d51a77cb6b907",
+      "record_hash": "81385dc9f6b907326925c63b3560f025efeef892a1d54c80506cda25e3b54fdd"
+    }
+  ]
+}

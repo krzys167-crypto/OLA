@@ -1,6 +1,7 @@
 import json
 
-from app.hashchain import GENESIS_HASH, compute_record_hash, verify_chain
+from app.hashchain import GENESIS_HASH, compute_record_hash
+from app.igor_evidence_verifier import verify_chain
 from app.human_gate import HumanGate, ReviewDecision
 from app.nina_igor import NinaIgorChain
 from app.replay import build_replay

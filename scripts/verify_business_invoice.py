@@ -1,7 +1,12 @@
 import argparse
-import hashlib
 import json
 import sqlite3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.igor_evidence_verifier import trusted_record, verify_chain as verify_evidence_chain
 
 ROLES = ["codeact", "react", "agentic_rag", "mcp_tool_use", "self_reflection", "multi_agent"]
 CAPABILITIES = {
@@ -17,7 +22,6 @@ EXPECTED_INVOCATION = {
     "model": "deterministic-business-runtime-v1",
     "invocation_type": "local_deterministic_model",
 }
-GENESIS = "0" * 64
 CONTROLLED_VAT_RATE = 0.21
 
 
@@ -59,7 +63,14 @@ def main():
     if [row[2] for row in rows] != expected_types:
         fail("agent evidence order/type mismatch")
 
-    expected_prev = GENESIS
+    records = [{
+        "tenant_id": row[0], "seq": row[1], "record_type": row[2],
+        "payload_json": row[3], "prev_hash": row[4], "record_hash": row[5],
+    } for row in rows]
+    chain_ok, chain_reason = verify_evidence_chain(records)
+    if not chain_ok:
+        fail(chain_reason)
+
     instances = set()
     contexts = set()
     payloads = []
@@ -67,22 +78,13 @@ def main():
         tenant_id, seq, record_type, payload_json, prev_hash, record_hash = row
         if tenant_id != args.tenant_id or seq != expected_seq:
             fail("tenant or sequence mismatch")
-        if prev_hash != expected_prev:
-            fail("hash-chain predecessor mismatch")
-        payload = json.loads(payload_json)
-        # Independent V2 verification binds the producer and record type.
-        if payload.get("__ola_evidence_v2__") != {
-                "version": 2, "record_type": record_type, "producer": "ola_runtime"}:
+        record = {
+            "tenant_id": tenant_id, "seq": seq, "record_type": record_type,
+            "payload_json": payload_json, "prev_hash": prev_hash, "record_hash": record_hash,
+        }
+        if not trusted_record(record):
             fail("legacy or unauthenticated agent evidence")
-        material = canonical({
-            "domain": "OLA-EVIDENCE-CHAIN-V2", "tenant_id": tenant_id,
-            "seq": seq, "prev_hash": prev_hash, "record_type": record_type,
-            "producer": "ola_runtime", "payload_json": payload_json,
-        })
-        expected_hash = hashlib.sha256(material.encode("utf-8")).hexdigest()
-        if record_hash != expected_hash:
-            fail("hash-chain record hash mismatch")
-        expected_prev = record_hash
+        payload = json.loads(payload_json)
         payloads.append(payload)
         agent = payload.get("agent")
         if agent != ROLES[expected_seq]:

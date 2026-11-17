@@ -1,3 +1,5 @@
+import json
+import pytest
 import os
 import sys
 import tempfile
@@ -14,6 +16,19 @@ os.environ["OLA_EG_DB_PATH"] = TEST_DB_PATH
 # Test fixtures only; never use this pepper in production.
 os.environ.setdefault("OLA_API_KEY_PEPPER", "test-only-api-key-pepper-not-for-production")
 os.environ.setdefault("OLA_PUBLIC_BASE_URL", "http://localhost:8000")
+
+@pytest.fixture(autouse=True)
+def _functional_v4_test_keyring(monkeypatch, request):
+    # Secret-management contract tests intentionally run without a test key.
+    if request.node.get_closest_marker("secret_management"):
+        monkeypatch.delenv("OLA_EVIDENCE_V4_KEYRING_JSON", raising=False)
+        monkeypatch.delenv("OLA_EVIDENCE_V4_ACTIVE_KEY_ID", raising=False)
+        return
+    monkeypatch.setenv(
+        "OLA_EVIDENCE_V4_KEYRING_JSON",
+        json.dumps({"pytest-v4-2026": "cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}),
+    )
+    monkeypatch.setenv("OLA_EVIDENCE_V4_ACTIVE_KEY_ID", "pytest-v4-2026")
 
 # Import the application database only after the test DB path is fixed.
 from app.database import Base, engine

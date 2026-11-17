@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.main import app
 from app.database import SessionLocal
 from app.models import ApiKey, EvidenceRecord, Tenant
-from app.hashchain import verify_chain
+from app.igor_evidence_verifier import verify_chain
 
 
 def _seed_tenant():

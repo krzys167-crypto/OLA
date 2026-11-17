@@ -81,7 +81,7 @@ def postgres_db(monkeypatch):
 
 def test_postgres_concurrent_evidence_appends_are_serialized_and_immutable(postgres_db):
     database, runtime_engine, migration_engine, _admin_engine, runtime_role, _schema = postgres_db
-    from app.hashchain import verify_chain
+    from app.igor_evidence_verifier import verify_chain
     from app.models import EvidenceRecord, Tenant
 
     # The restricted runtime role has only SELECT/INSERT on evidence_records.

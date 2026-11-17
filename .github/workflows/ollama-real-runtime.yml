@@ -14,6 +14,9 @@ env:
   # CI fixture only; NEVER use as a production secret.
   EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   OLA_API_KEY_PEPPER: ${{ github.event.pull_request.head.sha || github.sha }}
+  # Public test-only key; never use this value for production.
+  OLA_EVIDENCE_V4_KEYRING_JSON: '{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}'
+  OLA_EVIDENCE_V4_ACTIVE_KEY_ID: ci-v4-2026
   OLA_LLM_PROVIDER: ollama
   OLA_LLM_MODE: required
   OLLAMA_MODEL: qwen2.5:0.5b-instruct
@@ -71,13 +74,15 @@ jobs:
           PY
 
       - name: Build OLA image
-        run: docker build --tag ola-ollama-e2e --file Dockerfile .
+        run: docker build --build-arg OLA_SOURCE_COMMIT="${EXPECTED_SOURCE_SHA}" --tag ola-ollama-e2e --file Dockerfile .
 
+      - name: Assert Ollama image source label
+        run: test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' ola-ollama-e2e)" = "${EXPECTED_SOURCE_SHA}"
       - name: Start OLA against live Ollama
         shell: bash
         run: |
           set -euo pipefail
-          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" \
+          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" -e OLA_EVIDENCE_V4_KEYRING_JSON='{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}' -e OLA_EVIDENCE_V4_ACTIVE_KEY_ID=ci-v4-2026 \
             --name ola-ollama-e2e \
             --network host \
             -e OLA_EG_DB_PATH=/data/ola.db \

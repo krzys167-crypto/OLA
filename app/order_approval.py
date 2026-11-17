@@ -8,13 +8,8 @@ import uuid
 from sqlalchemy import select
 
 from .database import SessionLocal, begin_write_transaction
-from .hashchain import (
-    GENESIS_HASH,
-    compute_record_hash_v2,
-    sealed_payload_json,
-    verify_chain,
-    trusted_record,
-)
+from .evidence_writer import append_evidence_v4_locked
+from .igor_evidence_verifier import verify_chain, trusted_record
 from .models import ApiKey, CheckoutOrder, CheckoutOrderControl, CheckoutExecutionJob, EvidenceRecord
 from .runtime_provenance import runtime_source_commit
 
@@ -184,9 +179,6 @@ def approve_paid_order(*, tenant_id: str, approver_id: str, order_id: str,
             db, tenant_id=tenant_id, order_id=order_id,
             approver_id=approver_id, tip_hash=tip_hash,
         )
-        latest = rows[-1] if rows else None
-        previous_hash = latest.record_hash if latest is not None else GENESIS_HASH
-        next_seq = latest.seq + 1 if latest is not None else 0
         approved_at = int(time.time())
         approval_payload = {
             "event": "human.revenue_execution_approval",
@@ -211,21 +203,12 @@ def approve_paid_order(*, tenant_id: str, approver_id: str, order_id: str,
             "deployment_authorized": False,
             "production_authorized": False,
         }
-        raw = sealed_payload_json("human.revenue_execution_approval", approval_payload)
-        record_hash = compute_record_hash_v2(
-            tenant_id, next_seq, previous_hash,
-            "human.revenue_execution_approval", "ola_runtime", raw,
+        approval_record = append_evidence_v4_locked(
+            db, tenant_id, "human.revenue_execution_approval", approval_payload,
+            producer_id="ola_runtime",
         )
-        record_id = str(uuid.uuid4())
-        db.add(EvidenceRecord(
-            id=record_id,
-            tenant_id=tenant_id,
-            seq=next_seq,
-            record_type="human.revenue_execution_approval",
-            payload_json=raw,
-            prev_hash=previous_hash,
-            record_hash=record_hash,
-        ))
+        record_hash = approval_record["record_hash"]
+        record_id = approval_record["id"]
         control.status = "APPROVED_FOR_EXECUTION"
         control.approver_id = approver_id
         control.approval_reason = reason.strip()

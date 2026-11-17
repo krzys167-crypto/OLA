@@ -1,0 +1,63 @@
+name: Evidence Cryptography V4 Contract
+
+on:
+  pull_request:
+    paths:
+      - "app/evidence_v4.py"
+      - "app/evidence_writer.py"
+      - "app/igor_evidence_verifier.py"
+      - "app/database.py"
+      - "app/igor.py"
+      - "app/igor_workflow.py"
+      - "tests/test_evidence_v4_contract.py"
+      - "tests/test_evidence_writer_v4.py"
+      - "tests/test_evidence_v4_process_lifecycle.py"
+      - "tests/test_evidence_secret_management.py"
+      - "tests/test_igor_independent_evidence.py"
+      - ".github/workflows/evidence-cryptography-v4.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  functional-cryptography:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run V4, writer, and independent IGOR contracts
+        run: |
+          set -euo pipefail
+          pytest -q tests/test_evidence_v4_contract.py tests/test_evidence_writer_v4.py tests/test_evidence_v4_process_lifecycle.py tests/test_igor_independent_evidence.py
+
+  secret-management-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Prove fail-closed external secret injection contract
+        env:
+          OLA_EVIDENCE_V4_KEYRING_JSON: ""
+          OLA_EVIDENCE_V4_ACTIVE_KEY_ID: ""
+        run: |
+          set -euo pipefail
+          pytest -q -m secret_management tests/test_evidence_secret_management.py

@@ -5,7 +5,8 @@ import uuid
 from sqlalchemy import select
 
 from .database import SessionLocal, append_evidence_atomic
-from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
+from .hashchain import canonical_json
+from .igor_evidence_verifier import verify_chain, trusted_record
 from .models import EvidenceRecord
 
 
@@ -132,7 +133,6 @@ def run_invoice_task(tenant_id, task):
     chain = [{"tenant_id": r.tenant_id, "seq": r.seq, "prev_hash": r.prev_hash, "record_hash": r.record_hash, "record_type": r.record_type, "payload_json": r.payload_json} for r in rows]
     chain_ok, reason = verify_chain(chain)
     final_result = execution[-1]["final_result"]
-    from .hashchain import trusted_record
     current = [r for r in rows if r.record_type.startswith("agent.")
                and json.loads(r.payload_json).get("run_id") == run_id]
     bound = len(current) == len(AGENT_ROLES) and all(

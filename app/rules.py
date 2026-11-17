@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
-from .hashchain import verify_chain
+from .igor_evidence_verifier import verify_chain
 
 
 class RuleStatus(str, Enum):

@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 
-from .hashchain import verify_chain, trusted_record, is_privileged_type
+from .igor_evidence_verifier import verify_chain, trusted_record, is_privileged_type
 
 
 @dataclass(frozen=True)

@@ -10,7 +10,7 @@ import uuid
 
 from sqlalchemy import select
 from app.database import SessionLocal
-from app.hashchain import verify_chain
+from app.igor_evidence_verifier import verify_chain
 from app.models import Tenant, EvidenceRecord
 from app.main import append_record
 import app.agent_runtime as agent_runtime
@@ -92,8 +92,8 @@ def test_multiple_processes_share_sqlite_write_lock():
 def test_legacy_integrity_readable_but_not_authenticated():
     from app.hashchain import (
         GENESIS_HASH, compute_record_hash, compute_record_hash_v2, canonical_json, sealed_payload_json,
-        trusted_record, verify_chain,
     )
+    from app.igor_evidence_verifier import trusted_record, verify_chain
     raw = canonical_json({"event": "workflow.planned", "run_id": "old"})
     old = {"tenant_id": "tenant", "seq": 0, "prev_hash": GENESIS_HASH,
            "record_type": "workflow.planned", "payload_json": raw,
@@ -118,9 +118,9 @@ def test_public_evidence_cannot_mint_internal_provenance():
 
 def test_old_hash_with_forged_v2_metadata_cannot_be_promoted():
     from app.hashchain import (
-        GENESIS_HASH, canonical_json, compute_record_hash, verify_chain,
-        EVIDENCE_META_KEY,
+        GENESIS_HASH, canonical_json, compute_record_hash, EVIDENCE_META_KEY,
     )
+    from app.igor_evidence_verifier import verify_chain
     fake = canonical_json({
         "event": "workflow.planned", "run_id": "attacker",
         EVIDENCE_META_KEY: {

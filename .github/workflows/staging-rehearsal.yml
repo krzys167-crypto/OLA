@@ -31,6 +31,8 @@ jobs:
           print("::add-mask::" + value)
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
               output.write("OLA_API_KEY_PEPPER=" + value + "\n")
+              output.write("OLA_EVIDENCE_V4_KEYRING_JSON={\"ci-v4-2026\":\"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ==\"}\n")
+              output.write("OLA_EVIDENCE_V4_ACTIVE_KEY_ID=ci-v4-2026\n")
           PY
 
       - name: Run real Docker Compose audit, tamper and restart

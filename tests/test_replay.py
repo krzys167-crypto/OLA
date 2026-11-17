@@ -58,7 +58,7 @@ def test_replay_regression_checks_record_type_and_status():
     rows[1]["record_type"] = "agent.tampered"
     result = verify_replay(rows, expected_run_id="r1", expected_tenant_id="tenant-1", expected_record_count=2, expected_tip_hash=rows[-1]["record_hash"])
     assert result["status"] == "BLOCK"
-    assert result["reason"] == "record type or producer binding mismatch"
+    assert result["reason"] == "legacy record type binding mismatch"
 
     rows = _chain(count=2)
     rows[1]["payload_json"] = sealed_payload_json("agent.codeact", {
@@ -119,7 +119,7 @@ def test_replay_blocks_tampered_predecessor_hash():
     rows[1]["prev_hash"] = "e" * 64
     result = verify_replay(rows, expected_run_id="r1", expected_tenant_id="tenant-1", expected_record_count=2, expected_tip_hash=rows[-1]["record_hash"])
     assert result["status"] == "BLOCK"
-    assert result["reason"] == "sequence or predecessor mismatch"
+    assert result["reason"] == "predecessor mismatch"
 
 
 def test_replay_requires_genesis_hash_at_sequence_zero():
@@ -127,7 +127,7 @@ def test_replay_requires_genesis_hash_at_sequence_zero():
     rows[0]["prev_hash"] = "1" * 64
     result = verify_replay(rows, expected_run_id="r1", expected_tenant_id="tenant-1", expected_record_count=2, expected_tip_hash=rows[-1]["record_hash"])
     assert result["status"] == "BLOCK"
-    assert result["reason"] == "sequence or predecessor mismatch"
+    assert result["reason"] == "predecessor mismatch"
 
 
 def test_replay_requires_sequence_to_start_at_zero():
@@ -135,7 +135,7 @@ def test_replay_requires_sequence_to_start_at_zero():
     rows[0]["seq"] = 1
     result = verify_replay(rows, expected_run_id="r1", expected_tenant_id="tenant-1", expected_record_count=2, expected_tip_hash=rows[-1]["record_hash"])
     assert result["status"] == "BLOCK"
-    assert result["reason"] == "sequence or predecessor mismatch"
+    assert result["reason"] == "sequence mismatch"
 
 
 def test_replay_blocks_wrong_tenant():

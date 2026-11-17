@@ -25,6 +25,9 @@ jobs:
       NINA_RUN_ID: ${{ github.run_id }}
       NINA_ARTIFACT_NAME: ${{ inputs.nina_artifact_name }}
       OLLAMA_MODEL: qwen2.5:0.5b-instruct
+      OLA_API_KEY_PEPPER: ${{ inputs.source_commit }}
+      OLA_EVIDENCE_V4_KEYRING_JSON: '{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}'
+      OLA_EVIDENCE_V4_ACTIVE_KEY_ID: ci-v4-2026
     steps:
       - name: Checkout exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

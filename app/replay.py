@@ -1,6 +1,6 @@
 import json
 
-from .hashchain import verify_chain, trusted_record
+from .igor_evidence_verifier import verify_chain, trusted_record
 
 
 def build_replay(records):

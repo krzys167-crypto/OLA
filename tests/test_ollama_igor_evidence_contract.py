@@ -37,9 +37,13 @@ class OllamaIndependentEvidenceContractTest(unittest.TestCase):
 
     def test_final_production_requires_nested_independent_igor_job(self):
         workflow = (ROOT / ".github/workflows/final-production-gate.yml").read_text(encoding="utf-8")
-        self.assertIn("igor-independent-ollama / igor-ollama", workflow)
+        self.assertIn("OLA 12h Autonomous Evidence Flow", workflow)
+        self.assertIn('autoflow_run = exact.get("OLA 12h Autonomous Evidence Flow")', workflow)
+        self.assertIn("real_ollama_flow / nina-igor-ollama-full-flow", workflow)
+        self.assertIn("real_ollama_flow / igor-independent-ollama / igor-ollama", workflow)
         self.assertIn("IGOR Independent Ollama Evidence Gate", workflow)
-        self.assertIn("matching_jobs", workflow)
+        self.assertIn("OLA 12h Evidence Aggregator", workflow)
+        self.assertIn("jobs_by_name", workflow)
 
 
 if __name__ == "__main__":

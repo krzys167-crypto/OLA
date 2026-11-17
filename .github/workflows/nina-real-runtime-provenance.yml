@@ -11,7 +11,10 @@ permissions:
 
 env:
   # CI fixture only; NEVER use as a production secret.
-  OLA_API_KEY_PEPPER: ${{ github.sha }}
+  OLA_API_KEY_PEPPER: ${{ github.event.pull_request.head.sha || github.sha }}
+  # Public test-only key; never use this value for production.
+  OLA_EVIDENCE_V4_KEYRING_JSON: '{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}'
+  OLA_EVIDENCE_V4_ACTIVE_KEY_ID: ci-v4-2026
 
 jobs:
   runtime-proof:
@@ -62,13 +65,16 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Build deployment image from exact source
         if: ${{ env.OPENAI_AVAILABLE == 'true' }}
-        run: docker build --tag "ola:${EXPECTED_COMMIT}" .
+        run: docker build --build-arg OLA_SOURCE_COMMIT="${EXPECTED_COMMIT}" --tag "ola:${EXPECTED_COMMIT}" .
+      - name: Assert runtime image source label
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
+        run: test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "ola:${EXPECTED_COMMIT}")" = "${EXPECTED_COMMIT}"
       - name: Run real runtime
         if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" --name ola-nina-e2e --publish 8000:8000 \
+          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" -e OLA_EVIDENCE_V4_KEYRING_JSON='{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}' -e OLA_EVIDENCE_V4_ACTIVE_KEY_ID=ci-v4-2026 --name ola-nina-e2e --publish 8000:8000 \
             -e OLA_RUNTIME_COMMIT="${EXPECTED_COMMIT}" \
             -e OPENAI_API_KEY="$OPENAI_API_KEY" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \

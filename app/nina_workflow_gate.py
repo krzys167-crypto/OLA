@@ -4,13 +4,13 @@ Two distinct API key identities are required; this is NOT GitHub PR approval
 and does not grant deployment privileges.
 """
 import json
-import uuid
 
 from sqlalchemy import select
 from .database import SessionLocal, begin_write_transaction
 from .runtime_provenance import runtime_source_commit
 from .models import EvidenceRecord
-from .hashchain import sealed_payload_json, compute_record_hash_v2, verify_chain, trusted_record
+from .evidence_writer import append_evidence_v4_locked
+from .igor_evidence_verifier import verify_chain, trusted_record
 from .igor_workflow import verify_dag_records
 from .human_gate import HumanGate, ReviewDecision
 from .nina_igor import NinaIgorChain, STATUS_FIELDS
@@ -84,16 +84,10 @@ def approve_workflow(*, tenant_id, approver_id, run_id, tip_hash, report_digest,
             "commit": expected_commit,
             "decision": "APPROVED_FOR_REVIEW_ONLY",
         }
-        raw = sealed_payload_json("human.workflow_approval", payload)
-        next_seq = latest.seq + 1
-        next_hash = compute_record_hash_v2(
-            tenant_id, next_seq, tip_hash, "human.workflow_approval", "ola_runtime", raw
+        approval = append_evidence_v4_locked(
+            db, tenant_id, "human.workflow_approval", payload,
         )
-        db.add(EvidenceRecord(
-            id=str(uuid.uuid4()), tenant_id=tenant_id, seq=next_seq,
-            record_type="human.workflow_approval", payload_json=raw,
-            prev_hash=tip_hash, record_hash=next_hash,
-        ))
+        next_hash = approval["record_hash"]
         db.commit()
         return {
             "status": "APPROVED_FOR_REVIEW_ONLY", "run_id": run_id,
@@ -188,17 +182,11 @@ def approve_nina_candidate(*, tenant_id, approver_id, run_id, tip_hash,
             "decision": "APPROVED_FOR_REVIEW_ONLY",
             "production_authorized": False,
         }
-        raw = sealed_payload_json("human.approval", payload)
-        next_seq = latest.seq + 1
-        next_hash = compute_record_hash_v2(
-            tenant_id, next_seq, tip_hash, "human.approval", "ola_runtime", raw
+        approval = append_evidence_v4_locked(
+            db, tenant_id, "human.approval", payload,
         )
-        record_id = str(uuid.uuid4())
-        db.add(EvidenceRecord(
-            id=record_id, tenant_id=tenant_id, seq=next_seq,
-            record_type="human.approval", payload_json=raw,
-            prev_hash=tip_hash, record_hash=next_hash,
-        ))
+        next_hash = approval["record_hash"]
+        record_id = approval["id"]
         db.commit()
         return {
             "status": "APPROVED_FOR_REVIEW_ONLY", "run_id": run_id,

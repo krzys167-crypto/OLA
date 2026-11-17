@@ -6,7 +6,7 @@ import uuid
 from app.agent_runtime import run_agent_task
 from app.database import SessionLocal
 from app.models import Tenant
-from app.hashchain import verify_chain
+from app.igor_evidence_verifier import verify_chain
 from sqlalchemy import select
 
 def test_frontier_baseline_vector(monkeypatch):

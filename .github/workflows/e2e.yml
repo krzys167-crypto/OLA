@@ -10,7 +10,11 @@ permissions:
 
 env:
   # CI fixture only; NEVER use as a production secret.
-  OLA_API_KEY_PEPPER: ${{ github.sha }}
+  OLA_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  OLA_API_KEY_PEPPER: ${{ github.event.pull_request.head.sha || github.sha }}
+  # Public test-only key; never use this value for production.
+  OLA_EVIDENCE_V4_KEYRING_JSON: '{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}'
+  OLA_EVIDENCE_V4_ACTIVE_KEY_ID: ci-v4-2026
 
 jobs:
   e2e:
@@ -23,9 +27,10 @@ jobs:
       OLA_LLM_MODE: deterministic
       OLA_LLM_MODEL: deterministic-runtime-v1
     steps:
-      - name: Checkout
+      - name: Checkout exact PR head source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.OLA_SOURCE_SHA }}
           persist-credentials: false
 
       - name: Set up Python
@@ -44,11 +49,13 @@ jobs:
         run: python scripts/verify_readme_claims.py
 
       - name: Build deployment image
-        run: docker build --tag ola:${GITHUB_SHA} .
+        run: docker build --build-arg OLA_SOURCE_COMMIT="${OLA_SOURCE_SHA}" --tag ola:${OLA_SOURCE_SHA} .
 
+      - name: Assert e2e image source label
+        run: test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "ola:${OLA_SOURCE_SHA}")" = "${OLA_SOURCE_SHA}"
       - name: Run deployment image
         run: |
-          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" --name ola-e2e --publish 8000:8000 -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" -e OLA_RUNTIME_COMMIT="${GITHUB_SHA}" ola:${GITHUB_SHA}
+          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" -e OLA_EVIDENCE_V4_KEYRING_JSON="$OLA_EVIDENCE_V4_KEYRING_JSON" -e OLA_EVIDENCE_V4_ACTIVE_KEY_ID="$OLA_EVIDENCE_V4_ACTIVE_KEY_ID" --name ola-e2e --publish 8000:8000 -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" -e OLA_RUNTIME_COMMIT="${OLA_SOURCE_SHA}" ola:${OLA_SOURCE_SHA}
           for i in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
               exit 0
@@ -60,7 +67,7 @@ jobs:
 
       - name: Independent runtime E2E proof
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.OLA_SOURCE_SHA }}
         run: |
           docker exec -i -e EXPECTED_COMMIT="$EXPECTED_COMMIT" ola-e2e python - <<'PY'
           from app.api_key_hashing import api_key_fingerprint
@@ -85,22 +92,13 @@ jobs:
           expected_types = ["task.received","execution.started","fault.detected","recovery.applied","verification.passed"]
           assert [r[3] for r in rows] == expected_types, rows
           assert [r[0] for r in rows] == result["evidence_ids"], (rows, result)
-          expected_prev = "0" * 64
-          for expected_seq, row in enumerate(rows):
-              _, row_tenant, seq, record_type, payload_json, prev_hash, record_hash = row
-              assert row_tenant == tenant_id; assert seq == expected_seq; assert prev_hash == expected_prev
-              # Independent V2 ledger verifier — never import the producer's hash function.
-              payload = json.loads(payload_json)
-              meta = payload.get("__ola_evidence_v2__")
-              assert meta == {"version": 2, "record_type": record_type, "producer": "ola_runtime"}, meta
-              material = json.dumps({
-                  "domain": "OLA-EVIDENCE-CHAIN-V2",
-                  "tenant_id": tenant_id, "seq": seq, "prev_hash": prev_hash,
-                  "record_type": record_type, "producer": "ola_runtime",
-                  "payload_json": payload_json,
-              }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-              expected_hash = hashlib.sha256(material.encode("utf-8")).hexdigest()
-              assert record_hash == expected_hash, (seq, record_hash, expected_hash); expected_prev = record_hash
+          from app.igor_evidence_verifier import verify_chain
+          records = [{
+              "tenant_id": row[1], "seq": row[2], "record_type": row[3],
+              "payload_json": row[4], "prev_hash": row[5], "record_hash": row[6],
+          } for row in rows]
+          chain_ok, chain_reason = verify_chain(records)
+          assert chain_ok, chain_reason
           print(json.dumps({"gate":"INDEPENDENT_RUNTIME_E2E","status":"VERIFIED","container_health":"PASS","http_audit":"PASS","evidence_count":len(rows),"hash_chain":"PASS","result_ids_match_db":True,"commit":os.environ["EXPECTED_COMMIT"]}, sort_keys=True))
           PY
 
@@ -138,7 +136,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OLA_LLM_MODE: required
           OLA_LLM_MODEL: gpt-5.6-luna
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.OLA_SOURCE_SHA }}
           EXPECTED_TASK: Calculate 17 * 23 and return the verified result.
           EXPECTED_RESULT: "391"
         run: |
@@ -173,22 +171,13 @@ jobs:
           assert all(p["task"] == task for p in payloads), payloads
           assert payloads[0]["tool_output"] == expected_result, payloads[0]
           assert payloads[-1]["final_result"] == expected_result, payloads[-1]
-          expected_prev = "0" * 64
-          for expected_seq, row in enumerate(rows):
-              _, row_tenant, seq, record_type, payload_json, prev_hash, record_hash = row
-              assert row_tenant == tenant_id; assert seq == expected_seq; assert prev_hash == expected_prev
-              # Independent V2 ledger verifier — never import the producer's hash function.
-              payload = json.loads(payload_json)
-              meta = payload.get("__ola_evidence_v2__")
-              assert meta == {"version": 2, "record_type": record_type, "producer": "ola_runtime"}, meta
-              material = json.dumps({
-                  "domain": "OLA-EVIDENCE-CHAIN-V2",
-                  "tenant_id": tenant_id, "seq": seq, "prev_hash": prev_hash,
-                  "record_type": record_type, "producer": "ola_runtime",
-                  "payload_json": payload_json,
-              }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-              expected_hash = hashlib.sha256(material.encode("utf-8")).hexdigest()
-              assert record_hash == expected_hash; expected_prev = record_hash
+          from app.igor_evidence_verifier import verify_chain
+          records = [{
+              "tenant_id": row[1], "seq": row[2], "record_type": row[3],
+              "payload_json": row[4], "prev_hash": row[5], "record_hash": row[6],
+          } for row in rows]
+          chain_ok, chain_reason = verify_chain(records)
+          assert chain_ok, chain_reason
           verifier = subprocess.run(
               ["python", "scripts/verify_agent_runtime.py", "--tenant-id", tenant_id,
                "--run-id", result["run_id"], "--expected-commit", os.environ["EXPECTED_COMMIT"],
@@ -205,7 +194,7 @@ jobs:
 
       - name: Controlled invoice six-agent business E2E and independent verifier
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.OLA_SOURCE_SHA }}
           INVOICE_JSON: '{"invoice_id":"INV-CI-2026-001","supplier":"TEST-SUPPLIER","currency":"EUR","net":1000.0,"vat_rate":0.21}'
         run: |
           set -euo pipefail
@@ -266,7 +255,7 @@ jobs:
 
       - name: Real runtime fault injection and recovery
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.OLA_SOURCE_SHA }}
         run: |
           set -euo pipefail
           curl --fail --silent http://127.0.0.1:8000/health >/dev/null
@@ -288,14 +277,14 @@ jobs:
           docker inspect ola-e2e > docker-inspect.json 2>&1 || true
           docker logs ola-e2e > docker-runtime.log 2>&1 || true
           sha256sum docker-inspect.json docker-runtime.log agent-runtime-proof.json business-invoice-proof.json > runtime-file-hashes.txt || true
-          printf '%s\n' "commit=${GITHUB_SHA}" "run=${GITHUB_RUN_ID}" > provenance.txt
+          printf '%s\n' "commit=${OLA_SOURCE_SHA}" "run=${GITHUB_RUN_ID}" > provenance.txt
           sha256sum provenance.txt >> runtime-file-hashes.txt || true
 
       - name: Upload runtime evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ola-runtime-e2e-${{ github.sha }}
+          name: ola-runtime-e2e-${{ env.OLA_SOURCE_SHA }}
           path: |
             docker-inspect.json
             docker-runtime.log

@@ -88,12 +88,16 @@ jobs:
           import sys
 
           required_exact = [
+              "Evidence Cryptography V4 Contract",
+              "OLA paid-order PostgreSQL contract",
+              "Python package CI",
+              "OLA Local Staging Rehearsal",
               "Nina TDD",
               "NINA Parallel DAG Gate",
               "OLA Supply Chain Evidence Gate",
               "OLA CodeQL",
               "OLA DI-OS Product Gate",
-              "NINA IGOR Ollama Full Flow",
+              "OLA 12h Autonomous Evidence Flow",
               "OLA Decision Evidence Gate",
               "Revenue Surface Gate",
               "OLA E2E Gate",
@@ -136,18 +140,25 @@ jobs:
           observed_exact = {name: exact.get(name) for name in required_exact}
           observed_reference = {name: reference.get(name) for name in required_reference}
 
-          # The independent Ollama IGOR gate is a reusable-workflow job nested
-          # inside the NINA full-flow run, not a separate workflow run. Require
-          # that exact job explicitly; a skipped legacy OpenAI-only check must
-          # never be mistaken for independent Ollama verification.
-          nina_run = exact.get("NINA IGOR Ollama Full Flow")
-          igor_gate = None
-          if nina_run is not None:
+          # The 12h workflow is the single PR/main orchestrator. NINA and
+          # independent IGOR are reusable jobs nested inside that exact-SHA
+          # run; the classify job verifies the three evidence artifacts.
+          autoflow_run = exact.get("OLA 12h Autonomous Evidence Flow")
+          nested_gates = {
+              "NINA IGOR Ollama Full Flow": "real_ollama_flow / nina-igor-ollama-full-flow",
+              "IGOR Independent Ollama Evidence Gate": "real_ollama_flow / igor-independent-ollama / igor-ollama",
+              "OLA 12h Preflight": "preflight",
+              "OLA 12h Evidence Aggregator": "classify",
+          }
+          for gate_name in nested_gates:
+              observed_exact[gate_name] = None
+
+          if autoflow_run is not None:
               import os
               import urllib.request
               jobs_url = (
                   f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}"
-                  f"/actions/runs/{nina_run['id']}/jobs?per_page=100"
+                  f"/actions/runs/{autoflow_run['id']}/jobs?per_page=100"
               )
               request = urllib.request.Request(
                   jobs_url,
@@ -159,19 +170,22 @@ jobs:
               )
               with urllib.request.urlopen(request, timeout=20) as response:
                   jobs_data = json.load(response)
-              matching_jobs = [
-                  job for job in jobs_data.get("jobs", [])
-                  if job.get("name") == "igor-independent-ollama / igor-ollama"
-              ]
-              if matching_jobs:
-                  job = matching_jobs[0]
-                  igor_gate = {
-                      "id": job.get("id"),
-                      "status": job.get("status"),
-                      "conclusion": job.get("conclusion"),
-                      "html_url": job.get("html_url"),
-                  }
-          observed_exact["IGOR Independent Ollama Evidence Gate"] = igor_gate
+
+              jobs_by_name = {}
+              for job in jobs_data.get("jobs", []):
+                  jobs_by_name.setdefault(job.get("name"), job)
+
+              for gate_name, job_name in nested_gates.items():
+                  job = jobs_by_name.get(job_name)
+                  if job is not None:
+                      observed_exact[gate_name] = {
+                          "id": job.get("id"),
+                          "status": job.get("status"),
+                          "conclusion": job.get("conclusion"),
+                          "head_sha": autoflow_run.get("head_sha"),
+                          "html_url": job.get("html_url"),
+                      }
+
 
           missing = [name for name, run in {**observed_exact, **observed_reference}.items() if run is None]
           pending = {
@@ -280,6 +294,8 @@ jobs:
             -e OLA_REQUIRE_BUILD_INFO=1 \
             -e OLA_RUNTIME_COMMIT=0000000000000000000000000000000000000000 \
             -e OLA_API_KEY_PEPPER="$pepper" \
+            -e OLA_EVIDENCE_V4_KEYRING_JSON='{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}' \
+            -e OLA_EVIDENCE_V4_ACTIVE_KEY_ID=ci-v4-2026 \
             -p 8000:8000 "ola-final:$TARGET_SOURCE_SHA"
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8000/readyz | TARGET_SOURCE_SHA="$TARGET_SOURCE_SHA" python -c '

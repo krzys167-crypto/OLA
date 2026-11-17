@@ -3,13 +3,17 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 import uuid
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("OLA_LLM_MODE", "deterministic")
 
 from app.agent_runtime import run_agent_task
 from app.database import SessionLocal
-from app.hashchain import verify_chain
+from app.igor_evidence_verifier import verify_chain
 from app.models import EvidenceRecord, Tenant
 
 

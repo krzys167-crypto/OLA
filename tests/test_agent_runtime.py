@@ -160,7 +160,7 @@ def test_agent_run_rejects_oversized_task_before_writing_evidence(monkeypatch):
 
 def test_agent_failure_writes_terminal_run_evidence(monkeypatch):
     from app.agent_runtime import AGENT_ROLES
-    from app.hashchain import verify_chain
+    from app.igor_evidence_verifier import verify_chain
     from app.models import EvidenceRecord
     from sqlalchemy import select
     import json

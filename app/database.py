@@ -343,49 +343,33 @@ def migrate_postgres_schema(target_engine):
 
 
 def append_evidence_atomic(tenant_id, record_type, payload, *, producer_id="ola_runtime", deduplicate=False):
-    """Serialize all evidence writers before reading a tenant tip.
+    """Serialize a tenant append and persist V4 inside the locked transaction.
 
     SQLite uses BEGIN IMMEDIATE; PostgreSQL uses a transaction-scoped
-    advisory lock keyed by tenant. Both serialize sequence allocation before
-    reading seq/prev_hash. Unique(tenant_id, seq) remains a final guard.
+    advisory lock keyed by tenant. V4 append verifies the existing chain before
+    allocating a sequence. The unique (tenant_id, seq) constraint remains the
+    final concurrency guard.
     """
-    from .hashchain import GENESIS_HASH, sealed_payload_json, compute_record_hash_v2
-    from .models import EvidenceRecord
+    from .evidence_writer import append_evidence_v4_locked
 
-    if not isinstance(tenant_id, str) or not tenant_id:
-        raise ValueError("tenant_id required for evidence append")
-    if not isinstance(record_type, str) or not record_type:
-        raise ValueError("record_type required for evidence append")
-    payload_json = sealed_payload_json(record_type, payload, producer=producer_id)
     with SessionLocal() as db:
         begin_write_transaction(db, tenant_id=tenant_id)
-        if deduplicate:
-            existing = db.scalar(select(EvidenceRecord).where(
-                EvidenceRecord.tenant_id == tenant_id,
-                EvidenceRecord.record_type == record_type,
-                EvidenceRecord.payload_json == payload_json,
-            ))
-            if existing is not None:
-                existing_result = {
-                    "id": existing.id,
-                    "tenant_id": tenant_id,
-                    "seq": existing.seq,
-                    "record_hash": existing.record_hash,
-                }
-                db.rollback()
-                return existing_result
-        last = db.scalar(select(EvidenceRecord)
-                         .where(EvidenceRecord.tenant_id == tenant_id)
-                         .order_by(EvidenceRecord.seq.desc()))
-        seq = last.seq + 1 if last is not None else 0
-        previous = last.record_hash if last is not None else GENESIS_HASH
-        record_id = str(uuid.uuid4())
-        digest = compute_record_hash_v2(tenant_id, seq, previous, record_type,
-                                        producer_id, payload_json)
-        db.add(EvidenceRecord(
-            id=record_id, tenant_id=tenant_id, seq=seq, record_type=record_type,
-            payload_json=payload_json, prev_hash=previous, record_hash=digest,
-        ))
+        result = append_evidence_v4_locked(
+            db, tenant_id, record_type, payload,
+            producer_id=producer_id, deduplicate=deduplicate,
+        )
+        if result.get("deduplicated"):
+            db.rollback()
+            return {
+                "id": result["id"],
+                "tenant_id": tenant_id,
+                "seq": result["seq"],
+                "record_hash": result["record_hash"],
+            }
         db.commit()
-        return {"id": record_id, "tenant_id": tenant_id, "seq": seq,
-                "record_hash": digest}
+        return {
+            "id": result["id"],
+            "tenant_id": tenant_id,
+            "seq": result["seq"],
+            "record_hash": result["record_hash"],
+        }

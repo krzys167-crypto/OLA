@@ -65,7 +65,7 @@ def test_worker_runs_paid_order_once_and_replays_completed_response(monkeypatch)
         events = [row.record_type for row in records]
         assert events.count("revenue.execution_started") == 1
         assert events.count("revenue.execution_completed") == 1
-        from app.hashchain import trusted_record
+        from app.igor_evidence_verifier import trusted_record
         worker_events = [row for row in records if row.record_type in {
             "revenue.execution_started", "revenue.execution_completed"
         }]

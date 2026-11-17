@@ -11,6 +11,8 @@ services:
       OLA_EG_DB_PATH: /data/ola.db
       OLA_LLM_MODE: deterministic
       OLA_API_KEY_PEPPER: "${OLA_API_KEY_PEPPER:?required}"
+      OLA_EVIDENCE_V4_KEYRING_JSON: "${OLA_EVIDENCE_V4_KEYRING_JSON:?required}"
+      OLA_EVIDENCE_V4_ACTIVE_KEY_ID: "${OLA_EVIDENCE_V4_ACTIVE_KEY_ID:?required}"
       OLA_REQUIRE_BUILD_INFO: "1"
       OLA_BUILD_EXPECTED_SHA: "${OLA_RUNTIME_COMMIT:?required}"
       # Deliberate spoof sentinel: readiness must use image build metadata instead.
@@ -41,6 +43,8 @@ services:
       OLA_EG_DB_PATH: /data/ola.db
       OLA_LLM_MODE: deterministic
       OLA_API_KEY_PEPPER: "${OLA_API_KEY_PEPPER:?required}"
+      OLA_EVIDENCE_V4_KEYRING_JSON: "${OLA_EVIDENCE_V4_KEYRING_JSON:?required}"
+      OLA_EVIDENCE_V4_ACTIVE_KEY_ID: "${OLA_EVIDENCE_V4_ACTIVE_KEY_ID:?required}"
       OLA_REQUIRE_BUILD_INFO: "1"
       OLA_BUILD_EXPECTED_SHA: "${OLA_RUNTIME_COMMIT:?required}"
       OLA_RUNTIME_COMMIT: "0000000000000000000000000000000000000000"

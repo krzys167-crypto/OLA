@@ -14,7 +14,9 @@ permissions: {}
 
 env:
   # CI fixture only; NEVER use as a production secret.
-  OLA_API_KEY_PEPPER: ${{ github.sha }}
+  # Public test-only key; never use this value for production.
+  OLA_EVIDENCE_V4_KEYRING_JSON: '{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}'
+  OLA_EVIDENCE_V4_ACTIVE_KEY_ID: ci-v4-2026
 
 jobs:
   igor:
@@ -27,6 +29,7 @@ jobs:
     if: ${{ inputs.source_commit != '' && inputs.nina_artifact_name != '' }}
     env:
       SOURCE_COMMIT: ${{ inputs.source_commit }}
+      OLA_API_KEY_PEPPER: ${{ inputs.source_commit }}
       NINA_RUN_ID: ${{ github.run_id }}
       NINA_ARTIFACT_NAME: ${{ inputs.nina_artifact_name }}
     steps:
@@ -107,11 +110,13 @@ jobs:
       - name: Build exact-source runtime for independent replay
         run: |
           python -m pip install -r requirements.txt
-          docker build --tag "ola-igor:${SOURCE_COMMIT}" .
+          docker build --build-arg OLA_SOURCE_COMMIT="${SOURCE_COMMIT}" --tag "ola-igor:${SOURCE_COMMIT}" .
 
+      - name: Assert IGOR image source label
+        run: test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "ola-igor:${SOURCE_COMMIT}")" = "${SOURCE_COMMIT}"
       - name: Start runtime
         run: |
-          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" -e OLA_RUNTIME_COMMIT="${SOURCE_COMMIT}" --name ola-igor-e2e --publish 8001:8000 "ola-igor:${SOURCE_COMMIT}"
+          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" -e OLA_EVIDENCE_V4_KEYRING_JSON='{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}' -e OLA_EVIDENCE_V4_ACTIVE_KEY_ID=ci-v4-2026 -e OLA_RUNTIME_COMMIT="${SOURCE_COMMIT}" --name ola-igor-e2e --publish 8001:8000 "ola-igor:${SOURCE_COMMIT}"
           for i in $(seq 1 30); do curl --fail --silent http://127.0.0.1:8001/health >/dev/null && exit 0; sleep 1; done
           docker logs ola-igor-e2e
           exit 1

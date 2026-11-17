@@ -13,26 +13,34 @@ permissions:
 
 env:
   # CI fixture only; NEVER use as a production secret.
-  OLA_API_KEY_PEPPER: ${{ github.sha }}
+  OLA_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  OLA_API_KEY_PEPPER: ${{ github.event.pull_request.head.sha || github.sha }}
+  # Public test-only key; never use this value for production.
+  OLA_EVIDENCE_V4_KEYRING_JSON: '{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}'
+  OLA_EVIDENCE_V4_ACTIVE_KEY_ID: ci-v4-2026
 
 jobs:
   provenance-mutation:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout exact PR head source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.OLA_SOURCE_SHA }}
           persist-credentials: false
 
       - name: Build deployment image
-        run: docker build --tag ola:${GITHUB_SHA} .
+        run: docker build --build-arg OLA_SOURCE_COMMIT="${OLA_SOURCE_SHA}" --tag ola:${OLA_SOURCE_SHA} .
+
+      - name: Assert deployment image source label
+        run: python -c 'import json,subprocess,sys; d=json.loads(subprocess.check_output(["docker","image","inspect",sys.argv[1]]))[0]; assert d["Config"]["Labels"]["org.opencontainers.image.revision"] == sys.argv[2]' "ola:${OLA_SOURCE_SHA}" "${OLA_SOURCE_SHA}"
 
       - name: Start deployment image with source provenance
         run: |
           set -euo pipefail
-          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" --name ola-provenance -p 8000:8000 \
-            -e OLA_RUNTIME_COMMIT="${GITHUB_SHA}" \
-            ola:${GITHUB_SHA}
+          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" -e OLA_EVIDENCE_V4_KEYRING_JSON='{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}' -e OLA_EVIDENCE_V4_ACTIVE_KEY_ID=ci-v4-2026 --name ola-provenance -p 8000:8000 \
+            -e OLA_RUNTIME_COMMIT="${OLA_SOURCE_SHA}" \
+            ola:${OLA_SOURCE_SHA}
           for i in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then exit 0; fi
             sleep 1
@@ -42,7 +50,7 @@ jobs:
 
       - name: Clean evidence must verify
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.OLA_SOURCE_SHA }}
           EXPECTED_TASK: Calculate 17 * 23 and return the verified result.
           EXPECTED_RESULT: "391"
         run: |
@@ -78,7 +86,7 @@ jobs:
 
       - name: Evidence tamper must be rejected
         env:
-          EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_COMMIT: ${{ env.OLA_SOURCE_SHA }}
           EXPECTED_TASK: Calculate 17 * 23 and return the verified result.
           EXPECTED_RESULT: "391"
         run: |

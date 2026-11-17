@@ -13,6 +13,7 @@ ENV OLA_BUILD_INFO_PATH=/app/ola-build-info.json
 
 COPY requirements.txt ./
 RUN python3.13 -m venv /opt/venv     && python -m pip install --no-cache-dir --upgrade pip     && python -m pip install --no-cache-dir --force-reinstall -r requirements.txt     && python -m pip check     && python -c "import msgpack, setuptools, urllib3, wheel; print('DEPENDENCY_VERSIONS', msgpack.__version__, setuptools.__version__, urllib3.__version__, wheel.__version__)" \
+    && python -m pip uninstall -y pytest \
     && rm -rf /opt/venv/lib/python3.13/site-packages/pip \
               /opt/venv/lib/python3.13/site-packages/pip-*.dist-info \
               /opt/venv/lib/python3.13/site-packages/setuptools \
@@ -24,7 +25,6 @@ RUN python3.13 -m venv /opt/venv     && python -m pip install --no-cache-dir --u
 
 COPY app ./app
 COPY scripts ./scripts
-COPY tests ./tests
 COPY web ./web
 
 RUN useradd --create-home --uid 10001 ola     && mkdir -p /data     && chown -R root:root /app     && chmod -R a-w /app     && chown -R ola:ola /data

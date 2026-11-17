@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.api_key_hashing import api_key_fingerprint
 from app.database import SessionLocal, append_evidence_atomic
-from app.hashchain import trusted_record
+from app.igor_evidence_verifier import trusted_record
 from app.main import app
 from app.models import ApiKey, CheckoutOrder, CheckoutOrderControl, Tenant, EvidenceRecord, CheckoutExecutionJob
 

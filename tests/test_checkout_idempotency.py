@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.api_key_hashing import api_key_fingerprint
 from app.database import SessionLocal
-from app.hashchain import trusted_record
+from app.igor_evidence_verifier import trusted_record
 from app.main import app
 from app.models import ApiKey, Tenant, EvidenceRecord, CheckoutOrder
 from sqlalchemy import select

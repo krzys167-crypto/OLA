@@ -8,7 +8,7 @@ from sqlalchemy import select, text
 from app.main import app
 from app.database import SessionLocal
 from app.models import ApiKey, EvidenceRecord, Tenant
-from app.hashchain import verify_chain
+from app.igor_evidence_verifier import verify_chain
 from app.rules import RuleStatus, rule_cert_expiry_001, rule_core_hash_001
 
 
@@ -53,6 +53,18 @@ def test_ola_e2e_closed_environment():
         json={"record_type": "generic", "payload": {"x": 1}},
     )
     assert created.status_code == 200
+
+    forged_v4 = client.post(
+        "/evidence",
+        headers={"X-API-Key": key_a},
+        json={
+            "record_type": "generic",
+            "payload": {"__ola_evidence_v4__": {"version": 4}},
+        },
+    )
+    assert forged_v4.status_code == 400
+    assert forged_v4.json()["detail"] == "reserved evidence metadata"
+
     record = created.json()
     assert record["seq"] == 0
 
@@ -61,8 +73,9 @@ def test_ola_e2e_closed_environment():
     )
     assert owned.status_code == 200
     assert owned.json()["payload"]["x"] == 1
-    assert owned.json()["payload"]["__ola_evidence_v2__"] == {
-        "version": 2, "record_type": "generic", "producer": "tenant_api"
+    assert owned.json()["payload"]["__ola_evidence_v4__"] == {
+        "version": 4, "key_id": "pytest-v4-2026",
+        "record_type": "generic", "producer": "tenant_api"
     }
 
     cross_tenant = client.get(
