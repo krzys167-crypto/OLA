@@ -41,18 +41,18 @@ This is a **static marketing/enquiry page**, not evidence of a deployed OLA back
 
 **Do not treat the Vercel deployment as a production deployment of the current OLA repository.** Its source-to-repository relationship is UNKNOWN.
 
-## Repository landing-page artifact — PR #175
+## Repository landing-page artifact — PR #177
 
 The repository file `revenue/index.html` is a separate static artifact. Its previous version contained a hard-coded Stripe TEST URL despite the connected sandbox having no Payment Links. It was not confirmed as the source of the Vercel public page.
 
-PR #175:
+PR #177:
 - removes that unverified Stripe URL from the repository artifact;
 - marks €99 as a planned price, not an active Stripe Price;
 - replaces the clickable test link with a disabled checkout state;
 - marks the runtime label `CI-VERIFIED` rather than an unqualified `VERIFIED`;
 - adds a static guard and a regression test against reintroducing a hard-coded Stripe URL.
 
-**PR #175 does not update the existing Vercel deployment**, because that Vercel project is not linked to the OLA Git repository. No Vercel project, domain or deployment mutation was made.
+**PR #177 does not update the existing Vercel deployment**, because that Vercel project is not linked to the OLA Git repository. No Vercel project, domain or deployment mutation was made.
 
 ## Customer path and current commercial status
 
