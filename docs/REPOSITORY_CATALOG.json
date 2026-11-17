@@ -8,17 +8,17 @@
     "ola": {
       "full_name": "krzysztofcieciwa07-ship-it/OLA",
       "default_branch": "main",
-      "main_sha": "5e60c800b8135ad51aee6786396202e0c22d800e",
-      "branches": 195,
-      "open_pull_requests": 95,
-      "status": "CANONICAL_SOURCE_NOT_RELEASE_ACCEPTED"
+      "main_sha": "e0b5ca8eefb58cb151f2dddf61552c201bacabad",
+      "branches": 198,
+      "open_pull_requests": 92,
+      "status": "SOURCE_PRESENT_CI_PASS_12H_RUNTIME_VERIFIED_EVIDENCE_LIST_API_MERGED_NOT_RELEASE_ACCEPTED"
     },
     "vantage": {
       "full_name": "krzysztofcieciwa07-ship-it/vantage",
       "default_branch": "main",
       "main_sha": "991445100a3ddfae85bef0d0f9f7680373658d5f",
       "branches": 28,
-      "open_pull_requests": 9,
+      "open_pull_requests": 7,
       "status": "CANONICAL_PROTOTYPE_NOT_PRODUCTION_VERIFIED"
     }
   },
@@ -36,10 +36,10 @@
       "full_name": "krzysztofcieciwa07-ship-it/OLA",
       "role": "CANONICAL_CORE",
       "fork": false,
-      "status": "SOURCE_PRESENT_NOT_RELEASE_ACCEPTED",
-      "main_sha": "5e60c800b8135ad51aee6786396202e0c22d800e",
-      "branches": 195,
-      "open_pull_requests": 95
+      "status": "SOURCE_PRESENT_12H_RUNTIME_VERIFIED_NOT_RELEASE_ACCEPTED",
+      "main_sha": "e0b5ca8eefb58cb151f2dddf61552c201bacabad",
+      "branches": 198,
+      "open_pull_requests": 92
     },
     {
       "full_name": "krzysztofcieciwa07-ship-it/vantage",
@@ -48,7 +48,7 @@
       "status": "PROTOTYPE_NOT_PRODUCTION_VERIFIED",
       "main_sha": "991445100a3ddfae85bef0d0f9f7680373658d5f",
       "branches": 28,
-      "open_pull_requests": 9
+      "open_pull_requests": 7
     },
     {
       "full_name": "krzysztofcieciwa07-ship-it/ola-evidence-gateway",
@@ -244,8 +244,116 @@
   ],
   "current_open_pr_inventory": {
     "snapshot_date": "2026-11-12",
-    "ola": 95,
-    "vantage": 9,
-    "note": "Counts only. Open PRs include draft and stacked work; review each PR and dependency before merge or closure."
+    "snapshot_timestamp_utc": "2026-11-12T11:54:50Z",
+    "ola": 92,
+    "vantage": 7,
+    "note": "Live GitHub counts at snapshot time. OLA has 198 branches and 92 open PRs. No duplicate open-PR head SHAs. Five groups of identical branch head SHAs cover 18 refs and have no open PR; candidate refs recorded separately. PR #59 was superseded by #60; PR #58 was superseded by #226; PR #224 and #226 merged."
+  },
+  "snapshot_timestamp_utc": "2026-11-12T11:54:50Z",
+  "latest_verified_runtime": {
+    "workflow": "OLA 12h Autonomous Evidence Flow",
+    "run_id": 43210488311,
+    "source_sha": "e0b5ca8eefb58cb151f2dddf61552c201bacabad",
+    "status": "SUCCESS",
+    "evidence": [
+      "preflight success",
+      "real Ollama/NINA flow success",
+      "independent IGOR verification success",
+      "IGOR attestation verification success",
+      "fail-closed classification success"
+    ],
+    "date_utc": "2026-11-12T11:38:50Z",
+    "scope_note": "One successful 12h workflow run is not proof of full product release acceptance."
+  },
+  "cleanup_update": {
+    "closed_superseded_prs": [
+      {
+        "number": 59,
+        "replacement_pr": 60,
+        "evidence": "Replacement head was 106 commits ahead and 0 commits behind PR #59 head; branch and commits preserved."
+      },
+      {
+        "number": 58,
+        "replacement_pr": 226,
+        "evidence": "Tenant-scoped GET /evidence was ported to current main; legacy API-key fixture replaced with api_key_fingerprint; 21/21 checks passed; old branch preserved."
+      }
+    ],
+    "merged_prs": [
+      {
+        "number": 224,
+        "merge_commit_sha": "c2462b393ec6372e5a48da44a37481a96ae034ba",
+        "reason": "Pass required scoped GITHUB_TOKEN permissions to reusable 12h evidence chain."
+      },
+      {
+        "number": 226,
+        "merge_commit_sha": "e0b5ca8eefb58cb151f2dddf61552c201bacabad",
+        "reason": "Add tenant-scoped read-only evidence collection API with bounded pagination, authentication and tenant-isolation tests."
+      }
+    ],
+    "duplicate_branch_ref_groups": [
+      {
+        "head_sha": "6dff9c43ccd5a6892a50d1f59363d232b07ceafb",
+        "branches": [
+          "feat/ola-staging-bff-bootstrap-clean-20261108",
+          "integration/jev-decision-fabric-20261106"
+        ],
+        "open_prs": 0
+      },
+      {
+        "head_sha": "8e56b33df9a3e2806f3709fca90b07e4e595d28f",
+        "branches": [
+          "feat/runtime-image-attestation-20261107",
+          "integration/ola-first-five-closure-20261106",
+          "integration/replit-bff-recovery-20261107"
+        ],
+        "open_prs": 0
+      },
+      {
+        "head_sha": "c87cb3c8a798fece4ee18f73ecc648e397b23c24",
+        "branches": [
+          "fix/agent-runtime-minimal-2",
+          "fix/agent-runtime-minimal-3",
+          "fix/agent-runtime-minimal-4",
+          "fix/agent-runtime-minimal-5",
+          "fix/agent-runtime-minimal-7",
+          "fix/agent-runtime-minimal-8",
+          "fix/agent-runtime-minimal-9",
+          "fix/agent-runtime-minimal-10",
+          "fix/agent-runtime-minimal-11"
+        ],
+        "open_prs": 0
+      },
+      {
+        "head_sha": "3f39ff8c1b705b501d86fcfa9572604596906e65",
+        "branches": [
+          "fix/agent-runtime-source-binding-20261105",
+          "verify/pr170-final-head-20261105"
+        ],
+        "open_prs": 0
+      },
+      {
+        "head_sha": "9990e9f990cee87bc0d00c5c99566d4e436238f0",
+        "branches": [
+          "fix/final-production-gate-20261006",
+          "fix/final-production-gate-stage-20261006"
+        ],
+        "open_prs": 0
+      }
+    ],
+    "duplicate_branch_ref_count": 18,
+    "duplicate_branch_ref_groups_count": 5,
+    "branch_deletion": "NOT_PERFORMED_RULESET_BLOCKS_DELETION_AND_AVAILABLE_INTEGRATION_HAS_NO_DELETE_REF_ACTION",
+    "vantage_closed_superseded_prs": [
+      {
+        "number": 15,
+        "replacement": "existing SECURITY.md on main",
+        "reason": "Generic placeholder policy contained fictional supported-version values and incomplete report instructions; current main already has repo-specific policy."
+      },
+      {
+        "number": 13,
+        "replacement_pr": 14,
+        "reason": "PR #14 head is 8 commits ahead and 0 behind PR #13 head; all PR #13 history is included. Branch preserved."
+      }
+    ]
   }
 }

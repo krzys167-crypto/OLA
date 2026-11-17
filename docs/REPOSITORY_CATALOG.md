@@ -1,28 +1,28 @@
 # Katalog repozytoriów OLA di-OS — stan i źródło prawdy
 
-Snapshot: **2026-11-12** · kontrolowane konto GitHub: **krzysztofcieciwa07-ship-it** · zakres: 9 repozytoriów publicznych tego konta oraz wskazane repozytoria powiązane z kontem **krzys167-crypto**.
+Snapshot: **2026-11-12 11:54 UTC** · kontrolowane konto GitHub: **krzysztofcieciwa07-ship-it** · zakres: 9 repozytoriów publicznych tego konta oraz wskazane repozytoria powiązane z kontem **krzys167-crypto**.
 
-> Ten dokument jest rejestrem pochodzenia i odpowiedzialności, nie deklaracją gotowości produktu. STATUS ≠ CI ≠ RUNTIME ≠ VERIFIED. Wartości SHA i liczby gałęzi/PR są migawką z 2026-11-09. Nie wolno podejmować merge, usuwania repozytorium ani synchronizacji forków na podstawie samej nazwy.
+> Ten dokument jest rejestrem pochodzenia i odpowiedzialności, nie deklaracją gotowości produktu. STATUS ≠ CI ≠ RUNTIME ≠ VERIFIED. Wartości SHA oraz liczby gałęzi/PR zostały odświeżone z GitHub API 2026-11-12 11:54 UTC. Nie wolno podejmować merge, usuwania repozytorium ani synchronizacji forków na podstawie samej nazwy.
 
 ## 1. Jedno źródło prawdy dla własnych produktów
 
 | Produkt | Kanoniczne repozytorium | Główna gałąź / SHA | Gałęzie | Otwarte PR-y | Decyzja |
 |---|---|---|---:|---:|---|
-| OLA di-OS | [krzysztofcieciwa07-ship-it/OLA](https://github.com/krzysztofcieciwa07-ship-it/OLA) | main · 5e60c800b8135ad51aee6786396202e0c22d800e | 195 | 95 | **JEDYNE KANONICZNE REPO OLA** |
-| Vantage | [krzysztofcieciwa07-ship-it/vantage](https://github.com/krzysztofcieciwa07-ship-it/vantage) | main · 991445100a3ddfae85bef0d0f9f7680373658d5f | 28 | 9 | **JEDYNE KANONICZNE REPO VANTAGE** |
+| OLA di-OS | [krzysztofcieciwa07-ship-it/OLA](https://github.com/krzysztofcieciwa07-ship-it/OLA) | main · e0b5ca8eefb58cb151f2dddf61552c201bacabad | 198 | 92 | **JEDYNE KANONICZNE REPO OLA** |
+| Vantage | [krzysztofcieciwa07-ship-it/vantage](https://github.com/krzysztofcieciwa07-ship-it/vantage) | main · 991445100a3ddfae85bef0d0f9f7680373658d5f | 28 | 7 | **JEDYNE KANONICZNE REPO VANTAGE** |
 
 Reguła od teraz: nowe zmiany OLA rozwijamy wyłącznie w kanonicznym repozytorium OLA, a Vantage wyłącznie w kanonicznym repozytorium Vantage. Drugie konto nie jest równoległym miejscem rozwoju. Nie oznacza to jednak, że każda jego gałąź jest zbędna — patrz sekcja 3.
 
 ### Stan porządku w repo OLA
 
-- 195 gałęzi i 95 otwartych pull requestów (odczyt GitHub API, 2026-11-12). Wiele PR-ów jest roboczych lub opartych na innych gałęziach; nie wolno ich masowo scalać ani zamykać bez klasyfikacji zależności i unikalnych commitów.
+- 198 gałęzi i 92 otwarte pull requesty (odczyt GitHub API, 2026-11-12 11:38 UTC). Żadna para otwartych PR-ów nie ma identycznego head SHA. W całym repo znaleziono 5 grup identycznych head commitów obejmujących 18 gałęzi; żadna z nich nie ma przypiętego otwartego PR-a. Kandydaci są wyszczególnieni w rejestrze JSON. Reguła repozytorium blokuje usuwanie refów, a dostępna integracja nie udostępnia operacji DELETE — gałęzie zachowano.
 - Klasyczna ochrona `main` nie jest aktywna (`protected: false`). Aktywny ruleset 25853037 blokuje usuwanie gałęzi i force-push, ale nie wymaga niezależnego review ani obowiązkowych kontroli CI.
 - PR #212 z ujednoliceniem standardu repozytorium został scalony 2026-11-11 do SHA `5e60c800b8135ad51aee6786396202e0c22d800e`. CI na tym SHA przeszło; nie jest to samo w sobie dowód wdrożenia produktu.
-- Aktualny `main` to SHA `5e60c800…`. Najnowszy `OLA 12h Autonomous Evidence Flow` miał `startup_failure` bez utworzenia jobów; przyczyna nie została zwrócona przez GitHub API. `OLA 24x7 Watchdog` zakończył się sukcesem. Traktować automatyczny runtime flow jako wymagający osobnej diagnostyki.
+- Aktualny `main` to SHA `e0b5ca8eefb58cb151f2dddf61552c201bacabad`. Historyczny run `43203128596` wykazał `startup_failure`; naprawa uprawnień reusable workflow została scalona w PR #224, a run `43207319361` zakończył się `SUCCESS`. PR #226 dodał tenant-scoped `GET /evidence` z read-only i paginacją; przeszedł 21/21 kontroli i został scalony. Po scaleniu run `43210488311` ponownie potwierdził pełny przepływ 12h: preflight, Ollama/NINA, niezależny IGOR, atestację i fail-closed classification. To potwierdza konkretne przepływy runtime, nie całe wdrożenie produktu.
 
 ### Stan porządku w repo Vantage
 
-- 28 gałęzi i 9 otwartych PR-ów (odczyt GitHub API, 2026-11-12).
+- 28 gałęzi i 7 otwartych PR-ów (odczyt GitHub API, 2026-11-12 11:54 UTC). PR #15 zamknięto jako zastąpiony istniejącą polityką bezpieczeństwa w `main`; PR #13 zamknięto jako zastąpiony przez #14, który zawiera całą jego historię oraz 8 kolejnych commitów.
 - Klasyczna ochrona `main` jest wyłączona (`protected: false`); nie znaleziono aktywnego rulesetu repozytorium.
 - PR #32 ze standardem repozytorium i poprawką weryfikacji provenance został scalony 2026-11-11 do SHA `991445100a3ddfae85bef0d0f9f7680373658d5f`. `Vantage Verify`, niezależny verifier provenance i CFR-18 przeszły na `main`.
 - PR #19 pozostaje otwarty jako Draft. Pozostałe PR-y i gałęzie CFR-18 wymagają klasyfikacji przed zamknięciem lub usunięciem.
