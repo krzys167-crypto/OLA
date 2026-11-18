@@ -495,14 +495,19 @@ def create_agent_run(body: dict, background: BackgroundTasks, x_api_key: str | N
 @app.post("/blogger/metadata")
 async def blogger_metadata_endpoint(body: dict, x_api_key: str | None = Header(default=None)):
     """Authenticated, tenant-scoped, read-only Blogger metadata lookup."""
-    tenant_id = tenant_from_key(x_api_key)
+    tenant_id, initiator_key_id = identity_from_key(x_api_key)
     if not isinstance(body, dict) or set(body) != {"blog_id"}:
         raise HTTPException(status_code=400, detail="body must contain only blog_id")
     blog_id = body.get("blog_id")
     if not isinstance(blog_id, str) or not re.fullmatch(r"[0-9]{1,32}", blog_id):
         raise HTTPException(status_code=400, detail="blog_id must be a numeric string of 1 to 32 digits")
     try:
-        return await run_in_threadpool(run_blogger_metadata, tenant_id, blog_id)
+        return await run_in_threadpool(
+            run_blogger_metadata,
+            tenant_id,
+            blog_id,
+            initiator_key_id=initiator_key_id,
+        )
     except HTTPException:
         raise
     except Exception:
@@ -512,26 +517,58 @@ async def blogger_metadata_endpoint(body: dict, x_api_key: str | None = Header(d
 
 @app.post("/blogger/review")
 def blogger_review_endpoint(body: dict, x_api_key: str | None = Header(default=None)):
-    """Record an explicit tenant-key-authenticated review; never executes Blogger writes."""
-    tenant_id = tenant_from_key(x_api_key)
-    required = {"run_id", "blog_id", "human_approved", "human_actor", "human_reason"}
+    """Record a one-time review from a different authenticated tenant API-key principal.
+
+    The reviewer identity is derived from the authenticated key ID; a caller
+    cannot claim another person's name in the request body.
+    """
+    tenant_id, reviewer_key_id = identity_from_key(x_api_key)
+    required = {"run_id", "blog_id", "human_approved", "human_reason"}
     if not isinstance(body, dict) or set(body) != required:
-        raise HTTPException(status_code=400, detail="body must contain exactly run_id, blog_id, human_approved, human_actor, human_reason")
+        raise HTTPException(
+            status_code=400,
+            detail="body must contain exactly run_id, blog_id, human_approved, human_reason",
+        )
     run_id = body.get("run_id")
     blog_id = body.get("blog_id")
     approved = body.get("human_approved")
-    actor = body.get("human_actor")
-    reason = body.get("human_reason")
-    if not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f-]{36}", run_id):
-        raise HTTPException(status_code=400, detail="run_id must be a UUID")
+    reason = _visible_text(body.get("human_reason"), "human_reason", MAX_HUMAN_REASON, required=True)
+
+    if not isinstance(run_id, str):
+        raise HTTPException(status_code=400, detail="run_id must be a canonical UUID")
+    try:
+        if str(uuid.UUID(run_id)) != run_id.lower():
+            raise ValueError("non-canonical UUID")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="run_id must be a canonical UUID") from None
     if not isinstance(blog_id, str) or not re.fullmatch(r"[0-9]{1,32}", blog_id):
         raise HTTPException(status_code=400, detail="blog_id must be a numeric string")
     if not isinstance(approved, bool):
         raise HTTPException(status_code=400, detail="human_approved must be a JSON boolean")
-    actor = _visible_text(actor, "human_actor", MAX_HUMAN_ACTOR, required=True)
-    reason = _visible_text(reason, "human_reason", MAX_HUMAN_REASON, required=True)
 
     records = pipeline_bridge.load_chain(tenant_id)
+    start_payload = None
+    for row in records:
+        try:
+            payload = json.loads(row.get("payload_json", ""))
+        except (TypeError, ValueError):
+            continue
+        if (
+            row.get("record_type") == "blogger.execution.started"
+            and isinstance(payload, dict)
+            and payload.get("run_id") == run_id
+        ):
+            start_payload = payload
+            break
+
+    if not isinstance(start_payload, dict):
+        raise HTTPException(status_code=404, detail="Blogger run not found for this tenant")
+    initiator_key_id = start_payload.get("initiator_key_id")
+    if not isinstance(initiator_key_id, str) or not initiator_key_id:
+        raise HTTPException(status_code=409, detail="run lacks authenticated initiator identity")
+    if reviewer_key_id == initiator_key_id:
+        raise HTTPException(status_code=403, detail="review requires a different tenant API key")
+
     for row in records:
         if row.get("record_type") != "blogger.human_review":
             continue
@@ -542,8 +579,14 @@ def blogger_review_endpoint(body: dict, x_api_key: str | None = Header(default=N
         if isinstance(prior_review, dict) and prior_review.get("run_id") == run_id:
             raise HTTPException(status_code=409, detail="this Blogger run already has a review record")
 
-    verification = verify_blogger_evidence(records, run_id, blog_id, tenant_id)
-    candidate_status = "VERIFIED" if verification.get("status") == "VERIFIED" else verification.get("status", "UNKNOWN")
+    verification = verify_blogger_evidence(
+        records, run_id, blog_id, tenant_id, expected_initiator_key_id=initiator_key_id
+    )
+    candidate_status = (
+        "VERIFIED" if verification.get("status") == "VERIFIED"
+        else verification.get("status", "UNKNOWN")
+    )
+    actor = f"api-key:{reviewer_key_id}"
     gate = HumanGate.evaluate(candidate_status, ReviewDecision(approved, actor, reason))
     pipeline_bridge.append_evidence(
         tenant_id,
@@ -552,19 +595,22 @@ def blogger_review_endpoint(body: dict, x_api_key: str | None = Header(default=N
             "run_id": run_id,
             "blog_id": blog_id,
             "actor": actor,
+            "reviewer_key_id": reviewer_key_id,
+            "initiator_key_id": initiator_key_id,
             "approved": approved,
             "reason": reason,
             "candidate_status": candidate_status,
             "gate_status": gate.status,
             "gate_reason": gate.reason,
-            "identity_assurance": "caller_attested_by_tenant_api_key",
+            "identity_assurance": "authenticated_api_key_principal_only_not_individual_identity",
             "execution": "NOT_PERFORMED",
         },
     )
     return {
-        "status": "HUMAN_APPROVED" if gate.status == "VERIFIED" else "BLOCK",
+        "status": "REVIEW_APPROVED_BY_SEPARATE_KEY" if gate.status == "VERIFIED" else "REVIEW_REJECTED",
         "verification": verification,
         "human_gate": {"status": gate.status, "reason": gate.reason},
+        "reviewer_identity": "authenticated API-key principal; natural-person identity not established",
         "execution": "NOT_PERFORMED",
     }
 
