@@ -181,3 +181,39 @@ def test_adapter_caps_streamed_response_body():
     client = FakeClient(oversized)
     with pytest.raises(BloggerAdapterError, match="UPSTREAM_RESPONSE_TOO_LARGE"):
         get_blog_metadata("123", api_key="test-key", client=client)
+
+
+
+def test_blogger_capability_uses_igor_verification(monkeypatch):
+    records, append = _append_factory("tenant-1")
+    monkeypatch.setattr(capability, "append_evidence", append)
+    monkeypatch.setattr(capability, "load_chain", lambda tenant_id: records)
+
+    def fake_adapter(blog_id):
+        result = {
+            "success": True, "verified": True, "blog_id": blog_id,
+            "operation": "blogs.get", "blog_url": "https://example.com/",
+        }
+        result["result_sha256"] = capability._digest_result(result)
+        return result
+
+    out = capability.run_blogger_metadata("tenant-1", "123", adapter=fake_adapter)
+    assert out["verification"]["status"] == "VERIFIED"
+    assert out["verification"]["checks"]["igor_capability"] is True
+
+
+def test_blogger_registry_is_central_and_never_falls_through_to_generic_runtime(monkeypatch):
+    from app.nina import NinaOrchestrator, NinaTask, REGISTERED_CAPABILITIES
+
+    assert capability.TOOL_NAME in REGISTERED_CAPABILITIES
+    task = NinaTask.create("tenant-1", "read metadata", [capability.TOOL_NAME])
+    nina = NinaOrchestrator()
+    assert nina.plan(task).status == "ALLOW"
+
+    def forbidden_runtime(*args, **kwargs):
+        raise AssertionError("dedicated capability reached generic runtime")
+
+    monkeypatch.setattr("app.nina.run_agent_task", forbidden_runtime)
+    result = nina.execute(task)
+    assert result["status"] == "DISPATCH_REQUIRED"
+    assert result["capabilities"] == (capability.TOOL_NAME,)
