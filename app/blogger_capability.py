@@ -9,6 +9,7 @@ from typing import Any
 
 from .blogger_adapter import BloggerAdapterError, get_blog_metadata
 from .hashchain import verify_chain
+from .igor import IgorVerifier
 from .nina import NinaOrchestrator, NinaTask
 from .pipeline_bridge import append_evidence, load_chain
 
@@ -36,10 +37,7 @@ def verify_blogger_evidence(
     if not isinstance(expected_tenant_id, str) or not expected_tenant_id:
         return {"status": "BLOCK", "reason": "invalid expected tenant", "checks": {"tenant_binding": False}}
 
-    chain_ok, chain_reason = verify_chain(records)
-    if not chain_ok:
-        return {"status": "BLOCK", "reason": chain_reason, "checks": {"chain": False}}
-
+    igor = IgorVerifier().verify_capability_records(\n        records, expected_tenant_id=expected_tenant_id, expected_run_id=run_id,\n        expected_record_types=(START, RESULT, END), expected_bindings={"blog_id": blog_id},\n    )\n    chain_ok, chain_reason = verify_chain(records)\n    if not chain_ok:\n        return {"status": "BLOCK", "reason": chain_reason, "checks": {"chain": False, "igor_capability": False}}\n
     scoped = []
     for row in records:
         try:
@@ -62,6 +60,7 @@ def verify_blogger_evidence(
 
     checks = {
         "chain": True,
+        "igor_capability": igor.status == "VERIFIED",
         "event_order": True,
         "tenant_binding": all(
             row.get("tenant_id") == expected_tenant_id
