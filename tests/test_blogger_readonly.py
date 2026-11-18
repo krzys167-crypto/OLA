@@ -7,6 +7,7 @@ import pytest
 from app.blogger_adapter import BloggerAdapterError, get_blog_metadata
 from app.hashchain import GENESIS_HASH, compute_record_hash, canonical_json
 from app import blogger_capability as capability
+from app.nina import NinaOrchestrator, NinaTask, REGISTERED_TOOLS
 
 
 class FakeClient:
@@ -27,6 +28,19 @@ def response(status=200, data=None, headers=None):
     request = httpx.Request("GET", "https://www.googleapis.com/blogger/v3/blogs/123")
     return httpx.Response(status, json=data, headers=headers or {"content-type":"application/json"},
                           request=request)
+
+
+def test_blogger_tool_is_registered_in_ninas_central_allow_list():
+    assert capability.TOOL_NAME in REGISTERED_TOOLS
+    task = NinaTask.create("tenant-1", "read metadata", [capability.TOOL_NAME])
+    decision = NinaOrchestrator().plan(task)
+    assert decision.status == "ALLOW"
+    assert decision.allowed_tools == (capability.TOOL_NAME,)
+
+
+def test_unregistered_tool_remains_blocked_by_default_nina_registry():
+    task = NinaTask.create("tenant-1", "unexpected tool", ["unregistered.external"])
+    assert NinaOrchestrator().plan(task).status == "BLOCK"
 
 
 def test_adapter_reads_only_fixed_blogger_endpoint_and_hashes_result():
@@ -94,6 +108,7 @@ def test_capability_records_and_verifies_success_but_requires_human_review(monke
     assert out["execution"] == "NOT_PERFORMED"
     assert out["verification"]["status"] == "VERIFIED"
     assert len(records) == 3
+    assert all(record["tenant_id"] == "tenant-1" for record in records)
 
 
 def test_capability_blocks_bad_blog_id_without_evidence_or_network(monkeypatch):
@@ -116,6 +131,34 @@ def test_semantic_verifier_rejects_tampered_result_digest(monkeypatch):
     verdict = capability.verify_blogger_evidence(records,"r1","123","tenant-1")
     assert verdict["status"] == "BLOCK"
     assert verdict["checks"]["result_digest"] is False
+
+def test_evidence_verifier_ignores_other_run_events_but_binds_current_tenant():
+    records, append = _append_factory("tenant-1")
+    append("tenant-1", "unrelated.event", {"run_id": "another-run"})
+    result = {
+        "success": True,
+        "verified": True,
+        "blog_id": "123",
+        "operation": "blogs.get",
+        "blog_url": "https://example.com/",
+    }
+    result["result_sha256"] = capability._digest_result(result)
+    append("tenant-1", capability.START, {
+        "run_id": "current-run", "blog_id": "123", "tool": capability.TOOL_NAME
+    })
+    append("tenant-1", capability.RESULT, {
+        "run_id": "current-run", "blog_id": "123",
+        "operation": "blogs.get", "result": result
+    })
+    append("tenant-1", capability.END, {
+        "run_id": "current-run", "blog_id": "123", "status": "REVIEW_REQUIRED"
+    })
+    verdict = capability.verify_blogger_evidence(
+        records, "current-run", "123", "tenant-1"
+    )
+    assert verdict["status"] == "VERIFIED"
+    assert verdict["checks"]["tenant_binding"] is True
+
 
 def test_adapter_caps_streamed_response_body():
     request = httpx.Request("GET", "https://www.googleapis.com/blogger/v3/blogs/123")
