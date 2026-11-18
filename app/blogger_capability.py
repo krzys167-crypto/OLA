@@ -15,7 +15,7 @@ def _digest_result(result: dict[str, Any]) -> str:
     body = {k:v for k,v in result.items() if k != "result_sha256"}
     return hashlib.sha256(json.dumps(body,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
 
-def verify_blogger_evidence(records: list[dict], run_id: str, blog_id: str) -> dict:
+def verify_blogger_evidence(records: list[dict], run_id: str, blog_id: str, expected_tenant_id: str) -> dict:
     ok, reason = verify_chain(records)
     if not ok: return {"status":"BLOCK","reason":reason,"checks":{"chain":False}}
     scoped=[]
@@ -30,11 +30,12 @@ def verify_blogger_evidence(records: list[dict], run_id: str, blog_id: str) -> d
     start,result_event,end=[x[1] for x in scoped]
     result=result_event.get("result")
     checks={"chain":True,"event_order":True,
-        "tenant_binding":bool(records) and all(r.get("tenant_id")==records[0].get("tenant_id") for r in records),
+        "tenant_binding":bool(records) and all(r.get("tenant_id")==expected_tenant_id for r in records),
         "blog_id_binding":all(p.get("blog_id")==blog_id for p in (start,result_event,end)),
         "run_binding":all(p.get("run_id")==run_id for p in (start,result_event,end)),
         "terminal_state":end.get("status")=="REVIEW_REQUIRED",
-        "operation_binding":result_event.get("operation")=="blogs.get",
+        "operation_binding":result_event.get("operation")=="blogs.get" and isinstance(result,dict) and result.get("operation")=="blogs.get",
+        "result_identity":isinstance(result,dict) and result.get("success") is True and result.get("verified") is True and result.get("blog_id")==blog_id and isinstance(result.get("blog_url"),str) and result.get("blog_url","").startswith("https://"),
         "result_digest":isinstance(result,dict) and result.get("result_sha256")==_digest_result(result)}
     if not all(checks.values()):
         return {"status":"BLOCK","reason":"Blogger evidence semantic verification failed","checks":checks}
@@ -55,11 +56,16 @@ def run_blogger_metadata(tenant_id: str, blog_id: str, *, adapter=get_blog_metad
             raise BloggerAdapterError("ADAPTER_RESULT_INVALID")
         append_evidence(tenant_id,RESULT,{"run_id":run_id,"blog_id":blog_id,"operation":"blogs.get","result":data})
         append_evidence(tenant_id,END,{"run_id":run_id,"blog_id":blog_id,"status":"REVIEW_REQUIRED"})
-        verification=verify_blogger_evidence(load_chain(tenant_id),run_id,blog_id)
+        verification=verify_blogger_evidence(load_chain(tenant_id),run_id,blog_id,tenant_id)
         return {"status":"REVIEW_REQUIRED" if verification["status"]=="VERIFIED" else verification["status"],
                 "run_id":run_id,"blog_id":blog_id,"result":data,"verification":verification,
                 "human_gate":"REVIEW_REQUIRED","execution":"NOT_PERFORMED"}
     except BloggerAdapterError as exc:
         append_evidence(tenant_id,END,{"run_id":run_id,"blog_id":blog_id,"status":"BLOCK","error":exc.code})
         return {"status":"BLOCK","run_id":run_id,"blog_id":blog_id,"reason":exc.code,
+                "human_gate":"BLOCK","execution":"NOT_PERFORMED"}
+    except Exception:
+        # Never expose upstream exception text, credentials, or database details.
+        append_evidence(tenant_id,END,{"run_id":run_id,"blog_id":blog_id,"status":"BLOCK","error":"INTERNAL_ERROR"})
+        return {"status":"BLOCK","run_id":run_id,"blog_id":blog_id,"reason":"INTERNAL_ERROR",
                 "human_gate":"BLOCK","execution":"NOT_PERFORMED"}
