@@ -280,3 +280,39 @@ def test_blogger_review_endpoint_reverifies_and_requires_a_separate_key(monkeypa
             x_api_key="reviewer-token",
         )
     assert spoofed.value.status_code == 400
+
+
+def test_igor_capability_verifier_rejects_cross_tenant_chain():
+    records, append = _append_factory("tenant-1")
+    result = {
+        "success": True, "verified": True, "blog_id": "123",
+        "operation": "blogs.get", "blog_url": "https://example.com/",
+    }
+    result["result_sha256"] = capability._digest_result(result)
+    append("tenant-1", capability.START, {
+        "run_id": "tenant-run", "blog_id": "123", "tool": capability.TOOL_NAME,
+    })
+    append("tenant-1", capability.RESULT, {
+        "run_id": "tenant-run", "blog_id": "123",
+        "operation": "blogs.get", "result": result,
+    })
+    append("tenant-1", capability.END, {
+        "run_id": "tenant-run", "blog_id": "123", "status": "REVIEW_REQUIRED",
+    })
+    verdict = capability.verify_blogger_evidence(
+        records, "tenant-run", "123", "tenant-2"
+    )
+    assert verdict["status"] == "BLOCK"
+    assert verdict["checks"]["igor_capability"] is False
+
+
+def test_adapter_does_not_follow_upstream_redirect():
+    client = FakeClient(response(
+        status=302,
+        data={"id": "123", "url": "https://example.com/"},
+        headers={"content-type": "application/json", "location": "https://attacker.example/"},
+    ))
+    with pytest.raises(BloggerAdapterError):
+        get_blog_metadata("123", api_key="test-key", client=client)
+    assert len(client.calls) == 1
+    assert str(client.calls[0][0].url) == "https://www.googleapis.com/blogger/v3/blogs/123"
