@@ -53,10 +53,12 @@ def get_blog_metadata(blog_id: str, *, api_key: str | None = None,
                 if attempt == 2: raise BloggerAdapterError("UPSTREAM_UNAVAILABLE") from None
                 time.sleep(0.1 * (attempt + 1)); continue
             if response.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                response.close()
                 time.sleep(0.1 * (attempt + 1)); continue
             break
         status = response.status_code
         if status != 200:
+            response.close()
             code = {400:"UPSTREAM_BAD_REQUEST",401:"UPSTREAM_UNAUTHORIZED",403:"UPSTREAM_FORBIDDEN",
                     404:"BLOG_NOT_FOUND",429:"UPSTREAM_RATE_LIMITED"}.get(status,"UPSTREAM_ERROR")
             raise BloggerAdapterError(code, status)
