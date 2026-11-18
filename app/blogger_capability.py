@@ -27,7 +27,8 @@ def _digest_result(result: dict[str, Any]) -> str:
 
 
 def verify_blogger_evidence(
-    records: list[dict], run_id: str, blog_id: str, expected_tenant_id: str
+    records: list[dict], run_id: str, blog_id: str, expected_tenant_id: str,
+    expected_initiator_key_id: str | None = None,
 ) -> dict:
     """Verify this capability run through IGOR and Blogger-specific semantic checks.
 
@@ -94,6 +95,10 @@ def verify_blogger_evidence(
             for payload in (start, result_event, end)
         ),
         "tool_binding": start.get("tool") == TOOL_NAME,
+        "initiator_binding": (
+            expected_initiator_key_id is None
+            or start.get("initiator_key_id") == expected_initiator_key_id
+        ),
         "terminal_state": end.get("status") == "REVIEW_REQUIRED",
         "operation_binding": (
             result_event.get("operation") == "blogs.get"
@@ -137,7 +142,8 @@ def verify_blogger_evidence(
 
 
 def run_blogger_metadata(
-    tenant_id: str, blog_id: str, *, adapter=get_blog_metadata
+    tenant_id: str, blog_id: str, *, adapter=get_blog_metadata,
+    initiator_key_id: str | None = None
 ) -> dict:
     if not isinstance(blog_id, str) or not BLOG_ID_RE.fullmatch(blog_id):
         return {"status": "BLOCK", "reason": "INVALID_BLOG_ID", "human_gate": "BLOCK"}
@@ -156,7 +162,12 @@ def run_blogger_metadata(
     append_evidence(
         tenant_id,
         START,
-        {"run_id": run_id, "blog_id": blog_id, "tool": TOOL_NAME},
+        {
+            "run_id": run_id,
+            "blog_id": blog_id,
+            "tool": TOOL_NAME,
+            "initiator_key_id": initiator_key_id,
+        },
     )
     try:
         data = adapter(blog_id)
