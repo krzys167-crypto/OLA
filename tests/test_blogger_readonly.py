@@ -7,7 +7,7 @@ import pytest
 from app.blogger_adapter import BloggerAdapterError, get_blog_metadata
 from app.hashchain import GENESIS_HASH, compute_record_hash, canonical_json
 from app import blogger_capability as capability
-from app.nina import NinaOrchestrator, NinaTask, REGISTERED_TOOLS
+from app.nina import NinaOrchestrator, NinaTask, REGISTERED_CAPABILITIES
 
 
 class FakeClient:
@@ -31,11 +31,24 @@ def response(status=200, data=None, headers=None):
 
 
 def test_blogger_tool_is_registered_in_ninas_central_allow_list():
-    assert capability.TOOL_NAME in REGISTERED_TOOLS
+    assert capability.TOOL_NAME in REGISTERED_CAPABILITIES
     task = NinaTask.create("tenant-1", "read metadata", [capability.TOOL_NAME])
     decision = NinaOrchestrator().plan(task)
     assert decision.status == "ALLOW"
     assert decision.allowed_tools == (capability.TOOL_NAME,)
+
+
+def test_dedicated_capability_never_falls_through_to_generic_runtime(monkeypatch):
+    import app.nina as nina_module
+
+    monkeypatch.setattr(
+        nina_module, "run_agent_task",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("generic runtime invoked")),
+    )
+    task = NinaTask.create("tenant-1", "read metadata", [capability.TOOL_NAME])
+    result = NinaOrchestrator().execute(task)
+    assert result["status"] == "DISPATCH_REQUIRED"
+    assert result["capabilities"] == (capability.TOOL_NAME,)
 
 
 def test_unregistered_tool_remains_blocked_by_default_nina_registry():
@@ -107,6 +120,7 @@ def test_capability_records_and_verifies_success_but_requires_human_review(monke
     assert out["human_gate"] == "REVIEW_REQUIRED"
     assert out["execution"] == "NOT_PERFORMED"
     assert out["verification"]["status"] == "VERIFIED"
+    assert out["verification"]["checks"]["igor_capability"] is True
     assert len(records) == 3
     assert all(record["tenant_id"] == "tenant-1" for record in records)
 
