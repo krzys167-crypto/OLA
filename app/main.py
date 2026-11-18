@@ -16,7 +16,7 @@ from .models import Tenant, ApiKey, EvidenceRecord, StripeEvent
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
 from .agent_runtime import run_agent_task, task_is_computable
 from .business_runtime import run_invoice_task, MAX_INVOICE_BYTES
-from .nina import NinaOrchestrator, NinaTask
+from .nina import NinaOrchestrator, NinaTask, REGISTERED_CAPABILITIES
 from .igor import IgorVerifier
 from .replay import build_replay, verify_replay
 from .human_gate import HumanGate, ReviewDecision
@@ -528,6 +528,18 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
             "replay": [],
             "replay_verification": {"status": "UNKNOWN", "reason": "execution did not start"},
             "human_gate": {"status": "BLOCK", "reason": "NINA blocked execution"},
+            "status": "BLOCK",
+        }
+
+    if any(tool in REGISTERED_CAPABILITIES for tool in nina_task.requested_tools):
+        return {
+            "task_id": nina_task.task_id,
+            "nina": {"status": "DISPATCH_REQUIRED", "reason": "dedicated capabilities must use their bounded endpoint"},
+            "igor": {"status": "UNKNOWN", "reason": "generic runtime was not started"},
+            "provenance": {"status": "NOT_CREATED"},
+            "replay": [],
+            "replay_verification": {"status": "UNKNOWN", "reason": "dedicated dispatcher required"},
+            "human_gate": {"status": "BLOCK", "reason": "generic /nina-run cannot execute dedicated capabilities"},
             "status": "BLOCK",
         }
 
