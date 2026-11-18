@@ -6,6 +6,7 @@
 - No publish, edit, delete, arbitrary URL, arbitrary method, shell, or arbitrary outbound destination.
 - API key comes from GOOGLE_BLOGGER_API_KEY and is sent in X-Goog-Api-Key.
 - No API key or upstream response body is returned or logged.
+- Upstream response bytes are streamed and capped at 65,536 bytes before JSON parsing.
 
 ## OLA integration boundary
 app/blogger_capability.py is a dedicated capability dispatcher. It asks NINA's allow-list to authorize blogger.read_metadata, calls the fixed adapter, and appends start/result/end events using the existing pipeline_bridge tenant evidence chain.
