@@ -13,8 +13,11 @@ class FakeClient:
     def __init__(self, response=None, error=None):
         self.response, self.error, self.calls = response, error, []
 
-    def get(self, url, headers):
-        self.calls.append((url, headers))
+    def build_request(self, method, url, headers):
+        return httpx.Request(method, url, headers=headers)
+
+    def send(self, request, stream=False):
+        self.calls.append((request, stream))
         if self.error:
             raise self.error
         return self.response
@@ -33,8 +36,9 @@ def test_adapter_reads_only_fixed_blogger_endpoint_and_hashes_result():
     assert result["operation"] == "blogs.get"
     assert result["blog_id"] == "123"
     assert result["result_sha256"]
-    assert client.calls[0][0] == "https://www.googleapis.com/blogger/v3/blogs/123"
-    assert client.calls[0][1]["X-Goog-Api-Key"] == "test-key"
+    assert str(client.calls[0][0].url) == "https://www.googleapis.com/blogger/v3/blogs/123"
+    assert client.calls[0][0].headers["X-Goog-Api-Key"] == "test-key"
+    assert client.calls[0][1] is True
 
 
 def test_adapter_rejects_invalid_blog_id_before_network():
