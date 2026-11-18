@@ -4,7 +4,13 @@ import uuid
 from .agent_runtime import run_agent_task
 
 
-REGISTERED_TOOLS = ("safe_expression", "local_mcp_tool_registry.sha256")
+# Central capability allow-list. A capability must be registered here before
+# any dispatcher can ask NINA to authorize it.
+REGISTERED_TOOLS = (
+    "safe_expression",
+    "local_mcp_tool_registry.sha256",
+    "blogger.read_metadata",
+)
 
 
 @dataclass(frozen=True)
@@ -40,15 +46,14 @@ class NinaDecision:
 class NinaOrchestrator:
     """Bounded orchestration facade over the existing OLA runtime.
 
-    NINA decides which registered capabilities may be requested. It does not
-    manufacture verification and it does not bypass the OLA execution gate.
+    NINA decides which centrally registered capabilities may be requested.
+    It does not manufacture verification or bypass the OLA execution gate.
     """
 
     def __init__(self, registered_tools: tuple[str, ...] = REGISTERED_TOOLS):
         self._registered_tools = tuple(registered_tools)
 
     def plan(self, task: NinaTask) -> NinaDecision:
-        # a tool name that is not a string is never registered (and must not break the message below)
         unknown = tuple(tool for tool in task.requested_tools if tool not in self._registered_tools)
         if unknown:
             return NinaDecision(
