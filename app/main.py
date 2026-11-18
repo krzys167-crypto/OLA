@@ -493,7 +493,7 @@ def create_agent_run(body: dict, background: BackgroundTasks, x_api_key: str | N
 
 
 @app.post("/blogger/metadata")
-def blogger_metadata_endpoint(body: dict, x_api_key: str | None = Header(default=None)):
+async def blogger_metadata_endpoint(body: dict, x_api_key: str | None = Header(default=None)):
     """Authenticated, tenant-scoped, read-only Blogger metadata lookup."""
     tenant_id = tenant_from_key(x_api_key)
     if not isinstance(body, dict) or set(body) != {"blog_id"}:
@@ -502,7 +502,7 @@ def blogger_metadata_endpoint(body: dict, x_api_key: str | None = Header(default
     if not isinstance(blog_id, str) or not re.fullmatch(r"[0-9]{1,32}", blog_id):
         raise HTTPException(status_code=400, detail="blog_id must be a numeric string of 1 to 32 digits")
     try:
-        return run_in_threadpool(run_blogger_metadata, tenant_id, blog_id)
+        return await run_in_threadpool(run_blogger_metadata, tenant_id, blog_id)
     except HTTPException:
         raise
     except Exception:
