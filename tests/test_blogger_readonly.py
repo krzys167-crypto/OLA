@@ -116,3 +116,11 @@ def test_semantic_verifier_rejects_tampered_result_digest(monkeypatch):
     verdict = capability.verify_blogger_evidence(records,"r1","123","tenant-1")
     assert verdict["status"] == "BLOCK"
     assert verdict["checks"]["result_digest"] is False
+
+def test_adapter_caps_streamed_response_body():
+    request = httpx.Request("GET", "https://www.googleapis.com/blogger/v3/blogs/123")
+    oversized = httpx.Response(200, content=b" " * 65_537,
+                               headers={"content-type":"application/json"}, request=request)
+    client = FakeClient(oversized)
+    with pytest.raises(BloggerAdapterError, match="UPSTREAM_RESPONSE_TOO_LARGE"):
+        get_blog_metadata("123", api_key="test-key", client=client)
