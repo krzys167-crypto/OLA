@@ -47,7 +47,8 @@ def get_blog_metadata(blog_id: str, *, api_key: str | None = None,
         response = None
         for attempt in range(3):
             try:
-                response = http.get(BASE_URL + blog_id, headers=headers)
+                request = http.build_request("GET", BASE_URL + blog_id, headers=headers)
+                response = http.send(request, stream=True)
             except (httpx.TimeoutException, httpx.TransportError):
                 if attempt == 2: raise BloggerAdapterError("UPSTREAM_UNAVAILABLE") from None
                 time.sleep(0.1 * (attempt + 1)); continue
@@ -60,11 +61,22 @@ def get_blog_metadata(blog_id: str, *, api_key: str | None = None,
                     404:"BLOG_NOT_FOUND",429:"UPSTREAM_RATE_LIMITED"}.get(status,"UPSTREAM_ERROR")
             raise BloggerAdapterError(code, status)
         if "application/json" not in response.headers.get("content-type","").lower():
+            response.close()
             raise BloggerAdapterError("UPSTREAM_INVALID_CONTENT_TYPE", status)
-        if len(response.content) > MAX_BODY_BYTES:
+        declared = response.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+            response.close()
             raise BloggerAdapterError("UPSTREAM_RESPONSE_TOO_LARGE", status)
-        try: data = response.json()
-        except ValueError: raise BloggerAdapterError("UPSTREAM_INVALID_JSON", status) from None
+        chunks = bytearray()
+        try:
+            for chunk in response.iter_bytes():
+                chunks.extend(chunk)
+                if len(chunks) > MAX_BODY_BYTES:
+                    raise BloggerAdapterError("UPSTREAM_RESPONSE_TOO_LARGE", status)
+        finally:
+            response.close()
+        try: data = json.loads(chunks)
+        except (ValueError, UnicodeDecodeError): raise BloggerAdapterError("UPSTREAM_INVALID_JSON", status) from None
         if not isinstance(data, dict) or str(data.get("id","")) != blog_id:
             raise BloggerAdapterError("UPSTREAM_IDENTITY_MISMATCH", status)
         blog_url = data.get("url")
