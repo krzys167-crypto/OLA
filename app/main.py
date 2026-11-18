@@ -27,7 +27,7 @@ from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout
 from .stripe_webhook import process_checkout_event, checkout_task, session_is_for_offer, session_paid_for_offer
 from . import ambient, anchor_external, cfr, firewall, identity, pipeline_bridge
-from .blogger_capability import run_blogger_metadata
+from .blogger_capability import run_blogger_metadata, verify_blogger_evidence
 from .payment_binding import checkout_result_matches
 from .receipt import build_receipt
 from .revenue_proof import revenue_proof
@@ -508,6 +508,64 @@ async def blogger_metadata_endpoint(body: dict, x_api_key: str | None = Header(d
     except Exception:
         log.exception("Blogger capability failed for tenant %s", tenant_id)
         raise HTTPException(status_code=503, detail="Blogger capability temporarily unavailable") from None
+
+
+@app.post("/blogger/review")
+def blogger_review_endpoint(body: dict, x_api_key: str | None = Header(default=None)):
+    """Record an explicit tenant-key-authenticated review; never executes Blogger writes."""
+    tenant_id = tenant_from_key(x_api_key)
+    required = {"run_id", "blog_id", "human_approved", "human_actor", "human_reason"}
+    if not isinstance(body, dict) or set(body) != required:
+        raise HTTPException(status_code=400, detail="body must contain exactly run_id, blog_id, human_approved, human_actor, human_reason")
+    run_id = body.get("run_id")
+    blog_id = body.get("blog_id")
+    approved = body.get("human_approved")
+    actor = body.get("human_actor")
+    reason = body.get("human_reason")
+    if not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f-]{36}", run_id):
+        raise HTTPException(status_code=400, detail="run_id must be a UUID")
+    if not isinstance(blog_id, str) or not re.fullmatch(r"[0-9]{1,32}", blog_id):
+        raise HTTPException(status_code=400, detail="blog_id must be a numeric string")
+    if not isinstance(approved, bool):
+        raise HTTPException(status_code=400, detail="human_approved must be a JSON boolean")
+    actor = _visible_text(actor, "human_actor", MAX_HUMAN_ACTOR, required=True)
+    reason = _visible_text(reason, "human_reason", MAX_HUMAN_REASON, required=True)
+
+    records = pipeline_bridge.load_chain(tenant_id)
+    if any(
+        row.get("record_type") == "blogger.human_review"
+        and (lambda payload: isinstance(payload, dict) and payload.get("run_id") == run_id)(
+            json.loads(row["payload_json"])
+        )
+        for row in records
+    ):
+        raise HTTPException(status_code=409, detail="this Blogger run already has a review record")
+
+    verification = verify_blogger_evidence(records, run_id, blog_id, tenant_id)
+    candidate_status = "VERIFIED" if verification.get("status") == "VERIFIED" else verification.get("status", "UNKNOWN")
+    gate = HumanGate.evaluate(candidate_status, ReviewDecision(approved, actor, reason))
+    pipeline_bridge.append_evidence(
+        tenant_id,
+        "blogger.human_review",
+        {
+            "run_id": run_id,
+            "blog_id": blog_id,
+            "actor": actor,
+            "approved": approved,
+            "reason": reason,
+            "candidate_status": candidate_status,
+            "gate_status": gate.status,
+            "gate_reason": gate.reason,
+            "identity_assurance": "caller_attested_by_tenant_api_key",
+            "execution": "NOT_PERFORMED",
+        },
+    )
+    return {
+        "status": "HUMAN_APPROVED" if gate.status == "VERIFIED" else "BLOCK",
+        "verification": verification,
+        "human_gate": {"status": gate.status, "reason": gate.reason},
+        "execution": "NOT_PERFORMED",
+    }
 
 
 @app.post("/nina-run")
