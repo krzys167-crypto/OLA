@@ -152,3 +152,53 @@ class IgorVerifier:
         checks["evidence"] = True
         evidence_ids = tuple(record.get("id") for record in scoped_records if record.get("id"))
         return IgorVerification("VERIFIED", "independent verification passed", checks, evidence_ids)
+
+
+    def verify_capability_records(
+        self,
+        records,
+        *,
+        expected_tenant_id: str,
+        expected_run_id: str,
+        expected_record_types: tuple[str, ...],
+        expected_bindings: dict,
+    ) -> IgorVerification:
+        """Verify a bounded non-agent capability run against OLA's tenant hash chain.
+
+        This deliberately does not pretend that a capability call is an LLM
+        invocation: no model/provider/agent provenance is fabricated.
+        """
+        if not records:
+            return IgorVerification("UNKNOWN", "missing capability evidence", {"chain": False})
+        chain_ok, chain_reason = verify_chain(records)
+        checks = {"chain": chain_ok}
+        if not chain_ok:
+            return IgorVerification("BLOCK", chain_reason, checks)
+
+        checks["tenant_scope"] = all(
+            record.get("tenant_id") == expected_tenant_id for record in records
+        )
+        scoped = []
+        for record in records:
+            payload = _payload(record)
+            if payload is not None and payload.get("run_id") == expected_run_id:
+                scoped.append((record, payload))
+        checks["run_event_order"] = tuple(
+            record.get("record_type") for record, _ in scoped
+        ) == expected_record_types
+        checks["run_binding"] = bool(scoped) and all(
+            payload.get("run_id") == expected_run_id for _, payload in scoped
+        )
+        checks["payload_bindings"] = bool(scoped) and all(
+            all(payload.get(key) == value for key, value in expected_bindings.items())
+            for _, payload in scoped
+        )
+        if not all(checks.values()):
+            return IgorVerification(
+                "BLOCK", "capability evidence verification failed", checks,
+                tuple(record.get("id") for record, _ in scoped if record.get("id")),
+            )
+        return IgorVerification(
+            "VERIFIED", "capability evidence verified by Igor hash-chain verifier", checks,
+            tuple(record.get("id") for record, _ in scoped if record.get("id")),
+        )
