@@ -27,6 +27,7 @@ from .chat_runtime import chat
 from .revenue import create_checkout, retrieve_checkout
 from .stripe_webhook import process_checkout_event, checkout_task, session_is_for_offer, session_paid_for_offer
 from . import ambient, anchor_external, cfr, firewall, identity, pipeline_bridge
+from .blogger_capability import run_blogger_metadata
 from .payment_binding import checkout_result_matches
 from .receipt import build_receipt
 from .revenue_proof import revenue_proof
@@ -489,6 +490,24 @@ def create_agent_run(body: dict, background: BackgroundTasks, x_api_key: str | N
         return _ambient_apply(amb, background, tenant_id, "agent-run", task_text, ambient.agent_output_text(result),
                               result, _agent_producer(result))
     return result
+
+
+@app.post("/blogger/metadata")
+def blogger_metadata_endpoint(body: dict, x_api_key: str | None = Header(default=None)):
+    """Authenticated, tenant-scoped, read-only Blogger metadata lookup."""
+    tenant_id = tenant_from_key(x_api_key)
+    if not isinstance(body, dict) or set(body) != {"blog_id"}:
+        raise HTTPException(status_code=400, detail="body must contain only blog_id")
+    blog_id = body.get("blog_id")
+    if not isinstance(blog_id, str) or not re.fullmatch(r"[0-9]{1,32}", blog_id):
+        raise HTTPException(status_code=400, detail="blog_id must be a numeric string of 1 to 32 digits")
+    try:
+        return run_in_threadpool(run_blogger_metadata, tenant_id, blog_id)
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("Blogger capability failed for tenant %s", tenant_id)
+        raise HTTPException(status_code=503, detail="Blogger capability temporarily unavailable") from None
 
 
 @app.post("/nina-run")
