@@ -1,71 +1,219 @@
-"""Dedicated OLA dispatcher for the read-only Blogger metadata capability."""
+"""Dedicated dispatcher for OLA's read-only Blogger metadata capability."""
 from __future__ import annotations
-import hashlib, json, re, uuid
+
+import hashlib
+import json
+import re
+import uuid
 from typing import Any
+
 from .blogger_adapter import BloggerAdapterError, get_blog_metadata
 from .hashchain import verify_chain
 from .nina import NinaOrchestrator, NinaTask
 from .pipeline_bridge import append_evidence, load_chain
 
 TOOL_NAME = "blogger.read_metadata"
-START, RESULT, END = "blogger.execution.started", "blogger.metadata.result", "blogger.execution.ended"
+START = "blogger.execution.started"
+RESULT = "blogger.metadata.result"
+END = "blogger.execution.ended"
 BLOG_ID_RE = re.compile(r"^[0-9]{1,32}$")
 
+
 def _digest_result(result: dict[str, Any]) -> str:
-    body = {k:v for k,v in result.items() if k != "result_sha256"}
-    return hashlib.sha256(json.dumps(body,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
+    body = {key: value for key, value in result.items() if key != "result_sha256"}
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode()).hexdigest()
 
-def verify_blogger_evidence(records: list[dict], run_id: str, blog_id: str, expected_tenant_id: str) -> dict:
-    ok, reason = verify_chain(records)
-    if not ok: return {"status":"BLOCK","reason":reason,"checks":{"chain":False}}
-    scoped=[]
+
+def verify_blogger_evidence(
+    records: list[dict], run_id: str, blog_id: str, expected_tenant_id: str
+) -> dict:
+    """Verify the tenant chain and exactly this run's three ordered Blogger events.
+
+    This is a local integrity/consistency check. It does not assert Google's
+    cryptographic authorship and is deliberately not represented as IGOR proof.
+    """
+    if not isinstance(expected_tenant_id, str) or not expected_tenant_id:
+        return {"status": "BLOCK", "reason": "invalid expected tenant", "checks": {"tenant_binding": False}}
+
+    chain_ok, chain_reason = verify_chain(records)
+    if not chain_ok:
+        return {"status": "BLOCK", "reason": chain_reason, "checks": {"chain": False}}
+
+    scoped = []
     for row in records:
-        try: payload=json.loads(row["payload_json"])
-        except (KeyError,TypeError,ValueError): continue
-        if isinstance(payload,dict) and payload.get("run_id")==run_id:
-            scoped.append((row.get("record_type"),payload))
-    if [x[0] for x in scoped] != [START,RESULT,END]:
-        return {"status":"UNKNOWN","reason":"missing, duplicate, or reordered Blogger events",
-                "checks":{"chain":True,"event_order":False}}
-    start,result_event,end=[x[1] for x in scoped]
-    result=result_event.get("result")
-    checks={"chain":True,"event_order":True,
-        "tenant_binding":bool(records) and all(r.get("tenant_id")==expected_tenant_id for r in records),
-        "blog_id_binding":all(p.get("blog_id")==blog_id for p in (start,result_event,end)),
-        "run_binding":all(p.get("run_id")==run_id for p in (start,result_event,end)),
-        "terminal_state":end.get("status")=="REVIEW_REQUIRED",
-        "operation_binding":result_event.get("operation")=="blogs.get" and isinstance(result,dict) and result.get("operation")=="blogs.get",
-        "result_identity":isinstance(result,dict) and result.get("success") is True and result.get("verified") is True and result.get("blog_id")==blog_id and isinstance(result.get("blog_url"),str) and result.get("blog_url","").startswith("https://"),
-        "result_digest":isinstance(result,dict) and result.get("result_sha256")==_digest_result(result)}
-    if not all(checks.values()):
-        return {"status":"BLOCK","reason":"Blogger evidence semantic verification failed","checks":checks}
-    return {"status":"VERIFIED","reason":"local evidence checks passed; Google authorship is not proven",
-            "checks":checks,"human_gate":"REVIEW_REQUIRED"}
+        try:
+            payload = json.loads(row["payload_json"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if isinstance(payload, dict) and payload.get("run_id") == run_id:
+            scoped.append((row, payload))
 
-def run_blogger_metadata(tenant_id: str, blog_id: str, *, adapter=get_blog_metadata) -> dict:
-    if not isinstance(blog_id,str) or not BLOG_ID_RE.fullmatch(blog_id):
-        return {"status":"BLOCK","reason":"INVALID_BLOG_ID","human_gate":"BLOCK"}
-    task=NinaTask.create(tenant_id,f"Read Blogger metadata for blog {blog_id}",[TOOL_NAME])
-    plan=NinaOrchestrator(registered_tools=("safe_expression","local_mcp_tool_registry.sha256",TOOL_NAME)).plan(task)
-    if plan.status!="ALLOW": return {"status":"BLOCK","reason":plan.reason,"human_gate":"BLOCK"}
-    run_id=str(uuid.uuid4())
-    append_evidence(tenant_id,START,{"run_id":run_id,"blog_id":blog_id,"tool":TOOL_NAME})
+    if [row.get("record_type") for row, _ in scoped] != [START, RESULT, END]:
+        return {
+            "status": "UNKNOWN",
+            "reason": "missing, duplicate, or reordered Blogger events for this run",
+            "checks": {"chain": True, "event_order": False},
+        }
+
+    start_row, result_row, end_row = (item[0] for item in scoped)
+    start, result_event, end = (item[1] for item in scoped)
+    result = result_event.get("result")
+
+    checks = {
+        "chain": True,
+        "event_order": True,
+        "tenant_binding": all(
+            row.get("tenant_id") == expected_tenant_id
+            for row, _ in scoped
+        ),
+        "blog_id_binding": all(
+            payload.get("blog_id") == blog_id
+            for payload in (start, result_event, end)
+        ),
+        "run_binding": all(
+            payload.get("run_id") == run_id
+            for payload in (start, result_event, end)
+        ),
+        "tool_binding": start.get("tool") == TOOL_NAME,
+        "terminal_state": end.get("status") == "REVIEW_REQUIRED",
+        "operation_binding": (
+            result_event.get("operation") == "blogs.get"
+            and isinstance(result, dict)
+            and result.get("operation") == "blogs.get"
+        ),
+        "result_identity": (
+            isinstance(result, dict)
+            and result.get("success") is True
+            and result.get("verified") is True
+            and result.get("blog_id") == blog_id
+            and isinstance(result.get("blog_url"), str)
+            and result["blog_url"].startswith("https://")
+        ),
+        "result_digest": (
+            isinstance(result, dict)
+            and result.get("result_sha256") == _digest_result(result)
+        ),
+    }
+    if not all(checks.values()):
+        return {
+            "status": "BLOCK",
+            "reason": "Blogger evidence semantic verification failed",
+            "checks": checks,
+        }
+
+    return {
+        "status": "VERIFIED",
+        "reason": "local evidence checks passed; Google authorship is not proven",
+        "checks": checks,
+        "human_gate": "REVIEW_REQUIRED",
+    }
+
+
+def run_blogger_metadata(
+    tenant_id: str, blog_id: str, *, adapter=get_blog_metadata
+) -> dict:
+    if not isinstance(blog_id, str) or not BLOG_ID_RE.fullmatch(blog_id):
+        return {"status": "BLOCK", "reason": "INVALID_BLOG_ID", "human_gate": "BLOCK"}
+
+    task = NinaTask.create(
+        tenant_id,
+        f"Read Blogger metadata for blog {blog_id}",
+        [TOOL_NAME],
+    )
+    # Use NINA's central allow-list; never extend the registry inside a dispatcher.
+    plan = NinaOrchestrator().plan(task)
+    if plan.status != "ALLOW":
+        return {"status": "BLOCK", "reason": plan.reason, "human_gate": "BLOCK"}
+
+    run_id = str(uuid.uuid4())
+    append_evidence(
+        tenant_id,
+        START,
+        {"run_id": run_id, "blog_id": blog_id, "tool": TOOL_NAME},
+    )
     try:
-        data=adapter(blog_id)
-        if not isinstance(data,dict) or data.get("success") is not True or data.get("blog_id")!=blog_id or data.get("operation")!="blogs.get":
+        data = adapter(blog_id)
+        if (
+            not isinstance(data, dict)
+            or data.get("success") is not True
+            or data.get("blog_id") != blog_id
+            or data.get("operation") != "blogs.get"
+        ):
             raise BloggerAdapterError("ADAPTER_RESULT_INVALID")
-        append_evidence(tenant_id,RESULT,{"run_id":run_id,"blog_id":blog_id,"operation":"blogs.get","result":data})
-        append_evidence(tenant_id,END,{"run_id":run_id,"blog_id":blog_id,"status":"REVIEW_REQUIRED"})
-        verification=verify_blogger_evidence(load_chain(tenant_id),run_id,blog_id,tenant_id)
-        return {"status":"REVIEW_REQUIRED" if verification["status"]=="VERIFIED" else verification["status"],
-                "run_id":run_id,"blog_id":blog_id,"result":data,"verification":verification,
-                "human_gate":"REVIEW_REQUIRED","execution":"NOT_PERFORMED"}
+
+        append_evidence(
+            tenant_id,
+            RESULT,
+            {
+                "run_id": run_id,
+                "blog_id": blog_id,
+                "operation": "blogs.get",
+                "result": data,
+            },
+        )
+        append_evidence(
+            tenant_id,
+            END,
+            {"run_id": run_id, "blog_id": blog_id, "status": "REVIEW_REQUIRED"},
+        )
+        verification = verify_blogger_evidence(
+            load_chain(tenant_id), run_id, blog_id, tenant_id
+        )
+        if verification["status"] != "VERIFIED":
+            return {
+                "status": verification["status"],
+                "run_id": run_id,
+                "blog_id": blog_id,
+                "verification": verification,
+                "human_gate": "BLOCK",
+                "execution": "NOT_PERFORMED",
+            }
+        return {
+            "status": "REVIEW_REQUIRED",
+            "run_id": run_id,
+            "blog_id": blog_id,
+            "result": data,
+            "verification": verification,
+            "human_gate": "REVIEW_REQUIRED",
+            "execution": "NOT_PERFORMED",
+        }
     except BloggerAdapterError as exc:
-        append_evidence(tenant_id,END,{"run_id":run_id,"blog_id":blog_id,"status":"BLOCK","error":exc.code})
-        return {"status":"BLOCK","run_id":run_id,"blog_id":blog_id,"reason":exc.code,
-                "human_gate":"BLOCK","execution":"NOT_PERFORMED"}
+        append_evidence(
+            tenant_id,
+            END,
+            {
+                "run_id": run_id,
+                "blog_id": blog_id,
+                "status": "BLOCK",
+                "error": exc.code,
+            },
+        )
+        return {
+            "status": "BLOCK",
+            "run_id": run_id,
+            "blog_id": blog_id,
+            "reason": exc.code,
+            "human_gate": "BLOCK",
+            "execution": "NOT_PERFORMED",
+        }
     except Exception:
-        # Never expose upstream exception text, credentials, or database details.
-        append_evidence(tenant_id,END,{"run_id":run_id,"blog_id":blog_id,"status":"BLOCK","error":"INTERNAL_ERROR"})
-        return {"status":"BLOCK","run_id":run_id,"blog_id":blog_id,"reason":"INTERNAL_ERROR",
-                "human_gate":"BLOCK","execution":"NOT_PERFORMED"}
+        # Do not expose upstream exception text, credentials, or database details.
+        append_evidence(
+            tenant_id,
+            END,
+            {
+                "run_id": run_id,
+                "blog_id": blog_id,
+                "status": "BLOCK",
+                "error": "INTERNAL_ERROR",
+            },
+        )
+        return {
+            "status": "BLOCK",
+            "run_id": run_id,
+            "blog_id": blog_id,
+            "reason": "INTERNAL_ERROR",
+            "human_gate": "BLOCK",
+            "execution": "NOT_PERFORMED",
+        }
