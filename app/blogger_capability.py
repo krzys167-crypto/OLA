@@ -29,15 +29,33 @@ def _digest_result(result: dict[str, Any]) -> str:
 def verify_blogger_evidence(
     records: list[dict], run_id: str, blog_id: str, expected_tenant_id: str
 ) -> dict:
-    """Verify the tenant chain and exactly this run's three ordered Blogger events.
+    """Verify this capability run through IGOR and Blogger-specific semantic checks.
 
-    This is a local integrity/consistency check. It does not assert Google's
-    cryptographic authorship and is deliberately not represented as IGOR proof.
+    IGOR's capability verifier validates the tenant hash chain and exact run
+    event contract without fabricating LLM/provider provenance.
     """
     if not isinstance(expected_tenant_id, str) or not expected_tenant_id:
-        return {"status": "BLOCK", "reason": "invalid expected tenant", "checks": {"tenant_binding": False}}
+        return {
+            "status": "BLOCK",
+            "reason": "invalid expected tenant",
+            "checks": {"tenant_binding": False},
+        }
 
-    igor = IgorVerifier().verify_capability_records(\n        records, expected_tenant_id=expected_tenant_id, expected_run_id=run_id,\n        expected_record_types=(START, RESULT, END), expected_bindings={"blog_id": blog_id},\n    )\n    chain_ok, chain_reason = verify_chain(records)\n    if not chain_ok:\n        return {"status": "BLOCK", "reason": chain_reason, "checks": {"chain": False, "igor_capability": False}}\n
+    igor = IgorVerifier().verify_capability_records(
+        records,
+        expected_tenant_id=expected_tenant_id,
+        expected_run_id=run_id,
+        expected_record_types=(START, RESULT, END),
+        expected_bindings={"blog_id": blog_id},
+    )
+    chain_ok, chain_reason = verify_chain(records)
+    if not chain_ok:
+        return {
+            "status": "BLOCK",
+            "reason": chain_reason,
+            "checks": {"chain": False, "igor_capability": False},
+        }
+
     scoped = []
     for row in records:
         try:
@@ -51,20 +69,21 @@ def verify_blogger_evidence(
         return {
             "status": "UNKNOWN",
             "reason": "missing, duplicate, or reordered Blogger events for this run",
-            "checks": {"chain": True, "event_order": False},
+            "checks": {
+                "chain": True,
+                "igor_capability": igor.status == "VERIFIED",
+                "event_order": False,
+            },
         }
 
-    start_row, result_row, end_row = (item[0] for item in scoped)
     start, result_event, end = (item[1] for item in scoped)
     result = result_event.get("result")
-
     checks = {
         "chain": True,
         "igor_capability": igor.status == "VERIFIED",
         "event_order": True,
         "tenant_binding": all(
-            row.get("tenant_id") == expected_tenant_id
-            for row, _ in scoped
+            row.get("tenant_id") == expected_tenant_id for row, _ in scoped
         ),
         "blog_id_binding": all(
             payload.get("blog_id") == blog_id
@@ -97,14 +116,22 @@ def verify_blogger_evidence(
     if not all(checks.values()):
         return {
             "status": "BLOCK",
-            "reason": "Blogger evidence semantic verification failed",
+            "reason": (
+                igor.reason
+                if igor.status != "VERIFIED"
+                else "Blogger evidence semantic verification failed"
+            ),
             "checks": checks,
         }
 
     return {
         "status": "VERIFIED",
-        "reason": "local evidence checks passed; Google authorship is not proven",
+        "reason": (
+            "IGOR capability evidence and Blogger semantic checks passed; "
+            "Google authorship is not cryptographically proven"
+        ),
         "checks": checks,
+        "evidence_ids": list(igor.evidence_ids),
         "human_gate": "REVIEW_REQUIRED",
     }
 
