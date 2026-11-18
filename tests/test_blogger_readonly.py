@@ -219,16 +219,29 @@ def test_blogger_registry_is_central_and_never_falls_through_to_generic_runtime(
     assert result["capabilities"] == (capability.TOOL_NAME,)
 
 
-def test_blogger_review_endpoint_reverifies_and_records_one_human_decision(monkeypatch):
+def test_blogger_review_endpoint_reverifies_and_requires_a_separate_key(monkeypatch):
     from fastapi import HTTPException
     from app import main
 
     records, append = _append_factory("tenant-1")
     monkeypatch.setattr(capability, "append_evidence", append)
     monkeypatch.setattr(capability, "load_chain", lambda tenant_id: records)
-    monkeypatch.setattr(main, "tenant_from_key", lambda raw_key: "tenant-1")
+    monkeypatch.setattr(main, "identity_from_key", lambda raw_key: ("tenant-1", {
+        "initiator-token": "initiator-key",
+        "reviewer-token": "reviewer-key",
+    }[raw_key]))
     monkeypatch.setattr(main.pipeline_bridge, "load_chain", lambda tenant_id: records)
-    monkeypatch.setattr(main.pipeline_bridge, "append_evidence", append)
+
+    def append_once(tenant_id, record_type, payload, *, idempotency_key):
+        if any(
+            row["record_type"] == record_type
+            and json.loads(row["payload_json"]).get("run_id") == payload.get("run_id")
+            for row in records
+        ):
+            raise main.pipeline_bridge.EvidenceAlreadyExists("duplicate")
+        append(tenant_id, record_type, payload)
+
+    monkeypatch.setattr(main.pipeline_bridge, "append_evidence_once", append_once)
 
     def fake_adapter(blog_id):
         result = {
@@ -238,62 +251,32 @@ def test_blogger_review_endpoint_reverifies_and_records_one_human_decision(monke
         result["result_sha256"] = capability._digest_result(result)
         return result
 
-    metadata = capability.run_blogger_metadata("tenant-1", "123", adapter=fake_adapter)
+    metadata = capability.run_blogger_metadata(
+        "tenant-1", "123", adapter=fake_adapter, initiator_key_id="initiator-key"
+    )
     assert metadata["status"] == "REVIEW_REQUIRED"
 
     body = {
         "run_id": metadata["run_id"], "blog_id": "123",
-        "human_approved": True, "human_actor": "reviewer-1",
-        "human_reason": "Reviewed metadata and evidence",
+        "human_approved": True, "human_reason": "Reviewed metadata and evidence",
     }
-    reviewed = main.blogger_review_endpoint(body, x_api_key="tenant-key")
-    assert reviewed["status"] == "HUMAN_APPROVED"
+    same_key_body = dict(body)
+    with pytest.raises(HTTPException) as same_key:
+        main.blogger_review_endpoint(same_key_body, x_api_key="initiator-token")
+    assert same_key.value.status_code == 403
+
+    reviewed = main.blogger_review_endpoint(body, x_api_key="reviewer-token")
+    assert reviewed["status"] == "REVIEW_APPROVED_BY_SEPARATE_KEY"
     assert reviewed["execution"] == "NOT_PERFORMED"
     assert records[-1]["record_type"] == "blogger.human_review"
 
-    with pytest.raises(HTTPException) as exc:
-        main.blogger_review_endpoint(body, x_api_key="tenant-key")
-    assert exc.value.status_code == 409
+    with pytest.raises(HTTPException) as duplicate:
+        main.blogger_review_endpoint(body, x_api_key="reviewer-token")
+    assert duplicate.value.status_code == 409
 
-
-def test_igor_verification_binds_the_initiating_api_key_principal():
-    records, append = _append_factory("tenant-1")
-    result = {
-        "success": True,
-        "verified": True,
-        "blog_id": "123",
-        "operation": "blogs.get",
-        "blog_url": "https://example.com/",
-    }
-    result["result_sha256"] = capability._digest_result(result)
-    append("tenant-1", capability.START, {
-        "run_id": "bound-run",
-        "blog_id": "123",
-        "tool": capability.TOOL_NAME,
-        "initiator_key_id": "initiator-key",
-    })
-    append("tenant-1", capability.RESULT, {
-        "run_id": "bound-run",
-        "blog_id": "123",
-        "operation": "blogs.get",
-        "result": result,
-    })
-    append("tenant-1", capability.END, {
-        "run_id": "bound-run",
-        "blog_id": "123",
-        "status": "REVIEW_REQUIRED",
-    })
-
-    valid = capability.verify_blogger_evidence(
-        records, "bound-run", "123", "tenant-1",
-        expected_initiator_key_id="initiator-key",
-    )
-    assert valid["status"] == "VERIFIED"
-    assert valid["checks"]["igor_capability"] is True
-
-    spoofed = capability.verify_blogger_evidence(
-        records, "bound-run", "123", "tenant-1",
-        expected_initiator_key_id="different-key",
-    )
-    assert spoofed["status"] == "BLOCK"
-    assert spoofed["checks"]["initiator_binding"] is False
+    with pytest.raises(HTTPException) as spoofed:
+        main.blogger_review_endpoint(
+            {**body, "human_actor": "somebody-else"},
+            x_api_key="reviewer-token",
+        )
+    assert spoofed.value.status_code == 400
