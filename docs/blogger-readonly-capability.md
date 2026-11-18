@@ -8,17 +8,16 @@
 - No API key or upstream response body is returned or logged.
 - Upstream response bytes are streamed and capped at 65,536 bytes before JSON parsing.
 
-## OLA integration boundary
-`app/blogger_capability.py` is a dedicated capability dispatcher. The capability is registered in the central `app.nina.REGISTERED_TOOLS` allow-list; the dispatcher uses the default `NinaOrchestrator` and cannot extend the registry locally. It calls the fixed adapter and appends start/result/end events using the existing `pipeline_bridge` tenant evidence chain.
+## NINA integration
+The capability is centrally registered in `app.nina.REGISTERED_CAPABILITIES`. The default `NinaOrchestrator` includes this registry alongside generic tools. Its generic `execute()` returns `DISPATCH_REQUIRED` for dedicated capabilities instead of sending them to `run_agent_task`. The Blogger dispatcher invokes the bounded adapter directly after NINA's central allow-list decision.
 
-It deliberately does not call `NinaOrchestrator.execute()`: that method sends allowed tasks to the general agent runtime and is not a tool-specific adapter dispatcher. The existing `/nina-run` endpoint is not modified. Blogger is exposed through the separate authenticated `POST /blogger/metadata` route.
+## Evidence and IGOR
+The dispatcher appends start/result/end events to the existing tenant-scoped `pipeline_bridge` hash chain. It then calls `IgorVerifier.verify_capability_records`, a dedicated non-agent evidence contract that checks the full tenant chain, tenant scope, exact current-run event order, run binding, and blog ID binding. It does not fabricate LLM/provider/model provenance for a non-LLM API call.
 
-## Verification meaning and remaining gates
-`verify_blogger_evidence` verifies the tenant hash chain, exactly three ordered events for the current run, current-run tenant binding, blog/run/tool binding, fixed operation, identity fields, and result digest. `VERIFIED` means only that these local integrity/consistency checks pass. It does not prove Google cryptographically signed the response or that blog content is true/current.
+Blogger-specific checks additionally validate tool binding, fixed `blogs.get` operation, returned blog identity, HTTPS URL shape, and result digest. `VERIFIED` means local chain and semantic checks passed. It does not prove Google cryptographically signed the response or that blog content is true/current.
 
-**IGOR is not yet integrated with this Blogger event schema.** The existing `IgorVerifier` requires agent-runtime provenance fields (such as source commit, task, result, and optionally provider/model/nonce). Blogger events do not contain that provenance contract; passing them to IGOR with fabricated values would create a false verification. A dedicated, reviewed evidence contract or a safe adapter into IGOR is required before claiming full IGOR verification.
-
-Successful reads end at `REVIEW_REQUIRED`. This capability does not create a review request or collect a human decision. The existing `HumanGate.evaluate` requires an explicit `ReviewDecision` with a non-empty actor and a real boolean approval; the metadata endpoint has no such input and therefore cannot approve. A separate authenticated review workflow with reviewer authorization, immutable decision evidence, and replay protection is required before the Human Gate can be called end-to-end.
+## Human Gate — remaining blocker
+Successful reads end at `REVIEW_REQUIRED`. The capability does not create a review request or collect a human decision. The existing `HumanGate.evaluate` requires an explicit `ReviewDecision` with a non-empty actor and a real boolean approval; the metadata endpoint has no such input and therefore cannot approve. A separate authenticated review workflow with reviewer authorization, immutable decision evidence, and replay protection is still required before Human Gate can be called end-to-end.
 
 No automatic approval, publishing, or write operation is available.
 
