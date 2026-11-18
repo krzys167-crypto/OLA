@@ -254,3 +254,46 @@ def test_blogger_review_endpoint_reverifies_and_records_one_human_decision(monke
     with pytest.raises(HTTPException) as exc:
         main.blogger_review_endpoint(body, x_api_key="tenant-key")
     assert exc.value.status_code == 409
+
+
+def test_igor_verification_binds_the_initiating_api_key_principal():
+    records, append = _append_factory("tenant-1")
+    result = {
+        "success": True,
+        "verified": True,
+        "blog_id": "123",
+        "operation": "blogs.get",
+        "blog_url": "https://example.com/",
+    }
+    result["result_sha256"] = capability._digest_result(result)
+    append("tenant-1", capability.START, {
+        "run_id": "bound-run",
+        "blog_id": "123",
+        "tool": capability.TOOL_NAME,
+        "initiator_key_id": "initiator-key",
+    })
+    append("tenant-1", capability.RESULT, {
+        "run_id": "bound-run",
+        "blog_id": "123",
+        "operation": "blogs.get",
+        "result": result,
+    })
+    append("tenant-1", capability.END, {
+        "run_id": "bound-run",
+        "blog_id": "123",
+        "status": "REVIEW_REQUIRED",
+    })
+
+    valid = capability.verify_blogger_evidence(
+        records, "bound-run", "123", "tenant-1",
+        expected_initiator_key_id="initiator-key",
+    )
+    assert valid["status"] == "VERIFIED"
+    assert valid["checks"]["igor_capability"] is True
+
+    spoofed = capability.verify_blogger_evidence(
+        records, "bound-run", "123", "tenant-1",
+        expected_initiator_key_id="different-key",
+    )
+    assert spoofed["status"] == "BLOCK"
+    assert spoofed["checks"]["initiator_binding"] is False
