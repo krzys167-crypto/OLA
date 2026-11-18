@@ -1,4 +1,5 @@
 import hashlib
+import os
 import uuid
 import pytest
 
@@ -139,12 +140,11 @@ def test_blogger_http_flow_is_tenant_scoped_read_only_and_reviewed_once(monkeypa
 
 
 @pytest.mark.skipif(
-    not __import__("os").getenv("GOOGLE_BLOGGER_API_KEY")
-    or not __import__("os").getenv("BLOGGER_E2E_BLOG_ID"),
+    not os.getenv("GOOGLE_BLOGGER_API_KEY")
+    or not os.getenv("BLOGGER_E2E_BLOG_ID"),
     reason="live Blogger smoke test requires GOOGLE_BLOGGER_API_KEY and BLOGGER_E2E_BLOG_ID secrets",
 )
 def test_live_blogger_readonly_http_flow():
-    import os
     import re
 
     blog_id = os.environ["BLOGGER_E2E_BLOG_ID"]
