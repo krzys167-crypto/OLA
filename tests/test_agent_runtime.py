@@ -17,7 +17,12 @@ def _seed_tenant(api_key="agent-key"):
     db.add(ApiKey(
         id=str(uuid.uuid4()),
         tenant_id=tenant_id,
-        key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
+        key_hash=hashlib.pbkdf2_hmac(
+            "sha256",
+            api_key.encode(),
+            b"agent-runtime-test-salt",
+            310000,
+        ).hex(),
     ))
     db.commit()
     db.close()
