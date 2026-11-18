@@ -588,24 +588,28 @@ def blogger_review_endpoint(body: dict, x_api_key: str | None = Header(default=N
     )
     actor = f"api-key:{reviewer_key_id}"
     gate = HumanGate.evaluate(candidate_status, ReviewDecision(approved, actor, reason))
-    pipeline_bridge.append_evidence(
-        tenant_id,
-        "blogger.human_review",
-        {
-            "run_id": run_id,
-            "blog_id": blog_id,
-            "actor": actor,
-            "reviewer_key_id": reviewer_key_id,
-            "initiator_key_id": initiator_key_id,
-            "approved": approved,
-            "reason": reason,
-            "candidate_status": candidate_status,
-            "gate_status": gate.status,
-            "gate_reason": gate.reason,
-            "identity_assurance": "authenticated_api_key_principal_only_not_individual_identity",
-            "execution": "NOT_PERFORMED",
-        },
-    )
+    try:
+        pipeline_bridge.append_evidence_once(
+            tenant_id,
+            "blogger.human_review",
+            {
+                "run_id": run_id,
+                "blog_id": blog_id,
+                "actor": actor,
+                "reviewer_key_id": reviewer_key_id,
+                "initiator_key_id": initiator_key_id,
+                "approved": approved,
+                "reason": reason,
+                "candidate_status": candidate_status,
+                "gate_status": gate.status,
+                "gate_reason": gate.reason,
+                "identity_assurance": "authenticated_api_key_principal_only_not_individual_identity",
+                "execution": "NOT_PERFORMED",
+            },
+            idempotency_key=run_id,
+        )
+    except pipeline_bridge.EvidenceAlreadyExists:
+        raise HTTPException(status_code=409, detail="this Blogger run already has a review record") from None
     return {
         "status": "REVIEW_APPROVED_BY_SEPARATE_KEY" if gate.status == "VERIFIED" else "REVIEW_REJECTED",
         "verification": verification,
