@@ -4,13 +4,10 @@ import uuid
 from .agent_runtime import run_agent_task
 
 
-# Central capability allow-list. A capability must be registered here before
-# any dispatcher can ask NINA to authorize it.
-REGISTERED_TOOLS = (
-    "safe_expression",
-    "local_mcp_tool_registry.sha256",
-    "blogger.read_metadata",
-)
+# Generic tools are executed by run_agent_task. Dedicated capabilities have their
+# own bounded dispatcher and must never fall through to the generic agent runtime.
+REGISTERED_TOOLS = ("safe_expression", "local_mcp_tool_registry.sha256")
+REGISTERED_CAPABILITIES = ("blogger.read_metadata",)
 
 
 @dataclass(frozen=True)
@@ -28,6 +25,10 @@ class NinaTask:
             raise ValueError("tenant_id is required")
         if not isinstance(requested_tools, (list, tuple)):
             raise ValueError("requested_tools must be a list")
+        if any(not isinstance(tool, str) or not tool.strip() for tool in requested_tools):
+            raise ValueError("requested_tools entries must be non-empty strings")
+        if len(set(requested_tools)) != len(requested_tools):
+            raise ValueError("requested_tools must not contain duplicates")
         return cls(
             task_id=str(uuid.uuid4()),
             tenant_id=tenant_id,
@@ -44,26 +45,29 @@ class NinaDecision:
 
 
 class NinaOrchestrator:
-    """Bounded orchestration facade over the existing OLA runtime.
+    """Bounded orchestration facade over OLA's generic and dedicated capabilities.
 
-    NINA decides which centrally registered capabilities may be requested.
-    It does not manufacture verification or bypass the OLA execution gate.
+    A dedicated capability is registered centrally but can only be invoked by
+    its dedicated dispatcher; it is never executed by the generic agent runtime.
     """
 
-    def __init__(self, registered_tools: tuple[str, ...] = REGISTERED_TOOLS):
-        self._registered_tools = tuple(registered_tools)
+    def __init__(self, registered_tools: tuple[str, ...] | None = None):
+        self._registered_tools = tuple(
+            REGISTERED_TOOLS + REGISTERED_CAPABILITIES
+            if registered_tools is None else registered_tools
+        )
 
     def plan(self, task: NinaTask) -> NinaDecision:
         unknown = tuple(tool for tool in task.requested_tools if tool not in self._registered_tools)
         if unknown:
             return NinaDecision(
                 status="BLOCK",
-                reason=f"unknown tool: {', '.join(tool if isinstance(tool, str) else repr(tool) for tool in unknown)}",
+                reason=f"unknown tool: {', '.join(repr(tool) for tool in unknown)}",
                 allowed_tools=(),
             )
         return NinaDecision(
             status="ALLOW",
-            reason="all requested tools are registered",
+            reason="all requested tools are centrally registered",
             allowed_tools=task.requested_tools,
         )
 
@@ -75,6 +79,15 @@ class NinaOrchestrator:
                 "decision": decision,
                 "status": "BLOCK",
                 "reason": decision.reason,
+            }
+        dedicated = tuple(tool for tool in decision.allowed_tools if tool in REGISTERED_CAPABILITIES)
+        if dedicated:
+            return {
+                "task_id": task.task_id,
+                "decision": decision,
+                "status": "DISPATCH_REQUIRED",
+                "reason": "dedicated capabilities must use their registered bounded dispatcher",
+                "capabilities": dedicated,
             }
         runtime = run_agent_task(task.tenant_id, task.task)
         return {
