@@ -1,5 +1,6 @@
 import hashlib
 import uuid
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -135,3 +136,63 @@ def test_blogger_http_flow_is_tenant_scoped_read_only_and_reviewed_once(monkeypa
         "blogger.human_review",
     ]
     assert all(row["tenant_id"] == tenant_id for row in records)
+
+
+@pytest.mark.skipif(
+    not __import__("os").getenv("GOOGLE_BLOGGER_API_KEY")
+    or not __import__("os").getenv("BLOGGER_E2E_BLOG_ID"),
+    reason="live Blogger smoke test requires GOOGLE_BLOGGER_API_KEY and BLOGGER_E2E_BLOG_ID secrets",
+)
+def test_live_blogger_readonly_http_flow():
+    import os
+    import re
+
+    blog_id = os.environ["BLOGGER_E2E_BLOG_ID"]
+    assert re.fullmatch(r"[0-9]{1,32}", blog_id), "BLOGGER_E2E_BLOG_ID must be numeric"
+
+    tenant_id = str(uuid.uuid4())
+    initiator_key = "blogger-live-initiator-" + str(uuid.uuid4())
+    reviewer_key = "blogger-live-reviewer-" + str(uuid.uuid4())
+    with SessionLocal() as db:
+        db.add(Tenant(id=tenant_id, name="blogger-live-e2e"))
+        db.add(ApiKey(id=str(uuid.uuid4()), tenant_id=tenant_id, key_hash=_key_id(initiator_key)))
+        db.add(ApiKey(id=str(uuid.uuid4()), tenant_id=tenant_id, key_hash=_key_id(reviewer_key)))
+        db.commit()
+
+    with TestClient(main.app) as client:
+        metadata_response = client.post(
+            "/blogger/metadata",
+            headers={"X-API-Key": initiator_key},
+            json={"blog_id": blog_id},
+        )
+        assert metadata_response.status_code == 200, metadata_response.text
+        metadata = metadata_response.json()
+        assert metadata["status"] == "REVIEW_REQUIRED"
+        assert metadata["blog_id"] == blog_id
+        assert metadata["result"]["provider"] == "google_blogger"
+        assert metadata["result"]["operation"] == "blogs.get"
+        assert metadata["result"]["verified"] is True
+        assert metadata["execution"] == "NOT_PERFORMED"
+
+        review_response = client.post(
+            "/blogger/review",
+            headers={"X-API-Key": reviewer_key},
+            json={
+                "run_id": metadata["run_id"],
+                "blog_id": blog_id,
+                "human_approved": True,
+                "human_reason": "Live Blogger metadata and evidence reviewed in CI.",
+            },
+        )
+        assert review_response.status_code == 200, review_response.text
+        review = review_response.json()
+        assert review["status"] == "REVIEW_APPROVED_BY_SEPARATE_KEY"
+        assert review["execution"] == "NOT_PERFORMED"
+
+    records = blogger_capability.load_chain(tenant_id)
+    assert [row["record_type"] for row in records] == [
+        "blogger.execution.started",
+        "blogger.metadata.result",
+        "blogger.execution.ended",
+        "blogger.human_review",
+    ]
