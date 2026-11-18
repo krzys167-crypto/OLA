@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 10
     env:
       OLA_LLM_MODE: deterministic
+      GOOGLE_BLOGGER_API_KEY: ${{ secrets.GOOGLE_BLOGGER_API_KEY }}
+      BLOGGER_E2E_BLOG_ID: ${{ secrets.BLOGGER_E2E_BLOG_ID }}
     steps:
       - name: Checkout exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -38,3 +40,15 @@ jobs:
 
       - name: Run Blogger adapter, security, evidence and HTTP E2E tests
         run: python -m pytest -q tests/test_blogger_readonly.py tests/test_blogger_http_e2e.py
+
+      - name: Report live Blogger smoke-test configuration
+        if: always()
+        env:
+          GOOGLE_BLOGGER_API_KEY: ${{ secrets.GOOGLE_BLOGGER_API_KEY }}
+          BLOGGER_E2E_BLOG_ID: ${{ secrets.BLOGGER_E2E_BLOG_ID }}
+        run: |
+          if [ -n "$GOOGLE_BLOGGER_API_KEY" ] && [ -n "$BLOGGER_E2E_BLOG_ID" ]; then
+            echo "LIVE_BLOGGER_E2E=CONFIGURED"
+          else
+            echo "LIVE_BLOGGER_E2E=SKIPPED — configure GOOGLE_BLOGGER_API_KEY and BLOGGER_E2E_BLOG_ID repository secrets"
+          fi
