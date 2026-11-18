@@ -532,14 +532,15 @@ def blogger_review_endpoint(body: dict, x_api_key: str | None = Header(default=N
     reason = _visible_text(reason, "human_reason", MAX_HUMAN_REASON, required=True)
 
     records = pipeline_bridge.load_chain(tenant_id)
-    if any(
-        row.get("record_type") == "blogger.human_review"
-        and (lambda payload: isinstance(payload, dict) and payload.get("run_id") == run_id)(
-            json.loads(row["payload_json"])
-        )
-        for row in records
-    ):
-        raise HTTPException(status_code=409, detail="this Blogger run already has a review record")
+    for row in records:
+        if row.get("record_type") != "blogger.human_review":
+            continue
+        try:
+            prior_review = json.loads(row.get("payload_json", ""))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(prior_review, dict) and prior_review.get("run_id") == run_id:
+            raise HTTPException(status_code=409, detail="this Blogger run already has a review record")
 
     verification = verify_blogger_evidence(records, run_id, blog_id, tenant_id)
     candidate_status = "VERIFIED" if verification.get("status") == "VERIFIED" else verification.get("status", "UNKNOWN")
