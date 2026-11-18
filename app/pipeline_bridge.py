@@ -193,6 +193,66 @@ def append_evidence(tenant_id: str, record_type: str, payload: dict, *, attempts
     raise RuntimeError("evidence append failed: sequence contention")
 
 
+class EvidenceAlreadyExists(RuntimeError):
+    """An idempotent evidence event for the same logical operation already exists."""
+
+
+def append_evidence_once(
+    tenant_id: str, record_type: str, payload: dict, *, idempotency_key: str, attempts: int = 8
+) -> dict:
+    """Append one tenant-chain event at most once, including across concurrent workers.
+
+    The deterministic primary key is the uniqueness fence. If two workers race
+    for the same tenant sequence, the loser retries; it then observes the
+    existing deterministic ID and raises EvidenceAlreadyExists.
+    """
+    _check_tenant(tenant_id)
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+        raise ValueError("idempotency_key is required")
+    record_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"ola:evidence-once:{tenant_id}:{record_type}:{idempotency_key}",
+    ))
+    payload_json = canonical_json(payload)
+
+    for _ in range(attempts):
+        with SessionLocal() as db:
+            existing = db.get(EvidenceRecord, record_id)
+            if existing is not None:
+                raise EvidenceAlreadyExists("idempotent evidence event already exists")
+            last = db.scalar(
+                select(EvidenceRecord).where(EvidenceRecord.tenant_id == tenant_id)
+                .order_by(EvidenceRecord.seq.desc())
+            )
+            seq = 0 if last is None else last.seq + 1
+            prev_hash = GENESIS_HASH if last is None else last.record_hash
+            record = EvidenceRecord(
+                id=record_id,
+                tenant_id=tenant_id,
+                seq=seq,
+                record_type=record_type,
+                payload_json=payload_json,
+                prev_hash=prev_hash,
+                record_hash=compute_record_hash(tenant_id, seq, prev_hash, payload_json, record_type),
+            )
+            db.add(record)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                existing = db.get(EvidenceRecord, record_id)
+                if existing is not None:
+                    raise EvidenceAlreadyExists("idempotent evidence event already exists") from None
+                continue
+            return {
+                "id": record.id,
+                "tenant_id": record.tenant_id,
+                "seq": record.seq,
+                "record_hash": record.record_hash,
+            }
+    raise RuntimeError("evidence append failed: sequence contention")
+
+
 # ------------------------------------------------------------------ state mapping
 def map_states(gate_state: Any, verifier_overall: Any) -> tuple[str, str]:
     """Pipeline vocabulary -> OLA IGOR vocabulary (VERIFIED / UNKNOWN / BLOCK)."""
