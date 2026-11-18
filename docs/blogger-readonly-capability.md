@@ -14,15 +14,14 @@ The capability is centrally registered in `app.nina.REGISTERED_CAPABILITIES`. Th
 ## Evidence and IGOR
 The dispatcher appends start/result/end events to the existing tenant-scoped `pipeline_bridge` hash chain. It then calls `IgorVerifier.verify_capability_records`, a dedicated non-agent evidence contract that checks the full tenant chain, tenant scope, exact current-run event order, run binding, and blog ID binding. It does not fabricate LLM/provider/model provenance for a non-LLM API call.
 
-Blogger-specific checks additionally validate tool binding, fixed `blogs.get` operation, returned blog identity, HTTPS URL shape, and result digest. `VERIFIED` means local chain and semantic checks passed. It does not prove Google cryptographically signed the response or that blog content is true/current.
+Blogger-specific checks additionally validate tool binding, fixed `blogs.get` operation, returned blog identity, HTTPS URL shape, result digest, and the initiating API-key principal. `VERIFIED` means local chain and semantic checks passed. It does not prove Google cryptographically signed the response or that blog content is true/current.
 
-## Human Gate
-A successful metadata read ends at `REVIEW_REQUIRED`. A separate `POST /blogger/review` endpoint accepts exactly:
-`run_id`, `blog_id`, `human_approved` (JSON boolean), `human_actor`, and `human_reason`.
+## Review gate and identity boundary
+`POST /blogger/review` calls the existing `HumanGate.evaluate` only after re-verifying the original Blogger run. The review request must use a different API key from the key that initiated the run. The reviewer identity is derived from the authenticated API-key record; caller-supplied actor names are rejected. A deterministic evidence ID makes the review event one-time even when requests race. The review event is appended to the tenant chain.
 
-The endpoint re-verifies the original Blogger evidence, passes only a `VERIFIED` candidate to the existing `HumanGate.evaluate`, and appends one immutable `blogger.human_review` event to the same tenant chain. Duplicate review for a run is rejected. An approval returns `HUMAN_APPROVED`; rejection or failed verification returns `BLOCK`. Both outcomes explicitly return `execution: NOT_PERFORMED`. Human approval does not authorize Blogger writes or arbitrary execution.
+**Important limitation:** an API-key principal is not proof of a natural person's identity or authority. The current schema has no user/role mapping for API keys. The result is therefore labelled as approval by a separate authenticated key, not as verified human identity. Before production, add an identity provider or reviewer-role mapping, explicit authorization policy, and audit of key issuance/revocation. Until then, keep the system in `REVIEW_REQUIRED` for any workflow that requires legally attributable human approval.
 
-**Identity limitation:** the current endpoint authenticates the tenant API key, but `human_actor` is caller-attested text, not independently authenticated reviewer identity or a second factor. Therefore this is an auditable HumanGate decision record, not proof that a named human personally approved it. Production use still requires binding review authority to an authenticated principal/role and an independently controlled credential or approval channel.
+No automatic Blogger write, publishing, or external execution is available. The review endpoint records a decision only; it does not execute any subsequent action.
 
 ## Configuration
 Set `GOOGLE_BLOGGER_API_KEY` in the server secret store. Never commit `.env` or the key. Restrict the key to Blogger API v3 and the expected server environment where supported.
