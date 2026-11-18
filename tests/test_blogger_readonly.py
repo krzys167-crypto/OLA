@@ -217,3 +217,40 @@ def test_blogger_registry_is_central_and_never_falls_through_to_generic_runtime(
     result = nina.execute(task)
     assert result["status"] == "DISPATCH_REQUIRED"
     assert result["capabilities"] == (capability.TOOL_NAME,)
+
+
+def test_blogger_review_endpoint_reverifies_and_records_one_human_decision(monkeypatch):
+    from fastapi import HTTPException
+    from app import main
+
+    records, append = _append_factory("tenant-1")
+    monkeypatch.setattr(capability, "append_evidence", append)
+    monkeypatch.setattr(capability, "load_chain", lambda tenant_id: records)
+    monkeypatch.setattr(main, "tenant_from_key", lambda raw_key: "tenant-1")
+    monkeypatch.setattr(main.pipeline_bridge, "load_chain", lambda tenant_id: records)
+    monkeypatch.setattr(main.pipeline_bridge, "append_evidence", append)
+
+    def fake_adapter(blog_id):
+        result = {
+            "success": True, "verified": True, "blog_id": blog_id,
+            "operation": "blogs.get", "blog_url": "https://example.com/",
+        }
+        result["result_sha256"] = capability._digest_result(result)
+        return result
+
+    metadata = capability.run_blogger_metadata("tenant-1", "123", adapter=fake_adapter)
+    assert metadata["status"] == "REVIEW_REQUIRED"
+
+    body = {
+        "run_id": metadata["run_id"], "blog_id": "123",
+        "human_approved": True, "human_actor": "reviewer-1",
+        "human_reason": "Reviewed metadata and evidence",
+    }
+    reviewed = main.blogger_review_endpoint(body, x_api_key="tenant-key")
+    assert reviewed["status"] == "HUMAN_APPROVED"
+    assert reviewed["execution"] == "NOT_PERFORMED"
+    assert records[-1]["record_type"] == "blogger.human_review"
+
+    with pytest.raises(HTTPException) as exc:
+        main.blogger_review_endpoint(body, x_api_key="tenant-key")
+    assert exc.value.status_code == 409
