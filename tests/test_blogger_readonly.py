@@ -81,7 +81,7 @@ def test_capability_records_and_verifies_success_but_requires_human_review(monke
     monkeypatch.setattr(capability, "append_evidence", append)
     monkeypatch.setattr(capability, "load_chain", lambda tenant_id: records)
     def fake_adapter(blog_id):
-        result = {"success":True,"blog_id":blog_id,"operation":"blogs.get","blog_url":"https://example.com/"}
+        result = {"success":True,"verified":True,"blog_id":blog_id,"operation":"blogs.get","blog_url":"https://example.com/"}
         result["result_sha256"] = capability._digest_result(result)
         return result
     out = capability.run_blogger_metadata("tenant-1", "123", adapter=fake_adapter)
@@ -104,11 +104,11 @@ def test_capability_blocks_bad_blog_id_without_evidence_or_network(monkeypatch):
 
 def test_semantic_verifier_rejects_tampered_result_digest(monkeypatch):
     records, append = _append_factory("tenant-1")
-    result = {"success":True,"blog_id":"123","operation":"blogs.get","blog_url":"https://example.com/",
+    result = {"success":True,"verified":True,"blog_id":"123","operation":"blogs.get","blog_url":"https://example.com/",
               "result_sha256":"0"*64}
     append("tenant-1", capability.START, {"run_id":"r1","blog_id":"123","tool":capability.TOOL_NAME})
     append("tenant-1", capability.RESULT, {"run_id":"r1","blog_id":"123","operation":"blogs.get","result":result})
     append("tenant-1", capability.END, {"run_id":"r1","blog_id":"123","status":"REVIEW_REQUIRED"})
-    verdict = capability.verify_blogger_evidence(records,"r1","123")
+    verdict = capability.verify_blogger_evidence(records,"r1","123","tenant-1")
     assert verdict["status"] == "BLOCK"
     assert verdict["checks"]["result_digest"] is False
