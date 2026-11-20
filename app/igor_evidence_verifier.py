@@ -93,6 +93,40 @@ def _json_object(raw, *, strict=False):
     return value
 
 
+def _chain_json_object(raw):
+    """Parse one chain payload while retaining V1/V2/V3 last-member semantics."""
+    if not isinstance(raw, str):
+        raise IndependentEvidenceError("invalid payload_json")
+    duplicate_keys = []
+
+    def _last_value_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result and not duplicate_keys:
+                duplicate_keys.append(key)
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw, object_pairs_hook=_last_value_object)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise IndependentEvidenceError("invalid payload_json") from exc
+    if not isinstance(value, dict):
+        raise IndependentEvidenceError("payload must be an object")
+    return value, duplicate_keys[0] if duplicate_keys else None
+
+
+def _validate_v4_payload(raw, payload, duplicate_key):
+    """Apply the V4-only strict checks to a payload already parsed once."""
+    if len(raw.encode("utf-8")) > MAX_PAYLOAD_BYTES:
+        raise IndependentEvidenceError("V4 payload size limit exceeded")
+    if duplicate_key is not None:
+        raise IndependentEvidenceError("invalid payload_json")
+    _depth(payload)
+    if _canonical(payload) != raw:
+        raise IndependentEvidenceError("V4 payload is not canonical")
+
+
 def _keyring(environ):
     raw = environ.get(V4_KEYRING_ENV, "")
     active = environ.get(V4_ACTIVE_KEY_ENV, "")
@@ -141,6 +175,18 @@ def _legacy_metadata(payload, record):
     return version, producer
 
 
+def _version_from_payload(payload, record):
+    if V4_META_KEY in payload and V2_META_KEY in payload:
+        raise IndependentEvidenceError("ambiguous evidence version metadata")
+    if V4_META_KEY in payload:
+        meta = payload[V4_META_KEY]
+        if not isinstance(meta, dict) or type(meta.get("version")) is not int or meta["version"] != 4:
+            raise IndependentEvidenceError("invalid V4 metadata")
+        return 4
+    version, _ = _legacy_metadata(payload, record)
+    return version
+
+
 def is_privileged_type(record_type):
     return isinstance(record_type, str) and record_type.startswith(PRIVILEGED_PREFIXES)
 
@@ -175,7 +221,7 @@ def _legacy_digest(record, payload, version, producer, environ):
     return hmac.new(derived_key, material, hashlib.sha256).hexdigest()
 
 
-def _v4_digest(record, payload, environ):
+def _v4_digest(record, payload, environ, *, keyring_loader=None):
     if V2_META_KEY in payload:
         raise IndependentEvidenceError("V4 payload contains legacy V2 metadata")
     metadata = payload.get(V4_META_KEY)
@@ -193,7 +239,7 @@ def _v4_digest(record, payload, environ):
         raise IndependentEvidenceError("V4 producer invalid")
     if is_privileged_type(record.get("record_type")) and producer != TRUSTED_PRODUCER:
         raise IndependentEvidenceError("untrusted V4 producer on privileged record")
-    keys = _keyring(environ)
+    keys = keyring_loader() if keyring_loader is not None else _keyring(environ)
     key = keys.get(key_id)
     if key is None:
         raise IndependentEvidenceError("unknown V4 key_id")
@@ -216,15 +262,7 @@ def _v4_digest(record, payload, environ):
 
 def evidence_version(record):
     payload = _json_object(record.get("payload_json"), strict=False)
-    if V4_META_KEY in payload and V2_META_KEY in payload:
-        raise IndependentEvidenceError("ambiguous evidence version metadata")
-    if V4_META_KEY in payload:
-        meta = payload[V4_META_KEY]
-        if not isinstance(meta, dict) or type(meta.get("version")) is not int or meta["version"] != 4:
-            raise IndependentEvidenceError("invalid V4 metadata")
-        return 4
-    version, _ = _legacy_metadata(payload, record)
-    return version
+    return _version_from_payload(payload, record)
 
 
 def verify_chain(records, environ=None):
@@ -234,6 +272,14 @@ def verify_chain(records, environ=None):
     expected_prev = GENESIS_HASH
     expected_seq = 0
     expected_tenant = None
+    keyring_cache = None
+
+    def load_chain_keyring():
+        nonlocal keyring_cache
+        if keyring_cache is None:
+            keyring_cache = _keyring(env)
+        return keyring_cache
+
     try:
         for record in records:
             if not isinstance(record, Mapping):
@@ -259,11 +305,13 @@ def verify_chain(records, environ=None):
             supplied = record.get("record_hash")
             if not isinstance(supplied, str) or not HASH_PATTERN.fullmatch(supplied):
                 return False, "record_hash malformed"
-            payload = _json_object(record.get("payload_json"), strict=False)
-            version = evidence_version(record)
+            payload, duplicate_key = _chain_json_object(record.get("payload_json"))
+            version = _version_from_payload(payload, record)
             if version == 4:
-                payload = _json_object(record["payload_json"], strict=True)
-                expected = _v4_digest(record, payload, env)
+                _validate_v4_payload(record["payload_json"], payload, duplicate_key)
+                expected = _v4_digest(
+                    record, payload, env, keyring_loader=load_chain_keyring
+                )
             else:
                 version, producer = _legacy_metadata(payload, record)
                 expected = _legacy_digest(record, payload, version, producer, env)

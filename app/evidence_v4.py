@@ -170,7 +170,12 @@ def seal_payload_v4(
     return canonical_json(value)
 
 
-def _record_material(record: Mapping[str, Any]) -> tuple[bytes, str]:
+def _record_material(
+    record: Mapping[str, Any],
+    *,
+    parsed_payload: dict[str, Any] | None = None,
+    duplicate_key: str | None = None,
+) -> tuple[bytes, str]:
     required = ("tenant_id", "seq", "prev_hash", "record_type", "payload_json")
     if any(name not in record for name in required):
         raise InvalidRecordError("missing V4 authenticated field")
@@ -186,10 +191,15 @@ def _record_material(record: Mapping[str, Any]) -> tuple[bytes, str]:
     payload_json = record["payload_json"]
     if not isinstance(payload_json, str) or len(payload_json.encode("utf-8")) > MAX_PAYLOAD_BYTES:
         raise InvalidRecordError("invalid payload size")
-    try:
-        payload = json.loads(payload_json, object_pairs_hook=_unique_object)
-    except (ValueError, RecursionError) as exc:
-        raise InvalidRecordError(str(exc)) from exc
+    if parsed_payload is None:
+        try:
+            payload = json.loads(payload_json, object_pairs_hook=_unique_object)
+        except (ValueError, RecursionError) as exc:
+            raise InvalidRecordError(str(exc)) from exc
+    else:
+        if duplicate_key is not None:
+            raise InvalidRecordError(f"duplicate JSON object key: {duplicate_key}")
+        payload = parsed_payload
     if not isinstance(payload, dict):
         raise InvalidRecordError("V4 payload must be a JSON object")
     if V2_META_KEY in payload:
@@ -237,9 +247,21 @@ def sign_record(record: Mapping[str, Any], keyring: Keyring) -> str:
 
 def verify_record(record: Mapping[str, Any], keyring: Keyring) -> bool:
     """Verify the key named in the V4 payload envelope; no fallback is permitted."""
+    return _verify_record_with_payload(record, keyring)
+
+
+def _verify_record_with_payload(
+    record: Mapping[str, Any],
+    keyring: Keyring,
+    *,
+    parsed_payload: dict[str, Any] | None = None,
+    duplicate_key: str | None = None,
+) -> bool:
     if not isinstance(record, Mapping):
         raise InvalidRecordError("record must be an object")
-    material, key_id = _record_material(record)
+    material, key_id = _record_material(
+        record, parsed_payload=parsed_payload, duplicate_key=duplicate_key
+    )
     key = keyring.keys.get(key_id)
     if key is None:
         raise UnknownKeyError("unknown V4 key_id")
@@ -250,11 +272,7 @@ def verify_record(record: Mapping[str, Any], keyring: Keyring) -> bool:
     return hmac.compare_digest(expected, supplied)
 
 
-def _stored_version(record: Mapping[str, Any]) -> int:
-    try:
-        payload = json.loads(record["payload_json"])
-    except (KeyError, TypeError, ValueError, RecursionError) as exc:
-        raise InvalidRecordError("invalid payload while resolving evidence version") from exc
+def _stored_version_from_payload(payload: Any) -> int:
     if not isinstance(payload, dict):
         raise InvalidRecordError("evidence payload must be an object")
     if V4_META_KEY in payload and V2_META_KEY in payload:
@@ -272,6 +290,35 @@ def _stored_version(record: Mapping[str, Any]) -> int:
             raise InvalidRecordError("unsupported legacy version")
         return meta["version"]
     return 1
+
+
+def _chain_json_object(raw: str) -> tuple[dict[str, Any], str | None]:
+    """Parse once with JSON's legacy last-member behavior and track duplicates."""
+    duplicate_keys: list[str] = []
+
+    def _last_value_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result and not duplicate_keys:
+                duplicate_keys.append(key)
+            result[key] = value
+        return result
+
+    try:
+        payload = json.loads(raw, object_pairs_hook=_last_value_object)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise InvalidRecordError("invalid payload while resolving evidence version") from exc
+    if not isinstance(payload, dict):
+        raise InvalidRecordError("evidence payload must be an object")
+    return payload, duplicate_keys[0] if duplicate_keys else None
+
+
+def _stored_version(record: Mapping[str, Any]) -> int:
+    try:
+        payload = json.loads(record["payload_json"])
+    except (KeyError, TypeError, ValueError, RecursionError) as exc:
+        raise InvalidRecordError("invalid payload while resolving evidence version") from exc
+    return _stored_version_from_payload(payload)
 
 
 def verify_mixed_chain(
@@ -334,7 +381,8 @@ def verify_mixed_chain(
         if not isinstance(record.get("payload_json"), str):
             return False, "invalid payload_json"
         try:
-            version = _stored_version(record)
+            payload, duplicate_key = _chain_json_object(record["payload_json"])
+            version = _stored_version_from_payload(payload)
         except EvidenceV4Error as exc:
             return False, str(exc)
         if version == VERSION:
@@ -342,7 +390,10 @@ def verify_mixed_chain(
             if not ok:
                 return False, reason
             try:
-                if not verify_record(record, keyring):
+                if not _verify_record_with_payload(
+                    record, keyring, parsed_payload=payload,
+                    duplicate_key=duplicate_key,
+                ):
                     return False, "V4 authentication failed"
             except EvidenceV4Error as exc:
                 return False, str(exc)
