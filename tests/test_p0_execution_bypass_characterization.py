@@ -18,6 +18,7 @@ def test_agent_run_gate_noop_is_followed_by_actual_runtime_call(monkeypatch):
             gate_effects.append(kwargs.get("effect")())
             return main.ExecutionDecision(status="ALLOW", reason="test")
 
+    monkeypatch.setattr(main, "REGISTERED_AGENT_IDS", frozenset({"agent-001"}))
     monkeypatch.setattr(main, "AGENT_RUN_GATE", AllowGate())
     monkeypatch.setattr(main, "tenant_from_key", lambda key: "tenant-test")
     monkeypatch.setattr(main, "append_record", lambda *args, **kwargs: {"id": "evidence"})
