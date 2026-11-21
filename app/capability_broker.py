@@ -12,6 +12,7 @@ import re
 import secrets
 import sqlite3
 import time
+import threading
 from typing import Callable
 
 MAX_CANONICAL_BYTES = 65536
@@ -131,7 +132,7 @@ class VoucherIssuer:
         _canonical(request.arguments)
         if request.capability not in self._allowed:
             raise PermissionError("capability not allowlisted")
-        issued = int(time.time() if now is None else now)
+        issued = int(time.time()) if now is None else now
         if type(issued) is not int:
             raise ValueError("issuance time must be an integer")
         body = {
@@ -155,14 +156,16 @@ class MemoryReplayLedger:
 
     def __init__(self):
         self._consumed: set[tuple[str, str, str]] = set()
+        self._lock = threading.Lock()
 
     def consume(self, tenant_id: str, nonce: str, voucher_id: str, now: int) -> None:
         nonce_key = (tenant_id, "nonce", nonce)
         voucher_key = (tenant_id, "voucher", voucher_id)
-        if nonce_key in self._consumed or voucher_key in self._consumed:
-            raise PermissionError("voucher replay detected")
-        self._consumed.add(nonce_key)
-        self._consumed.add(voucher_key)
+        with self._lock:
+            if nonce_key in self._consumed or voucher_key in self._consumed:
+                raise PermissionError("voucher replay detected")
+            self._consumed.add(nonce_key)
+            self._consumed.add(voucher_key)
 
 
 class SQLiteReplayLedger:
@@ -279,14 +282,14 @@ class VoucherVerifier:
         if now >= voucher.expires_at:
             raise PermissionError("voucher expired")
 
-        expected_scope = (
+        expected_scope = [
             request.run_id, request.tenant_id, request.principal_id,
             request.capability, arguments_digest, request.policy_version,
-        )
-        actual_scope = (
+        ]
+        actual_scope = [
             voucher.run_id, voucher.tenant_id, voucher.principal_id,
             voucher.capability, voucher.arguments_digest, voucher.policy_version,
-        )
+        ]
         if not hmac.compare_digest(_canonical(expected_scope), _canonical(actual_scope)):
             raise PermissionError("voucher scope mismatch")
 
