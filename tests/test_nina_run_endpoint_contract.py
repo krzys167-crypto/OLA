@@ -1,4 +1,5 @@
 from app.api_key_hashing import api_key_fingerprint
+import json
 import hashlib
 import os
 import uuid
@@ -7,7 +8,8 @@ from fastapi.testclient import TestClient
 
 from app.database import SessionLocal
 from app.main import app
-from app.models import ApiKey, Tenant
+from app.models import ApiKey, Tenant, EvidenceRecord
+from sqlalchemy import select
 
 
 def test_nina_run_route_exists():
@@ -21,10 +23,11 @@ def test_nina_run_executes_chain_but_does_not_self_approve():
 
     tenant_id = str(uuid.uuid4())
     api_key = "nina-test-" + uuid.uuid4().hex
+    requester_id = str(uuid.uuid4())
     with SessionLocal() as db:
         db.add(Tenant(id=tenant_id, name="nina-e2e"))
         db.add(ApiKey(
-            id=str(uuid.uuid4()),
+            id=requester_id,
             tenant_id=tenant_id,
             key_hash=api_key_fingerprint(api_key),
         ))
@@ -68,6 +71,19 @@ def test_nina_run_executes_chain_but_does_not_self_approve():
     assert replay_types.count("execution.capability.authorized") == 6
     assert replay_types.count("execution.run.end") == 1
     assert sum(isinstance(item, str) and item.startswith("agent.") for item in replay_types) == 6
+    with SessionLocal() as db:
+        rows = db.scalars(
+            select(EvidenceRecord)
+            .where(EvidenceRecord.tenant_id == tenant_id)
+            .order_by(EvidenceRecord.seq.asc())
+        ).all()
+    authorizations = [
+        json.loads(row.payload_json)
+        for row in rows
+        if row.record_type == "execution.capability.authorized"
+    ]
+    assert len(authorizations) == 6
+    assert all(item["principal_id"] == requester_id for item in authorizations)
 
 
 def test_nina_run_explicit_llm_does_not_promote_deterministic_fallback(monkeypatch):
