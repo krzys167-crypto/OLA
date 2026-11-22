@@ -62,7 +62,12 @@ def test_nina_run_executes_chain_but_does_not_self_approve():
     assert body["status_fields"]["EXECUTION_ALLOWED"] == "REVIEW", body
     assert body["status"] == "REVIEW", body
     assert body["replay_verification"]["status"] == "VERIFIED", body
-    assert len(body["replay"]) == 9  # run.start + six agents + run.end
+    replay_types = [record.get("record_type") for record in body["replay"]]
+    assert len(body["replay"]) == 15  # start + six voucher authorizations + six agents + end
+    assert replay_types.count("execution.run.start") == 1
+    assert replay_types.count("execution.capability.authorized") == 6
+    assert replay_types.count("execution.run.end") == 1
+    assert sum(isinstance(item, str) and item.startswith("agent.") for item in replay_types) == 6
 
 
 def test_nina_run_explicit_llm_does_not_promote_deterministic_fallback(monkeypatch):
