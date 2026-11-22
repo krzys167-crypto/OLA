@@ -21,8 +21,9 @@ def test_agent_run_denies_high_risk_without_human_approval(monkeypatch):
 
     monkeypatch.setattr(main, "REGISTERED_AGENT_IDS", frozenset({"agent-001"}))
     monkeypatch.setattr(main, "tenant_from_key", _tenant)
+    monkeypatch.setattr(main, "identity_from_key", _identity)
     monkeypatch.setattr(main, "append_record", lambda *args, **kwargs: {"id": "evidence"})
-    monkeypatch.setattr(main, "run_agent_task", lambda tenant, task: runtime_effects.append((tenant, task)))
+    monkeypatch.setattr(main, "run_agent_task", lambda tenant, task, principal: runtime_effects.append((tenant, task, principal)))
     client = TestClient(main.app)
 
     response = client.post(

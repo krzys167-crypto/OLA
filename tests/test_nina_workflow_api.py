@@ -58,7 +58,7 @@ def test_workflow_endpoint_runs_real_route_with_mocked_external_model(monkeypatc
     assert body["status"] == "COMPLETED_UNVERIFIED"
     assert body["verified"] is False
     assert body["human_gate"] == "NOT_APPROVED"
-    assert len(body["evidence_ids"]) == 6
+    assert len(body["evidence_ids"]) == 8
     assert calls == ["nina_dag_planner", "analyst", "reviewer"]
 
 
