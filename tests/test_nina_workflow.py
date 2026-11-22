@@ -23,7 +23,8 @@ def test_end_to_end_workflow_service_records_every_step():
         executor=execute)
     assert result["status"] == "COMPLETED_UNVERIFIED"
     assert result["verified"] is False
-    assert len(result["evidence_ids"]) == 6
+    assert len(result["evidence_ids"]) == 8
+    assert sum(item[1] == "execution.capability.authorized" for item in writes) == 2
     assert writes[0][1] == "workflow.planned"
     assert writes[-1][1] == "workflow.completed"
     assert all(item[0] == "tenantA" for item in writes)
