@@ -663,7 +663,7 @@ def create_audit(body: dict, x_api_key: str | None = Header(default=None)):
 
 @app.post("/agent-run")
 def create_agent_run(body: dict, x_api_key: str | None = Header(default=None)):
-    tenant_id = tenant_from_key(x_api_key)
+    tenant_id, requester_id = identity_from_key(x_api_key)
     task = body.get("task")
     if not task:
         raise HTTPException(status_code=400, detail="task is required")
@@ -705,7 +705,7 @@ def create_agent_run(body: dict, x_api_key: str | None = Header(default=None)):
         raise HTTPException(status_code=403, detail="gate evidence unavailable") from exc
     if not allowed:
         raise HTTPException(status_code=403, detail=reason)
-    return run_agent_task(tenant_id, task)
+    return run_agent_task(tenant_id, task, requester_id)
 
 
 
