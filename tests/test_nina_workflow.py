@@ -228,3 +228,12 @@ def test_independent_goal_requires_model_chosen_parallel_nodes(monkeypatch):
     assert len(requests) == 2 and all(req["independent_only"] is True for req in requests)
     assert provenance["attempts"] == 2
     assert provenance["response_id"] == "plan-2"
+
+def test_duplicate_tool_allowlist_rejected_before_planner():
+    with pytest.raises(WorkflowPlanError, match="workflow tool allowlist duplicates"):
+        run_nina_workflow(
+            tenant_id="t", requester_id="u", goal="g",
+            allowed_tools=["safe_expression", "safe_expression"],
+            append=lambda *args: None,
+            planner=lambda *args: (_ for _ in ()).throw(AssertionError("called")),
+        )
