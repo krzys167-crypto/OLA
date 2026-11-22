@@ -326,8 +326,8 @@ def verify_postgres_schema(bind, *, enforce_runtime_privileges=True):
     }
     for name, action in replay_expected.items():
         trigger_def, function_name, function_def = replay_definitions.get(name, ("", "", ""))
-        normalized_trigger = re.sub(r"\\s+", " ", trigger_def).upper()
-        normalized_function = re.sub(r"\\s+", " ", function_def).upper()
+        normalized_trigger = re.sub(r"\s+", " ", trigger_def).upper()
+        normalized_function = re.sub(r"\s+", " ", function_def).upper()
         if (
             action not in normalized_trigger
             or function_name != "ola_reject_capability_replay_mutation"
