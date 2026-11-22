@@ -237,3 +237,12 @@ def test_duplicate_tool_allowlist_rejected_before_planner():
             append=lambda *args: None,
             planner=lambda *args: (_ for _ in ()).throw(AssertionError("called")),
         )
+
+def test_missing_voucher_key_blocks_before_planning(monkeypatch):
+    monkeypatch.delenv("OLA_CAPABILITY_VOUCHER_KEY_HEX", raising=False)
+    with pytest.raises(WorkflowPlanError, match="capability voucher key unavailable"):
+        run_nina_workflow(
+            tenant_id="t", requester_id="u", goal="g",
+            allowed_tools=["safe_expression"], append=lambda *args: None,
+            planner=lambda *args: (_ for _ in ()).throw(AssertionError("called")),
+        )
