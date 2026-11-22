@@ -16,13 +16,17 @@ def test_nina_dag_nodes_consume_vouchers_before_effects(monkeypatch):
     monkeypatch.setenv("OLA_CAPABILITY_VOUCHER_KEY_HEX", "33" * 32)
     effects = []
     records = []
+    trace = []
 
     def execute(node, deps):
         effects.append(node.id)
+        trace.append(f"effect:{node.id}")
         return {"node": node.id, "dependency_count": len(deps)}
 
     def append(tenant_id, record_type, payload):
         records.append({"tenant_id": tenant_id, "record_type": record_type, "payload": payload})
+        if record_type == "execution.capability.authorized":
+            trace.append(f"authorization:{payload['node_id']}")
         return {"id": f"evidence-{len(records)}"}
 
     result = run_nina_workflow(
@@ -41,6 +45,7 @@ def test_nina_dag_nodes_consume_vouchers_before_effects(monkeypatch):
     assert result["status"] == "COMPLETED_UNVERIFIED"
     assert result["verified"] is False
     assert effects == ["first", "second"]
+    assert trace == ["authorization:first", "effect:first", "authorization:second", "effect:second"]
     assert len(authorizations) == 2
     assert all(item["payload"]["requester_id"] == "principal-test" for item in authorizations)
     assert all(item["payload"]["voucher_id"] for item in authorizations)
