@@ -120,3 +120,17 @@ class CheckoutReportReview(Base):
     reviewed_at = Column(Integer, nullable=False, default=lambda: int(time.time()))
     delivery_evidence_id = Column(String(36), nullable=True)
     delivered_at = Column(Integer, nullable=True)
+
+
+class CapabilityReplay(Base):
+    """Append-only, PostgreSQL-backed one-use voucher replay record."""
+    __tablename__ = "capability_replay_ledger"
+    id = Column(String(36), primary_key=True, default=uid)
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=False, index=True)
+    nonce = Column(String(32), nullable=False)
+    voucher_id = Column(String(32), nullable=False)
+    consumed_at = Column(Integer, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "nonce", name="uq_capability_replay_tenant_nonce"),
+        UniqueConstraint("tenant_id", "voucher_id", name="uq_capability_replay_tenant_voucher"),
+    )

@@ -316,3 +316,37 @@ class MockExecutor:
         }
         self.effects.append(effect)
         return {"status": "executed", **effect}
+
+
+class PostgresReplayLedger:
+    """Shared durable replay ledger; requires PostgreSQL and pre-migrated schema.
+
+    This implementation never creates tables or falls back to memory/SQLite.
+    The database unique constraints atomically reject concurrent nonce or
+    voucher-ID reuse across verifier instances and workers.
+    """
+
+    def __init__(self, session_factory=None):
+        self._session_factory = session_factory
+
+    def consume(self, tenant_id: str, nonce: str, voucher_id: str, now: int) -> None:
+        from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+        from .database import SessionLocal
+        from .models import CapabilityReplay
+
+        factory = self._session_factory or SessionLocal
+        try:
+            with factory() as db:
+                if db.get_bind().dialect.name != "postgresql":
+                    raise PermissionError("durable PostgreSQL replay ledger unavailable")
+                db.add(CapabilityReplay(
+                    tenant_id=tenant_id,
+                    nonce=nonce,
+                    voucher_id=voucher_id,
+                    consumed_at=now,
+                ))
+                db.commit()
+        except IntegrityError:
+            raise PermissionError("voucher replay detected") from None
+        except SQLAlchemyError:
+            raise PermissionError("durable replay ledger unavailable") from None

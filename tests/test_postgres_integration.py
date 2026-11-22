@@ -39,7 +39,10 @@ def postgres_db(monkeypatch):
                 f'GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA "{schema}" TO "{runtime_role}"'
             )
             conn.exec_driver_sql(
-                f'REVOKE UPDATE, DELETE ON TABLE "{schema}".evidence_records FROM "{runtime_role}"'
+                f'REVOKE UPDATE, DELETE, TRUNCATE ON TABLE "{schema}".evidence_records FROM "{runtime_role}"'
+            )
+            conn.exec_driver_sql(
+                f'REVOKE UPDATE, DELETE, TRUNCATE ON TABLE "{schema}".capability_replay_ledger FROM "{runtime_role}"'
             )
             conn.exec_driver_sql(
                 f'REVOKE ALL ON TABLE "{schema}".ola_schema_migrations FROM "{runtime_role}"'
@@ -138,5 +141,83 @@ def test_postgres_concurrent_evidence_appends_are_serialized_and_immutable(postg
     with _admin_engine.begin() as conn:
         conn.exec_driver_sql(
             f'REVOKE UPDATE, TRUNCATE ON TABLE "{_schema}".evidence_records FROM "{runtime_role}"'
+        )
+    database.verify_postgres_schema(runtime_engine)
+
+
+def test_postgres_capability_replay_ledger_is_atomic_durable_and_append_only(postgres_db):
+    database, runtime_engine, migration_engine, admin_engine, runtime_role, schema = postgres_db
+    from app.capability_broker import (
+        ExecutionRequest, PostgresReplayLedger, VoucherIssuer, VoucherVerifier,
+    )
+    from app.models import CapabilityReplay, Tenant
+
+    tenant_id = str(uuid.uuid4())
+    with database.SessionLocal() as db:
+        db.add(Tenant(id=tenant_id, name="PostgreSQL replay integration tenant"))
+        db.commit()
+
+    secret = b"postgres-replay-test-secret-material-32!"
+    request = ExecutionRequest(
+        run_id="run-postgres-1",
+        tenant_id=tenant_id,
+        principal_id="principal-postgres-1",
+        capability="calculate",
+        arguments={"expression": "2+2"},
+        policy_version="policy-v1",
+    )
+    issuer = VoucherIssuer(secret, {"calculate"}, ttl_seconds=30)
+    voucher = issuer.issue(request, now=90)
+    verifiers = [
+        VoucherVerifier(
+            secret, {"calculate"}, replay_ledger=PostgresReplayLedger(), clock=lambda: 100,
+        )
+        for _ in range(2)
+    ]
+
+    def consume(verifier):
+        try:
+            verifier.verify_and_consume(voucher, request)
+            return "accepted"
+        except PermissionError:
+            return "rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(consume, verifiers))
+    assert sorted(outcomes) == ["accepted", "rejected"]
+
+    with database.SessionLocal() as db:
+        rows = db.scalars(select(CapabilityReplay).where(
+            CapabilityReplay.tenant_id == tenant_id,
+        )).all()
+    assert len(rows) == 1
+    assert rows[0].nonce == voucher.nonce
+    assert rows[0].voucher_id == voucher.voucher_id
+    assert rows[0].consumed_at == 100
+
+    # Migration-role writes still hit append-only triggers.
+    with migration_engine.begin() as conn:
+        with pytest.raises(DBAPIError):
+            conn.exec_driver_sql(
+                "UPDATE capability_replay_ledger SET consumed_at = 101 WHERE voucher_id = %s",
+                (voucher.voucher_id,),
+            )
+    with migration_engine.begin() as conn:
+        with pytest.raises(DBAPIError):
+            conn.exec_driver_sql(
+                "DELETE FROM capability_replay_ledger WHERE voucher_id = %s",
+                (voucher.voucher_id,),
+            )
+
+    # Runtime must be read-only except for atomic replay insertion.
+    with admin_engine.begin() as conn:
+        conn.exec_driver_sql(
+            f'GRANT UPDATE ON TABLE "{schema}".capability_replay_ledger TO "{runtime_role}"'
+        )
+    with pytest.raises(RuntimeError, match="must have SELECT/INSERT"):
+        database.verify_postgres_schema(runtime_engine)
+    with admin_engine.begin() as conn:
+        conn.exec_driver_sql(
+            f'REVOKE UPDATE ON TABLE "{schema}".capability_replay_ledger FROM "{runtime_role}"'
         )
     database.verify_postgres_schema(runtime_engine)
