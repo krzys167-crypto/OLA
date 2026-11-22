@@ -13,18 +13,25 @@ class NinaTask:
     tenant_id: str
     task: str
     requested_tools: tuple[str, ...]
+    principal_id: str | None = None
 
     @classmethod
-    def create(cls, tenant_id: str, task: str, requested_tools: list[str] | tuple[str, ...]):
+    def create(cls, tenant_id: str, task: str, requested_tools: list[str] | tuple[str, ...],
+               principal_id: str | None = None):
         if not isinstance(task, str) or not task.strip():
             raise ValueError("task is required")
         if not isinstance(tenant_id, str) or not tenant_id.strip():
             raise ValueError("tenant_id is required")
+        if principal_id is not None and (
+            not isinstance(principal_id, str) or not principal_id.strip()
+        ):
+            raise ValueError("principal_id must be nonempty when provided")
         return cls(
             task_id=str(uuid.uuid4()),
             tenant_id=tenant_id,
             task=task.strip(),
             requested_tools=tuple(requested_tools),
+            principal_id=principal_id,
         )
 
 
@@ -68,7 +75,7 @@ class NinaOrchestrator:
                 "status": "BLOCK",
                 "reason": decision.reason,
             }
-        runtime = run_agent_task(task.tenant_id, task.task)
+        runtime = run_agent_task(task.tenant_id, task.task, task.principal_id)
         status = runtime.get("status", "UNKNOWN")
         # The legacy six-agent executor can fall back to a deterministic model.
         # That trace may be internally consistent, but is not evidence that an
