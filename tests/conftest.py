@@ -18,6 +18,13 @@ os.environ.setdefault("OLA_API_KEY_PEPPER", "test-only-api-key-pepper-not-for-pr
 os.environ.setdefault("OLA_PUBLIC_BASE_URL", "http://localhost:8000")
 
 @pytest.fixture(autouse=True)
+def _capability_voucher_test_configuration(monkeypatch):
+    # Test-only key and local replay mode; production never receives this value.
+    monkeypatch.setenv("OLA_ENVIRONMENT", "test")
+    monkeypatch.setenv("OLA_CAPABILITY_VOUCHER_KEY_HEX", "22" * 32)
+
+
+@pytest.fixture(autouse=True)
 def _functional_v4_test_keyring(monkeypatch, request):
     # Secret-management contract tests intentionally run without a test key.
     if request.node.get_closest_marker("secret_management"):
