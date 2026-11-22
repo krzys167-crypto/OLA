@@ -3,8 +3,18 @@
 No implicit deterministic fallback: planning requires a real configured LLM.
 All executable capabilities are already allowlisted by NINA.
 """
+import hashlib
 import json
 import os
+import tempfile
+import uuid
+
+from .database import engine
+from .hashchain import canonical_json
+from .capability_broker import (
+    ExecutionRequest, PostgresReplayLedger, SQLiteReplayLedger,
+    VoucherIssuer, VoucherVerifier,
+)
 
 from .workflow_engine import WorkflowEngine, WorkflowPlanError, validate_plan
 
@@ -96,34 +106,99 @@ def execute_registered_node(node, deps):
 def run_nina_workflow(*, tenant_id, requester_id, goal, allowed_tools, append,
                       planner=model_plan, executor=execute_registered_node,
                       fetch_records=None, require_overlap=False, expected_provider=None):
-    # The route checks NINA policy before calling this service. Defence in depth.
-    supported = {"safe_expression", "local_mcp_tool_registry.sha256", "llm_agent"}
-    if not set(allowed_tools) <= supported:
-        raise WorkflowPlanError("unregistered workflow tool")
-    nodes, provenance = planner(goal, tuple(allowed_tools))
-    nodes = validate_plan({"nodes": [
-        {"id": n.id, "tool": n.tool, "task": n.task, "needs": list(n.needs)}
-        for n in nodes]}, allowed_tools=set(allowed_tools))
-    evidence_ids = []
+    # Preflight the execution boundary before planner calls or DAG effects.
+    if not isinstance(requester_id, str) or not requester_id.strip():
+        raise WorkflowPlanError("authenticated workflow principal required")
+    raw_key = os.getenv("OLA_CAPABILITY_VOUCHER_KEY_HEX")
+    if not isinstance(raw_key, str) or not raw_key:
+        raise WorkflowPlanError("capability voucher key unavailable")
+    try:
+        secret = bytes.fromhex(raw_key)
+    except (ValueError, TypeError):
+        raise WorkflowPlanError("capability voucher key encoding invalid") from None
+    if len(secret) < 32:
+        raise WorkflowPlanError("capability voucher key must contain at least 32 bytes")
+    allowed_capabilities = {f"workflow.execute:{tool}" for tool in allowed_tools}
+    test_scope = None
+    try:
+        if engine.dialect.name == "postgresql":
+            replay_ledger = PostgresReplayLedger()
+        elif engine.dialect.name == "sqlite" and os.getenv("OLA_ENVIRONMENT") == "test":
+            # Local replay file is confined to explicit test mode.
+            test_scope = tempfile.TemporaryDirectory(prefix="ola-nina-replay-test-")
+            replay_ledger = SQLiteReplayLedger(
+                os.path.join(test_scope.name, "replay.sqlite3")
+            )
+        else:
+            raise WorkflowPlanError("shared durable replay ledger unavailable")
+        issuer = VoucherIssuer(secret, allowed_capabilities)
+        verifier = VoucherVerifier(secret, allowed_capabilities, replay_ledger=replay_ledger)
+    except WorkflowPlanError:
+        if test_scope is not None:
+            test_scope.cleanup()
+        raise
+    except Exception as exc:
+        if test_scope is not None:
+            test_scope.cleanup()
+        raise WorkflowPlanError(f"capability enforcement unavailable: {type(exc).__name__}") from None
 
-    def record(event):
-        payload = {**event, "requester_id": requester_id, "planner": provenance,
-                   "commit": os.getenv("OLA_RUNTIME_COMMIT", "UNKNOWN")}
-        saved = append(tenant_id, event["event"], payload)
-        if not isinstance(saved, dict) or not saved.get("id"):
-            raise RuntimeError("evidence write was not confirmed")
-        evidence_ids.append(saved["id"])
+    run_id = str(uuid.uuid4())
+    try:
+        nodes, provenance = planner(goal, tuple(allowed_tools))
+        nodes = validate_plan({"nodes": [
+            {"id": n.id, "tool": n.tool, "task": n.task, "needs": list(n.needs)}
+            for n in nodes]}, allowed_tools=set(allowed_tools))
+        evidence_ids = []
 
-    result = WorkflowEngine(max_workers=4).run(nodes, executor, record)
-    from .igor_workflow import verify_dag_records
-    igor = {"status": "UNKNOWN", "reason": "independent evidence reader not configured"}
-    if fetch_records is not None:
-        igor = verify_dag_records(
-            fetch_records(tenant_id), tenant_id=tenant_id, run_id=result["run_id"],
-            expected_commit=os.getenv("OLA_RUNTIME_COMMIT") or None,
-            require_overlap=require_overlap, expected_provider=expected_provider,
+        def record(event):
+            payload = {**event, "requester_id": requester_id, "planner": provenance,
+                       "commit": os.getenv("OLA_RUNTIME_COMMIT", "UNKNOWN")}
+            saved = append(tenant_id, event["event"], payload)
+            if not isinstance(saved, dict) or not saved.get("id"):
+                raise RuntimeError("evidence write was not confirmed")
+            evidence_ids.append(saved["id"])
+
+        def execute_authorized_node(node, deps):
+            capability = f"workflow.execute:{node.tool}"
+            arguments = {
+                "node_id": node.id, "tool": node.tool,
+                "task_digest": hashlib.sha256(node.task.encode("utf-8")).hexdigest(),
+                "dependency_digest": hashlib.sha256(
+                    canonical_json(deps).encode("utf-8")
+                ).hexdigest(),
+            }
+            request = ExecutionRequest(
+                run_id=run_id, tenant_id=tenant_id, principal_id=requester_id,
+                capability=capability, arguments=arguments,
+                policy_version="nina-workflow-capability-v1",
+            )
+            voucher = issuer.issue(request)
+            verifier.verify_and_consume(voucher, request)
+            record({
+                "event": "execution.capability.authorized",
+                "run_id": run_id, "node_id": node.id, "capability": capability,
+                "voucher_id": voucher.voucher_id,
+                "arguments_digest": voucher.arguments_digest,
+                "policy_version": voucher.policy_version,
+                "decision": "ALLOW",
+            })
+            return executor(node, deps)
+
+        result = WorkflowEngine(max_workers=4).run(
+            nodes, execute_authorized_node, record, run_id=run_id
         )
-    final_status = result["status"] if igor["status"] in ("VERIFIED", "UNKNOWN") else "BLOCK"
-    return {**result, "status": final_status, "tenant_id": tenant_id, "planner": provenance,
-            "evidence_ids": evidence_ids, "igor": igor, "human_gate": "NOT_APPROVED",
-            "verified": False}
+        from .igor_workflow import verify_dag_records
+        igor = {"status": "UNKNOWN", "reason": "independent evidence reader not configured"}
+        if fetch_records is not None:
+            igor = verify_dag_records(
+                fetch_records(tenant_id), tenant_id=tenant_id, run_id=result["run_id"],
+                expected_commit=os.getenv("OLA_RUNTIME_COMMIT") or None,
+                require_overlap=require_overlap, expected_provider=expected_provider,
+            )
+        final_status = result["status"] if igor["status"] in ("VERIFIED", "UNKNOWN") else "BLOCK"
+        return {**result, "status": final_status, "tenant_id": tenant_id, "planner": provenance,
+                "evidence_ids": evidence_ids, "igor": igor, "human_gate": "NOT_APPROVED",
+                "verified": False}
+    finally:
+        if test_scope is not None:
+            test_scope.cleanup()
