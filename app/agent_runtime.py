@@ -4,16 +4,21 @@ import ipaddress
 import json
 import operator
 import os
+import tempfile
 import uuid
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
 
-from .database import SessionLocal, append_evidence_atomic
+from .database import SessionLocal, append_evidence_atomic, engine
 from .hashchain import canonical_json
 from .igor_evidence_verifier import verify_chain, trusted_record
 from .models import EvidenceRecord
 from .runtime_provenance import runtime_source_commit
+from .capability_broker import (
+    ExecutionRequest, PostgresReplayLedger, SQLiteReplayLedger,
+    VoucherIssuer, VoucherVerifier,
+)
 
 
 AGENT_ROLES = [
@@ -471,82 +476,150 @@ def finalize_agent_run(tenant_id, run_id):
     return verify_agent_run(tenant_id, run_id)
 
 
-def run_agent_task(tenant_id, task):
+def run_agent_task(tenant_id, task, principal_id=None):
+    blocked = {
+        "run_id": None, "task": None, "final_result": None, "status": "BLOCK",
+        "agents": AGENT_ROLES, "evidence_count": 0, "evidence_ids": [], "execution": [],
+    }
     if not isinstance(task, str) or not task.strip() or len(task) > MAX_AGENT_TASK_CHARS:
-        return {"run_id": None, "task": None, "final_result": None, "status": "BLOCK",
-                "reason": "task must be a non-empty string no longer than 4096 characters",
-                "agents": AGENT_ROLES, "evidence_count": 0, "evidence_ids": [], "execution": []}
+        blocked["reason"] = "task must be a non-empty string no longer than 4096 characters"
+        return blocked
+    if principal_id is None and os.getenv("OLA_ENVIRONMENT") == "test":
+        principal_id = "test-runtime-principal"
+    if not isinstance(principal_id, str) or not principal_id.strip():
+        blocked["reason"] = "authenticated principal is required"
+        return blocked
     source_commit = _runtime_source_commit()
     if source_commit is None:
-        return {
-            "run_id": None,
-            "task": task,
-            "final_result": None,
-            "status": "BLOCK",
-            "reason": "runtime source commit missing or invalid",
-            "agents": AGENT_ROLES,
-            "evidence_count": 0,
-            "evidence_ids": [],
-            "execution": [],
-        }
+        blocked["reason"] = "runtime source commit missing or invalid"
+        return blocked
+
+    raw_key = os.getenv("OLA_CAPABILITY_VOUCHER_KEY_HEX")
+    if not isinstance(raw_key, str) or not raw_key:
+        blocked["reason"] = "capability voucher key is unavailable"
+        return blocked
+    try:
+        secret = bytes.fromhex(raw_key)
+    except (ValueError, TypeError):
+        blocked["reason"] = "capability voucher key encoding is invalid"
+        return blocked
+    if len(secret) < 32:
+        blocked["reason"] = "capability voucher key must contain at least 32 bytes"
+        return blocked
+
+    allowed_capabilities = {f"agent.execute:{role}" for role in AGENT_ROLES}
+    test_scope = None
+    try:
+        if engine.dialect.name == "postgresql":
+            replay_ledger = PostgresReplayLedger()
+        elif engine.dialect.name == "sqlite" and os.getenv("OLA_ENVIRONMENT") == "test":
+            # SQLite replay is confined to explicit pytest mode and a temporary,
+            # run-scoped file. It is never a runtime/multi-host fallback.
+            test_scope = tempfile.TemporaryDirectory(prefix="ola-capability-replay-test-")
+            replay_ledger = SQLiteReplayLedger(
+                os.path.join(test_scope.name, "replay.sqlite3")
+            )
+        else:
+            blocked["reason"] = "shared durable replay ledger is unavailable"
+            return blocked
+        issuer = VoucherIssuer(secret, allowed_capabilities)
+        verifier = VoucherVerifier(
+            secret, allowed_capabilities, replay_ledger=replay_ledger,
+        )
+    except Exception as exc:
+        if test_scope is not None:
+            test_scope.cleanup()
+        blocked["reason"] = f"capability enforcement unavailable: {type(exc).__name__}"
+        return blocked
+
     run_id = str(uuid.uuid4())
     evidence_ids = []
     execution = []
     previous_output = {"task_digest": _digest(task)}
-    append_evidence_atomic(tenant_id, "execution.run.start", {
-        "run_id": run_id, "task_digest": _digest(task), "source_commit": source_commit,
-    })
     try:
-        for agent in AGENT_ROLES:
-            evidence_id, output = _append_agent_evidence(
-                tenant_id, run_id, agent, task, previous_output, execution
-            )
-            evidence_ids.append(evidence_id)
-            execution.append(output)
-            previous_output = output
-    except Exception as exc:
-        # Store only the exception class; messages may contain prompts, secrets or PII.
+        append_evidence_atomic(tenant_id, "execution.run.start", {
+            "run_id": run_id, "task_digest": _digest(task),
+            "source_commit": source_commit, "principal_id": principal_id,
+        })
         try:
-            append_evidence_atomic(
-                tenant_id,
-                "execution.run.error",
-                {
-                    "run_id": run_id,
-                    "error_type": type(exc).__name__,
-                    "completed_agent_count": len(evidence_ids),
-                },
-                deduplicate=True,
-            )
-        except Exception:
+            for agent in AGENT_ROLES:
+                capability = f"agent.execute:{agent}"
+                arguments = {
+                    "agent_role": agent,
+                    "task_digest": _digest(task),
+                    "input_digest": _digest(canonical_json(previous_output)),
+                    "upstream_agents": [item["agent"] for item in execution],
+                }
+                request = ExecutionRequest(
+                    run_id=run_id, tenant_id=tenant_id, principal_id=principal_id,
+                    capability=capability, arguments=arguments,
+                    policy_version="agent-runtime-capability-v1",
+                )
+                voucher = issuer.issue(request)
+                # Consume the one-use voucher before appending authorization
+                # evidence or invoking the registered capability.
+                verifier.verify_and_consume(voucher, request)
+                append_evidence_atomic(
+                    tenant_id, "execution.capability.authorized", {
+                        "run_id": run_id, "tenant_id": tenant_id,
+                        "principal_id": principal_id, "capability": capability,
+                        "voucher_id": voucher.voucher_id,
+                        "arguments_digest": voucher.arguments_digest,
+                        "policy_version": voucher.policy_version,
+                        "source_commit": source_commit,
+                        "decision": "ALLOW",
+                    }, producer_id="ola_runtime",
+                )
+                evidence_id, output = _append_agent_evidence(
+                    tenant_id, run_id, agent, task, previous_output, execution
+                )
+                evidence_ids.append(evidence_id)
+                execution.append(output)
+                previous_output = output
+        except Exception as exc:
+            # Store only the exception class; messages may contain prompts,
+            # secrets or PII. No capability is invoked after authorization fails.
+            try:
+                append_evidence_atomic(
+                    tenant_id, "execution.run.error", {
+                        "run_id": run_id, "error_type": type(exc).__name__,
+                        "completed_agent_count": len(evidence_ids),
+                    }, deduplicate=True,
+                )
+            except Exception:
+                return {
+                    "run_id": run_id, "task": None, "final_result": None,
+                    "status": "FINALIZATION_PENDING",
+                    "reason": "failure evidence could not be persisted",
+                    "agents": AGENT_ROLES, "evidence_count": len(evidence_ids),
+                    "evidence_ids": evidence_ids, "execution": execution,
+                }
+            finalization = finalize_agent_run(tenant_id, run_id)
             return {
                 "run_id": run_id, "task": None, "final_result": None,
-                "status": "FINALIZATION_PENDING",
-                "reason": "failure evidence could not be persisted",
+                "status": finalization["status"],
+                "reason": finalization.get("reason", f"agent execution failed: {type(exc).__name__}"),
                 "agents": AGENT_ROLES, "evidence_count": len(evidence_ids),
                 "evidence_ids": evidence_ids, "execution": execution,
+                "verification_scope": finalization.get("verification_scope", []),
+                "not_established": finalization.get("not_established", []),
             }
+
         finalization = finalize_agent_run(tenant_id, run_id)
+        final_result = execution[-1].get("final_result") if execution else None
         return {
-            "run_id": run_id, "task": None, "final_result": None,
-            "status": finalization["status"],
-            "reason": finalization.get("reason", f"agent execution failed: {type(exc).__name__}"),
+            "run_id": run_id, "task": task if finalization["status"] == "VERIFIED" else None,
+            "final_result": final_result if finalization["status"] == "VERIFIED" else None,
+            "status": finalization["status"], "reason": finalization.get("reason"),
             "agents": AGENT_ROLES, "evidence_count": len(evidence_ids),
             "evidence_ids": evidence_ids, "execution": execution,
             "verification_scope": finalization.get("verification_scope", []),
             "not_established": finalization.get("not_established", []),
         }
+    finally:
+        if test_scope is not None:
+            test_scope.cleanup()
 
-    finalization = finalize_agent_run(tenant_id, run_id)
-    final_result = execution[-1].get("final_result") if execution else None
-    return {
-        "run_id": run_id, "task": task if finalization["status"] == "VERIFIED" else None,
-        "final_result": final_result if finalization["status"] == "VERIFIED" else None,
-        "status": finalization["status"], "reason": finalization.get("reason"),
-        "agents": AGENT_ROLES, "evidence_count": len(evidence_ids),
-        "evidence_ids": evidence_ids, "execution": execution,
-        "verification_scope": finalization.get("verification_scope", []),
-        "not_established": finalization.get("not_established", []),
-    }
 
 def run_multi_agent_task(tenant_id, task, agents):
     """Build a deterministic digest-chain simulation for a supplied agent registry.
