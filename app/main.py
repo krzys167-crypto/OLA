@@ -726,7 +726,7 @@ def create_nina_workflow(body: dict, x_api_key: str | None = Header(default=None
     # This must happen before NINA or the LLM planner is invoked.
     if len(requested_tools) > len(REGISTERED_TOOLS) or len(set(requested_tools)) != len(requested_tools):
         raise HTTPException(status_code=400, detail="requested_tools must be unique and bounded")
-    nina_task = NinaTask.create(tenant_id, task_text, requested_tools)
+    nina_task = NinaTask.create(tenant_id, task_text, requested_tools, requester_id)
     policy = NinaOrchestrator().plan(nina_task)
     if policy.status != "ALLOW":
         return {"status": "BLOCK", "reason": policy.reason, "verified": False}
