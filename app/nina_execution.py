@@ -24,7 +24,7 @@ def run_nina_task(tenant_id, requester_id, task_text, requested_tools, *, execut
     if not isinstance(requested_tools, list):
         raise ValueError("requested_tools must be a list")
     execution_context = dict(execution_context or {})
-    nina_task = NinaTask.create(tenant_id, task_text, requested_tools)
+    nina_task = NinaTask.create(tenant_id, task_text, requested_tools, requester_id)
     nina = NinaOrchestrator()
     plan = nina.plan(nina_task)
     if plan.status != "ALLOW":
