@@ -7,7 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from app.capability_broker import (
-    ExecutionRequest, MockExecutor, SQLiteReplayLedger, VoucherIssuer, VoucherVerifier,
+    ExecutionRequest, MemoryReplayLedger, MockExecutor, PostgresReplayLedger,
+    SQLiteReplayLedger, VoucherIssuer, VoucherVerifier,
 )
 
 
@@ -23,6 +24,8 @@ def request(**overrides):
 
 
 def setup(ledger=None):
+    if ledger is None:
+        ledger = MemoryReplayLedger()
     issuer = VoucherIssuer(SECRET, {"calculate"}, ttl_seconds=30)
     verifier = VoucherVerifier(SECRET, {"calculate"}, replay_ledger=ledger, clock=lambda: 100)
     executor = MockExecutor(verifier)
@@ -98,7 +101,7 @@ def test_nonce_reuse_rejected_even_with_different_voucher_id():
 
 def test_expired_voucher_rejected():
     issuer = VoucherIssuer(SECRET, {"calculate"}, ttl_seconds=5)
-    verifier = VoucherVerifier(SECRET, {"calculate"}, clock=lambda: 106)
+    verifier = VoucherVerifier(SECRET, {"calculate"}, replay_ledger=MemoryReplayLedger(), clock=lambda: 106)
     executor = MockExecutor(verifier)
     req = request()
     voucher = issuer.issue(req, now=100)
@@ -109,7 +112,7 @@ def test_expired_voucher_rejected():
 
 def test_future_voucher_rejected():
     issuer = VoucherIssuer(SECRET, {"calculate"}, ttl_seconds=5)
-    verifier = VoucherVerifier(SECRET, {"calculate"}, clock=lambda: 100)
+    verifier = VoucherVerifier(SECRET, {"calculate"}, replay_ledger=MemoryReplayLedger(), clock=lambda: 100)
     req = request()
     voucher = issuer.issue(req, now=101)
     with pytest.raises(PermissionError, match="not yet valid"):
@@ -174,3 +177,34 @@ def test_sqlite_ledger_consumes_nonce_atomically_across_workers(tmp_path):
     with ThreadPoolExecutor(max_workers=2) as pool:
         outcomes = list(pool.map(consume, verifiers))
     assert sorted(outcomes) == ["accepted", "rejected"]
+
+
+def test_verifier_requires_explicit_replay_ledger_even_in_test_mode(monkeypatch):
+    monkeypatch.setenv("OLA_ENVIRONMENT", "test")
+    with pytest.raises(ValueError, match="explicit replay ledger"):
+        VoucherVerifier(SECRET, {"calculate"}, clock=lambda: 100)
+
+
+def test_verifier_rejects_local_ledger_outside_explicit_sqlite_test_mode(monkeypatch):
+    monkeypatch.setenv("OLA_ENVIRONMENT", "production")
+    with pytest.raises(ValueError, match="explicit SQLite test mode"):
+        VoucherVerifier(SECRET, {"calculate"}, replay_ledger=MemoryReplayLedger())
+
+
+def test_verifier_rejects_arbitrary_consume_adapter_in_production(monkeypatch):
+    monkeypatch.setenv("OLA_ENVIRONMENT", "production")
+
+    class FakeLedger:
+        def consume(self, *args, **kwargs):
+            return None
+
+    with pytest.raises(ValueError, match="PostgresReplayLedger"):
+        VoucherVerifier(SECRET, {"calculate"}, replay_ledger=FakeLedger())
+
+
+def test_verifier_accepts_explicit_postgres_ledger_in_production(monkeypatch):
+    monkeypatch.setenv("OLA_ENVIRONMENT", "production")
+    verifier = VoucherVerifier(
+        SECRET, {"calculate"}, replay_ledger=PostgresReplayLedger(), clock=lambda: 100,
+    )
+    assert verifier is not None
