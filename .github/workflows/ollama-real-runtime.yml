@@ -17,6 +17,9 @@ env:
   # Public test-only key; never use this value for production.
   OLA_EVIDENCE_V4_KEYRING_JSON: '{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}'
   OLA_EVIDENCE_V4_ACTIVE_KEY_ID: ci-v4-2026
+  # CI-only fixture: source-SHA-derived, never use as a production secret.
+  OLA_ENVIRONMENT: test
+  OLA_CAPABILITY_VOUCHER_KEY_HEX: "${{ github.event.pull_request.head.sha || github.sha }}${{ github.event.pull_request.head.sha || github.sha }}"
   OLA_LLM_PROVIDER: ollama
   OLA_LLM_MODE: required
   OLLAMA_MODEL: qwen2.5:0.5b-instruct
@@ -82,7 +85,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --detach --rm -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" -e OLA_EVIDENCE_V4_KEYRING_JSON='{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}' -e OLA_EVIDENCE_V4_ACTIVE_KEY_ID=ci-v4-2026 \
+          docker run --detach --rm -e OLA_ENVIRONMENT="$OLA_ENVIRONMENT" -e OLA_CAPABILITY_VOUCHER_KEY_HEX="$OLA_CAPABILITY_VOUCHER_KEY_HEX" -e OLA_API_KEY_PEPPER="$OLA_API_KEY_PEPPER" -e OLA_EVIDENCE_V4_KEYRING_JSON='{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}' -e OLA_EVIDENCE_V4_ACTIVE_KEY_ID=ci-v4-2026 \
             --name ola-ollama-e2e \
             --network host \
             -e OLA_EG_DB_PATH=/data/ola.db \
