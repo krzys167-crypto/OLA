@@ -52,7 +52,7 @@ def main():
     if args.inspect:
         print(json.dumps({"tenant_id": tenant, **chain_snapshot(tenant)}, sort_keys=True))
         return
-    result = run_agent_task(tenant, args.task)
+    result = run_agent_task(tenant, args.task, principal_id="ci-state-continuity")
     if result.get("status") != "VERIFIED":
         raise SystemExit(json.dumps({"tenant_id": tenant, "result": result}, sort_keys=True))
     print(json.dumps({
