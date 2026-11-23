@@ -13,6 +13,9 @@ env:
   OLA_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   OLA_EVIDENCE_V4_KEYRING_JSON: '{"ci-v4-2026":"cHl0ZXN0LW9ubHktdjQta2V5LW1hdGVyaWFsLTMyYnl0ZXMhIQ=="}'
   OLA_EVIDENCE_V4_ACTIVE_KEY_ID: ci-v4-2026
+  # CI-only fixture: source-SHA-derived, never use as a production secret.
+  OLA_ENVIRONMENT: test
+  OLA_CAPABILITY_VOUCHER_KEY_HEX: "${{ github.event.pull_request.head.sha || github.sha }}${{ github.event.pull_request.head.sha || github.sha }}"
 
 
 jobs:
@@ -32,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           docker volume create ola-state-data
-          docker run -d --name ola-state --mount source=ola-state-data,target=/data -e OLA_RUNTIME_COMMIT="$OLA_SOURCE_SHA" -e OLA_EVIDENCE_V4_KEYRING_JSON="$OLA_EVIDENCE_V4_KEYRING_JSON" -e OLA_EVIDENCE_V4_ACTIVE_KEY_ID="$OLA_EVIDENCE_V4_ACTIVE_KEY_ID" -p 8000:8000 ola-state-continuity
+          docker run -d --name ola-state --mount source=ola-state-data,target=/data -e OLA_ENVIRONMENT="$OLA_ENVIRONMENT" -e OLA_CAPABILITY_VOUCHER_KEY_HEX="$OLA_CAPABILITY_VOUCHER_KEY_HEX" -e OLA_RUNTIME_COMMIT="$OLA_SOURCE_SHA" -e OLA_EVIDENCE_V4_KEYRING_JSON="$OLA_EVIDENCE_V4_KEYRING_JSON" -e OLA_EVIDENCE_V4_ACTIVE_KEY_ID="$OLA_EVIDENCE_V4_ACTIVE_KEY_ID" -p 8000:8000 ola-state-continuity
           for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:8000/health >/dev/null; then exit 0; fi; sleep 2; done
           docker logs ola-state
           exit 1
@@ -59,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           docker rm -f ola-state
-          docker run -d --name ola-state --mount source=ola-state-data,target=/data -e OLA_RUNTIME_COMMIT="$OLA_SOURCE_SHA" -e OLA_EVIDENCE_V4_KEYRING_JSON="$OLA_EVIDENCE_V4_KEYRING_JSON" -e OLA_EVIDENCE_V4_ACTIVE_KEY_ID="$OLA_EVIDENCE_V4_ACTIVE_KEY_ID" -p 8000:8000 ola-state-continuity
+          docker run -d --name ola-state --mount source=ola-state-data,target=/data -e OLA_ENVIRONMENT="$OLA_ENVIRONMENT" -e OLA_CAPABILITY_VOUCHER_KEY_HEX="$OLA_CAPABILITY_VOUCHER_KEY_HEX" -e OLA_RUNTIME_COMMIT="$OLA_SOURCE_SHA" -e OLA_EVIDENCE_V4_KEYRING_JSON="$OLA_EVIDENCE_V4_KEYRING_JSON" -e OLA_EVIDENCE_V4_ACTIVE_KEY_ID="$OLA_EVIDENCE_V4_ACTIVE_KEY_ID" -p 8000:8000 ola-state-continuity
           for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:8000/health >/dev/null; then break; fi; sleep 2; done
           docker exec ola-state env PYTHONPATH=/app python scripts/state_continuity_runtime.py --tenant "$OLA_TEST_TENANT" --inspect > restored-checkpoint.json
           python - <<'PY'
