@@ -55,7 +55,24 @@ def test_registered_low_risk_agent_is_allowed_and_decision_is_chained(monkeypatc
     assert all(item["invocation_type"] == "local_deterministic_model"
                for item in response.json()["execution"])
     rows = _evidence(tenant_id)
-    assert len(rows) == 9  # gate decision, run lifecycle, and six agent records
+    expected_roles = (
+        "codeact", "react", "agentic_rag", "mcp_tool_use", "self_reflection", "multi_agent",
+    )
+    expected_event_types = ["execution.safety_gate", "execution.run.start"]
+    for role in expected_roles:
+        expected_event_types.extend([
+            "execution.capability.authorized",
+            f"agent.{role}",
+        ])
+    expected_event_types.append("execution.run.end")
+    assert [record_type for record_type, _, _ in rows] == expected_event_types
+    authorization_payloads = [
+        payload for record_type, payload, _ in rows
+        if record_type == "execution.capability.authorized"
+    ]
+    assert [item["capability"] for item in authorization_payloads] == [
+        f"agent.execute:{role}" for role in expected_roles
+    ]
     assert rows[0][0] == "execution.safety_gate"
     assert rows[0][1]["decision"] == "ALLOW"
     assert rows[0][1]["agent_id"] == "agent-001"
