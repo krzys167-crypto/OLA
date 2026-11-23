@@ -35,7 +35,7 @@ def test_nina_allows_registered_tool():
 
 def test_nina_explicit_llm_never_verifies_deterministic_fallback(monkeypatch):
     import app.nina as nina_module
-    monkeypatch.setattr(nina_module, "run_agent_task", lambda tenant, task: {
+    monkeypatch.setattr(nina_module, "run_agent_task", lambda tenant, task, principal_id=None: {
         "status": "VERIFIED", "run_id": "fallback",
         "execution": [{"invocation_type": "local_deterministic_model",
                        "provider": "local", "model": "deterministic-runtime-v1"}],
@@ -48,7 +48,7 @@ def test_nina_explicit_llm_never_verifies_deterministic_fallback(monkeypatch):
 
 def test_nina_explicit_llm_requires_real_response_ids(monkeypatch):
     import app.nina as nina_module
-    monkeypatch.setattr(nina_module, "run_agent_task", lambda tenant, task: {
+    monkeypatch.setattr(nina_module, "run_agent_task", lambda tenant, task, principal_id=None: {
         "status": "VERIFIED", "run_id": "missing-response",
         "execution": [{"invocation_type": "real_llm", "provider": "ollama",
                        "model": "qwen", "response_id": None}],
@@ -59,7 +59,7 @@ def test_nina_explicit_llm_requires_real_response_ids(monkeypatch):
 
 def test_nina_explicit_llm_accepts_complete_real_trace(monkeypatch):
     import app.nina as nina_module
-    monkeypatch.setattr(nina_module, "run_agent_task", lambda tenant, task: {
+    monkeypatch.setattr(nina_module, "run_agent_task", lambda tenant, task, principal_id=None: {
         "status": "VERIFIED", "run_id": "real-response",
         "execution": [{"invocation_type": "real_llm", "provider": "ollama",
                        "model": "qwen", "response_id": "r-123"}],
@@ -70,7 +70,7 @@ def test_nina_explicit_llm_accepts_complete_real_trace(monkeypatch):
 
 def test_nina_non_llm_task_keeps_existing_deterministic_contract(monkeypatch):
     import app.nina as nina_module
-    monkeypatch.setattr(nina_module, "run_agent_task", lambda tenant, task: {
+    monkeypatch.setattr(nina_module, "run_agent_task", lambda tenant, task, principal_id=None: {
         "status": "VERIFIED", "run_id": "deterministic",
         "execution": [{"invocation_type": "local_deterministic_model"}],
     })
