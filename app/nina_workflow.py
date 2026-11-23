@@ -18,6 +18,12 @@ from .capability_broker import (
 
 from .workflow_engine import WorkflowEngine, WorkflowPlanError, validate_plan
 
+REGISTERED_WORKFLOW_TOOLS = frozenset({
+    "safe_expression",
+    "local_mcp_tool_registry.sha256",
+    "llm_agent",
+})
+
 
 def model_plan(goal, tools, *, independent_only=False):
     from .agent_runtime import _invoke_llm
@@ -106,6 +112,17 @@ def execute_registered_node(node, deps):
 def run_nina_workflow(*, tenant_id, requester_id, goal, allowed_tools, append,
                       planner=model_plan, executor=execute_registered_node,
                       fetch_records=None, require_overlap=False, expected_provider=None):
+    # Reject invalid or ambiguous allowlists before invoking the model planner.
+    if not isinstance(allowed_tools, (list, tuple)) or not 1 <= len(allowed_tools) <= len(REGISTERED_WORKFLOW_TOOLS):
+        raise WorkflowPlanError("workflow tool allowlist must be a bounded non-empty list")
+    requested_tools = tuple(allowed_tools)
+    if any(type(tool) is not str or tool not in REGISTERED_WORKFLOW_TOOLS
+           for tool in requested_tools):
+        raise WorkflowPlanError("workflow tool not registered")
+    if len(set(requested_tools)) != len(requested_tools):
+        raise WorkflowPlanError("duplicate workflow tool")
+    allowed_tools = requested_tools
+
     # Preflight the execution boundary before planner calls or DAG effects.
     if not isinstance(requester_id, str) or not requester_id.strip():
         raise WorkflowPlanError("authenticated workflow principal required")
