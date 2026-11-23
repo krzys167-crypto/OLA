@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import sqlite3
@@ -231,7 +232,25 @@ class VoucherVerifier:
         self._secret = secret
         self._allowed = frozenset(allowed_capabilities)
         self._clock = clock
-        self._ledger = replay_ledger or MemoryReplayLedger()
+        if replay_ledger is None:
+            raise ValueError(
+                "an explicit replay ledger is required; implicit memory fallback is forbidden"
+            )
+        if not callable(getattr(replay_ledger, "consume", None)):
+            raise ValueError("replay ledger must implement consume()")
+
+        local_test_ledger = isinstance(replay_ledger, (MemoryReplayLedger, SQLiteReplayLedger))
+        if local_test_ledger:
+            from .database import engine
+            if os.getenv("OLA_ENVIRONMENT") != "test" or engine.dialect.name != "sqlite":
+                raise ValueError(
+                    "MemoryReplayLedger and SQLiteReplayLedger require explicit SQLite test mode"
+                )
+        elif not isinstance(replay_ledger, PostgresReplayLedger):
+            raise ValueError(
+                "production capability replay requires PostgresReplayLedger"
+            )
+        self._ledger = replay_ledger
 
     def verify_and_consume(self, voucher: CapabilityVoucher, request: ExecutionRequest) -> None:
         if not isinstance(voucher, CapabilityVoucher) or not isinstance(request, ExecutionRequest):
