@@ -1,0 +1,73 @@
+name: OLA Run Lifecycle Contract
+
+on:
+  push:
+    branches:
+      - main
+      - feat/run-lifecycle-audit-*
+    paths:
+      - "app/agent_runtime.py"
+      - "app/run_lifecycle.py"
+      - "app/replay.py"
+      - "app/igor.py"
+      - "app/nina.py"
+      - "app/main.py"
+      - "scripts/verify_agent_runtime.py"
+      - "tests/test_run_lifecycle.py"
+      - "tests/test_agent_runtime.py"
+      - "tests/test_replay.py"
+      - "tests/test_igor.py"
+      - "tests/test_nina_run_endpoint_contract.py"
+      - ".github/workflows/run-lifecycle-contract.yml"
+      - "requirements.txt"
+  pull_request:
+    paths:
+      - "app/agent_runtime.py"
+      - "app/run_lifecycle.py"
+      - "app/replay.py"
+      - "app/igor.py"
+      - "app/nina.py"
+      - "app/main.py"
+      - "scripts/verify_agent_runtime.py"
+      - "tests/test_run_lifecycle.py"
+      - "tests/test_agent_runtime.py"
+      - "tests/test_replay.py"
+      - "tests/test_igor.py"
+      - "tests/test_nina_run_endpoint_contract.py"
+      - ".github/workflows/run-lifecycle-contract.yml"
+      - "requirements.txt"
+
+permissions:
+  contents: read
+
+jobs:
+  run-lifecycle-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run lifecycle, replay and verifier contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q \
+            tests/test_run_lifecycle.py \
+            tests/test_agent_runtime.py \
+            tests/test_replay.py \
+            tests/test_igor.py \
+            tests/test_nina_run_endpoint_contract.py \
+            2>&1 | tee run-lifecycle-pytest.log
+      - name: Upload lifecycle test output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: run-lifecycle-contract-${{ github.sha }}
+          path: run-lifecycle-pytest.log
+          if-no-files-found: error
