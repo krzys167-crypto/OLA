@@ -7,6 +7,14 @@ from .hashchain import canonical_json, verify_chain
 
 
 RUN_LIFECYCLE_SCHEMA = "ola.run-lifecycle/v1"
+EXPECTED_AGENT_ROLES = [
+    "codeact",
+    "react",
+    "agentic_rag",
+    "mcp_tool_use",
+    "self_reflection",
+    "multi_agent",
+]
 
 
 def _payload(record):
@@ -180,6 +188,8 @@ def verify_replay(records, expected_run_id, expected_tenant_id,
         return {"status": "BLOCK", "reason": "run lifecycle agent roster invalid", "event_count": len(records)}
     if end.get("expected_agent_roles") != expected_roles:
         return {"status": "BLOCK", "reason": "run lifecycle agent roster mismatch", "event_count": len(records)}
+    if expected_roles != EXPECTED_AGENT_ROLES:
+        return {"status": "BLOCK", "reason": "run lifecycle agent roster is not the canonical six-agent roster", "event_count": len(records)}
 
     agent_events = [(record, payload) for record, payload in run_events if record["record_type"].startswith("agent.")]
     agent_roles = [payload.get("agent") for _, payload in agent_events]
