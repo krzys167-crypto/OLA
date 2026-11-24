@@ -347,6 +347,8 @@ def run_invoice_task(tenant_id, task):
         "lifecycle": replay.get("lifecycle", {"status": "BLOCK"}),
         "replay_verification": replay,
         "execution_status": replay.get("execution_status", "FAILED"),
+        "failed_agent": failed_agent,
+        "blocked_agent_roles": blocked_agent_roles,
         "execution": execution,
         "final_result": final_result,
     }
