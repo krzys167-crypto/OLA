@@ -60,6 +60,14 @@ jobs:
       - name: Build deployment image from exact source
         if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         run: docker build --tag "ola:${EXPECTED_COMMIT}" .
+      - name: Issue fresh run replay challenge
+        if: ${{ env.OPENAI_AVAILABLE == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPLAY_NONCE="$(openssl rand -hex 32)"
+          echo "REPLAY_NONCE=$REPLAY_NONCE" >> "$GITHUB_ENV"
+          printf '{"schema":"ola-run-challenge/v1","source_commit":"%s","replay_nonce":"%s"}\n' "$EXPECTED_COMMIT" "$REPLAY_NONCE" > "$RUNNER_TEMP/run-challenge.json"
       - name: Run real runtime
         if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         env:
@@ -68,6 +76,7 @@ jobs:
           docker run --detach --rm --name ola-nina-e2e --publish 8000:8000 \
             -e OLA_SOURCE_COMMIT="$EXPECTED_COMMIT" \
             -e OLA_RUNTIME_COMMIT="$EXPECTED_COMMIT" \
+            -e OLA_REPLAY_NONCE="$REPLAY_NONCE" \
             -e OPENAI_API_KEY="$OPENAI_API_KEY" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
             -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
@@ -80,7 +89,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          docker exec -i -e EXPECTED_COMMIT="${EXPECTED_COMMIT}" -e OPENAI_API_KEY="${OPENAI_API_KEY}" -e OLA_SOURCE_COMMIT="${EXPECTED_COMMIT}" -e OLA_RUNTIME_COMMIT="${EXPECTED_COMMIT}" -e OLA_LLM_MODE="${OLA_LLM_MODE}" -e OLA_LLM_MODEL="${OLA_LLM_MODEL}" ola-nina-e2e python - <<'PY' > runtime-proof.json
+          docker exec -i -e EXPECTED_COMMIT="${EXPECTED_COMMIT}" -e EXPECTED_NONCE="${REPLAY_NONCE}" -e OPENAI_API_KEY="${OPENAI_API_KEY}" -e OLA_REPLAY_NONCE="${REPLAY_NONCE}" -e OLA_SOURCE_COMMIT="${EXPECTED_COMMIT}" -e OLA_RUNTIME_COMMIT="${EXPECTED_COMMIT}" -e OLA_LLM_MODE="${OLA_LLM_MODE}" -e OLA_LLM_MODEL="${OLA_LLM_MODEL}" ola-nina-e2e python - <<'PY' > runtime-proof.json
           import hashlib,json,os,sqlite3,subprocess,urllib.request,uuid
           db_path="/data/ola.db"; tenant_id=str(uuid.uuid4()); raw_key="ci-real-runtime-key"
           db=sqlite3.connect(db_path)
@@ -95,6 +104,8 @@ jobs:
           assert result["status"]=="VERIFIED" and result["task"]==task and result["final_result"]=="391",result
           assert result["agents"]==["codeact","react","agentic_rag","mcp_tool_use","self_reflection","multi_agent"],result
           assert result["evidence_count"]==6,result
+          assert result["replay_nonce"]==os.environ["EXPECTED_NONCE"],result
+          assert result["lifecycle"]["status"]=="VERIFIED",result
           assert all(item["invocation_type"]=="real_llm" for item in result["execution"]),result
           assert all(item["provider"]=="openai" for item in result["execution"]),result
           assert all(item["model"]==os.environ["OLA_LLM_MODEL"] for item in result["execution"]),result
@@ -113,7 +124,7 @@ jobs:
             assert row_tenant==tenant_id and seq==expected_seq and prev_hash==expected_prev
             assert record_hash==hashlib.sha256(f"ola.chain/2|{tenant_id}|{seq}|{prev_hash}|{len(rtype)}:{rtype}|{payload_json}".encode()).hexdigest()
             expected_prev=record_hash
-          verifier=subprocess.run(["python","scripts/verify_agent_runtime.py","--tenant-id",tenant_id,"--run-id",result["run_id"],"--expected-commit",os.environ["EXPECTED_COMMIT"],"--expected-task",task,"--expected-result","391","--expected-provider","openai","--expected-model",os.environ["OLA_LLM_MODEL"],"--expected-invocation-type","real_llm"],capture_output=True,text=True)
+          verifier=subprocess.run(["python","scripts/verify_agent_runtime.py","--tenant-id",tenant_id,"--run-id",result["run_id"],"--expected-commit",os.environ["EXPECTED_COMMIT"],"--expected-task",task,"--expected-result","391","--expected-provider","openai","--expected-model",os.environ["OLA_LLM_MODEL"],"--expected-invocation-type","real_llm","--expected-nonce",os.environ["EXPECTED_NONCE"]],capture_output=True,text=True)
           assert verifier.returncode==0,(verifier.stdout,verifier.stderr)
           print(json.dumps({"status":"VERIFIED","commit":os.environ["EXPECTED_COMMIT"],"source_commit":os.environ["EXPECTED_COMMIT"],"task":task,"final_result":"391","agents":result["agents"],"evidence_ids":result["evidence_ids"],"evidence_count":len(agent_rows),"tenant_chain_record_count":len(all_rows),"run_lifecycle_record_count":len(lifecycle_rows),"hash_chain":"PASS","independent_verifier":"PASS","human_gate":"CONTRACT_ONLY","provider":"openai","model":os.environ["OLA_LLM_MODEL"],"invocation_type":"real_llm","llm_invocations":len(result["execution"]),"response_ids":[item["response_id"] for item in result["execution"] if item.get("response_id")],
           "response_digests":[item["response_digest"] for item in result["execution"] if item.get("response_digest")],"run_id":result["run_id"]},sort_keys=True))
@@ -158,7 +169,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          docker exec -i -e EXPECTED_COMMIT="${EXPECTED_COMMIT}" -e OPENAI_API_KEY="${OPENAI_API_KEY}" -e OLA_LLM_MODE="${OLA_LLM_MODE}" -e OLA_LLM_MODEL="${OLA_LLM_MODEL}" ola-nina-e2e python - <<'PY' > replay-proof.json
+          docker exec -i -e EXPECTED_COMMIT="${EXPECTED_COMMIT}" -e OPENAI_API_KEY="${OPENAI_API_KEY}" -e OLA_REPLAY_NONCE="${REPLAY_NONCE}" -e OLA_LLM_MODE="${OLA_LLM_MODE}" -e OLA_LLM_MODEL="${OLA_LLM_MODEL}" ola-nina-e2e python - <<'PY' > replay-proof.json
           import json,os,urllib.request
           task="Calculate 17 * 23 and return the verified result."
           req=urllib.request.Request("http://127.0.0.1:8000/agent-run",data=json.dumps({"task":task}).encode(),headers={"Content-Type":"application/json","X-API-Key":"ci-real-runtime-key"},method="POST")
@@ -166,6 +177,8 @@ jobs:
           assert d["status"]=="VERIFIED" and d["task"]==task and d["final_result"]=="391"
           assert d["agents"]==["codeact","react","agentic_rag","mcp_tool_use","self_reflection","multi_agent"]
           assert d["evidence_count"]==6
+          assert d["replay_nonce"]==os.environ["OLA_REPLAY_NONCE"]
+          assert d["lifecycle"]["status"]=="VERIFIED"
           assert all(item["invocation_type"]=="real_llm" for item in d["execution"])
           assert all(item["provider"]=="openai" for item in d["execution"])
           assert all(item["model"]==os.environ["OLA_LLM_MODEL"] for item in d["execution"])
@@ -188,6 +201,8 @@ jobs:
           sha256sum runtime-proof.json > runtime-proof.sha256
           sha256sum provenance.txt > provenance.sha256
           sha256sum replay-proof.json > replay-proof.sha256
+          cp "$RUNNER_TEMP/run-challenge.json" run-challenge.json
+          sha256sum run-challenge.json > run-challenge.sha256
       - name: Upload immutable runtime evidence
         if: ${{ env.OPENAI_AVAILABLE == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -198,6 +213,8 @@ jobs:
             runtime-proof.sha256
             replay-proof.json
             replay-proof.sha256
+            run-challenge.json
+            run-challenge.sha256
             provenance.txt
             provenance.sha256
 
