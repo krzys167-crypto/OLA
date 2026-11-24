@@ -186,25 +186,51 @@ def verify_replay(records, expected_run_id, expected_tenant_id,
         return {"status": "BLOCK", "reason": "run agent order mismatch", "event_count": len(records)}
 
     statuses = [payload.get("status") for _, payload in agent_events]
+    invocation_statuses = [payload.get("execution_status", "VERIFIED") for _, payload in agent_events]
     outcome = end.get("outcome")
     if outcome == "SUCCEEDED":
         if agent_roles != expected_roles or any(status != "VERIFIED" for status in statuses):
             return {"status": "BLOCK", "reason": "successful run has incomplete agent evidence", "event_count": len(records)}
+        if any(status != "VERIFIED" for status in invocation_statuses):
+            return {"status": "BLOCK", "reason": "successful run contains failed agent invocation", "event_count": len(records)}
         failed_agent = None
         completed_roles = expected_roles
+        blocked_roles = []
+        execution_status = "SUCCEEDED"
+    elif outcome == "COMPLETED_BLOCKED":
+        if agent_roles != expected_roles:
+            return {"status": "BLOCK", "reason": "blocked run has incomplete agent evidence", "event_count": len(records)}
+        if any(status != "VERIFIED" for status in invocation_statuses):
+            return {"status": "BLOCK", "reason": "blocked decision contains failed agent invocation", "event_count": len(records)}
+        blocked_roles = [role for role, status in zip(agent_roles, statuses) if status == "BLOCK"]
+        if not blocked_roles or any(status not in {"VERIFIED", "BLOCK"} for status in statuses):
+            return {"status": "BLOCK", "reason": "blocked run agent status sequence invalid", "event_count": len(records)}
+        failed_agent = None
+        completed_roles = expected_roles
+        execution_status = "BLOCKED"
     elif outcome == "FAILED":
-        if not agent_events or statuses[-1] != "BLOCK" or any(status != "VERIFIED" for status in statuses[:-1]):
+        if not agent_events or agent_roles != expected_roles[:len(agent_roles)]:
+            return {"status": "BLOCK", "reason": "failed run agent order mismatch", "event_count": len(records)}
+        if statuses[-1] != "BLOCK" or invocation_statuses[-1] != "FAILED":
             return {"status": "BLOCK", "reason": "failed run agent status sequence invalid", "event_count": len(records)}
+        if any(status != "VERIFIED" for status in statuses[:-1]):
+            return {"status": "BLOCK", "reason": "failed run prior agent status invalid", "event_count": len(records)}
+        if any(status != "VERIFIED" for status in invocation_statuses[:-1]):
+            return {"status": "BLOCK", "reason": "failed run prior invocation status invalid", "event_count": len(records)}
         failed_agent = agent_roles[-1]
         completed_roles = agent_roles[:-1]
+        blocked_roles = []
         failure_payload = agent_events[-1][1]
         if (
             failure_payload.get("error_type") is None
             or not isinstance(failure_payload.get("error_digest"), str)
             or len(failure_payload["error_digest"]) != 64
             or end.get("failed_agent") != failed_agent
+            or end.get("error_type") != failure_payload.get("error_type")
+            or end.get("error_digest") != failure_payload.get("error_digest")
         ):
             return {"status": "BLOCK", "reason": "failed agent evidence is incomplete", "event_count": len(records)}
+        execution_status = "FAILED"
     else:
         return {"status": "BLOCK", "reason": "run lifecycle outcome invalid", "event_count": len(records)}
 
@@ -212,6 +238,8 @@ def verify_replay(records, expected_run_id, expected_tenant_id,
         return {"status": "BLOCK", "reason": "run lifecycle completion roster mismatch", "event_count": len(records)}
     if end.get("failed_agent") != failed_agent:
         return {"status": "BLOCK", "reason": "run lifecycle failure roster mismatch", "event_count": len(records)}
+    if end.get("blocked_agent_roles", []) != blocked_roles:
+        return {"status": "BLOCK", "reason": "run lifecycle blocked-agent roster mismatch", "event_count": len(records)}
     if end.get("agent_event_count") != len(agent_events):
         return {"status": "BLOCK", "reason": "run lifecycle agent event count mismatch", "event_count": len(records)}
 
@@ -248,15 +276,16 @@ def verify_replay(records, expected_run_id, expected_tenant_id,
         "status": "VERIFIED",
         "reason": (
             "tenant hash-chain and run lifecycle verified; execution ended "
-            + outcome
+            + execution_status
         ),
         "event_count": len(records),
         "run_event_count": len(run_events),
         "run_id": expected_run_id,
         "tenant_id": expected_tenant_id,
-        "execution_status": outcome,
+        "execution_status": execution_status,
         "completed_agent_roles": completed_roles,
         "failed_agent": failed_agent,
+        "blocked_agent_roles": blocked_roles,
         "lifecycle": {
             "status": "VERIFIED",
             "start_record_id": start_record.get("id"),
