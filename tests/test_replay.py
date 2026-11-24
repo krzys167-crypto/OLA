@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 
 from app.hashchain import GENESIS_HASH, compute_record_hash
 from app.replay import build_replay, run_event_digest, verify_replay
@@ -41,8 +42,9 @@ def _chain(count=2, run_id="r1", tenant_id="tenant-1"):
         "expected_agent_roles": roles,
     }, tenant_id)
     for index, role in enumerate(roles):
-        agent_started_at = f"2026-11-24T19:00:00.{100000 + index * 200000:06d}+00:00"
-        agent_ended_at = f"2026-11-24T19:00:00.{150000 + index * 200000:06d}+00:00"
+        base = datetime(2026, 11, 24, 19, 0, 0, tzinfo=timezone.utc)
+        agent_started_at = (base + timedelta(milliseconds=100 + index * 200)).isoformat()
+        agent_ended_at = (base + timedelta(milliseconds=150 + index * 200)).isoformat()
         _append(records, f"agent.{role}", {
             "run_id": run_id,
             "agent": role,
@@ -64,7 +66,7 @@ def _chain(count=2, run_id="r1", tenant_id="tenant-1"):
         "schema": "ola.run-lifecycle/v1",
         "run_id": run_id,
         "started_at": started_at,
-        "ended_at": "2026-11-24T19:00:01+00:00",
+        "ended_at": "2026-11-24T19:00:03+00:00",
         "task_digest": __import__("hashlib").sha256(task.encode()).hexdigest(),
         "source_commit": source_commit,
         "replay_nonce": nonce,
