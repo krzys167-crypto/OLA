@@ -565,9 +565,9 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
     for record in record_dicts:
         try:
             payload = json.loads(record["payload_json"])
-        except json.JSONDecodeError:
+        except (TypeError, json.JSONDecodeError):
             continue
-        if payload.get("run_id") == run_id:
+        if isinstance(payload, dict) and payload.get("run_id") == run_id:
             run_record_dicts.append(record)
 
     expected_provider = provider if invocation_type == "real_llm" else None
