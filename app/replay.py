@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from datetime import datetime
 
 from .hashchain import canonical_json, verify_chain
@@ -185,6 +186,40 @@ def verify_replay(records, expected_run_id, expected_tenant_id,
     if len(agent_events) > len(expected_roles) or agent_roles != expected_roles[:len(agent_roles)]:
         return {"status": "BLOCK", "reason": "run agent order mismatch", "event_count": len(records)}
 
+    agent_instance_ids = set()
+    context_digests = set()
+    real_llm_events = []
+    for record, payload in agent_events:
+        role = payload.get("agent")
+        if record["record_type"] != f"agent.{role}":
+            return {"status": "BLOCK", "reason": "run agent record type mismatch", "event_count": len(records)}
+        required_agent_fields = {
+            "agent_instance_id", "execution_boundary", "context_digest",
+            "input_digest", "task", "started_at", "ended_at",
+            "source_commit", "replay_nonce", "status",
+        }
+        if not required_agent_fields.issubset(payload):
+            return {"status": "BLOCK", "reason": "run agent evidence incomplete", "event_count": len(records)}
+        if payload.get("execution_boundary") != "independent":
+            return {"status": "BLOCK", "reason": "run agent execution boundary mismatch", "event_count": len(records)}
+        instance_id = payload.get("agent_instance_id")
+        context_digest = payload.get("context_digest")
+        input_digest = payload.get("input_digest")
+        if not isinstance(instance_id, str) or not instance_id:
+            return {"status": "BLOCK", "reason": "run agent instance identity missing", "event_count": len(records)}
+        if not isinstance(context_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", context_digest):
+            return {"status": "BLOCK", "reason": "run agent context digest malformed", "event_count": len(records)}
+        if not isinstance(input_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", input_digest):
+            return {"status": "BLOCK", "reason": "run agent input digest malformed", "event_count": len(records)}
+        agent_instance_ids.add(instance_id)
+        context_digests.add(context_digest)
+        if payload.get("invocation_type") == "real_llm":
+            real_llm_events.append(payload)
+            if not (payload.get("response_id") or payload.get("response_digest")):
+                return {"status": "BLOCK", "reason": "real LLM response identity missing", "event_count": len(records)}
+    if len(agent_instance_ids) != len(agent_events) or len(context_digests) != len(agent_events):
+        return {"status": "BLOCK", "reason": "run agent identities or contexts are not unique", "event_count": len(records)}
+
     statuses = [payload.get("status") for _, payload in agent_events]
     invocation_statuses = [payload.get("execution_status", "VERIFIED") for _, payload in agent_events]
     outcome = end.get("outcome")
@@ -249,6 +284,12 @@ def verify_replay(records, expected_run_id, expected_tenant_id,
         return {"status": "BLOCK", "reason": "run lifecycle replay nonce missing", "event_count": len(records)}
     if not isinstance(start_commit, str) or not start_commit:
         return {"status": "BLOCK", "reason": "run lifecycle source commit missing", "event_count": len(records)}
+    if not isinstance(start.get("task_digest"), str) or not re.fullmatch(r"[0-9a-f]{64}", start["task_digest"]):
+        return {"status": "BLOCK", "reason": "run lifecycle task digest missing or malformed", "event_count": len(records)}
+    if real_llm_events and (
+        start_commit.upper() == "UNKNOWN" or not re.fullmatch(r"[0-9a-f]{64}", start_nonce)
+    ):
+        return {"status": "BLOCK", "reason": "real LLM run source or replay challenge missing", "event_count": len(records)}
     if end.get("replay_nonce") != start_nonce or end.get("source_commit") != start_commit:
         return {"status": "BLOCK", "reason": "run lifecycle provenance mismatch", "event_count": len(records)}
     for _, payload in agent_events:
