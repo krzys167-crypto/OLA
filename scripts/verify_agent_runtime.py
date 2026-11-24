@@ -106,7 +106,8 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
         return fail("run lifecycle start/end missing or duplicated")
     start_row, start_payload = starts_run[0]
     end_row, end_payload = ends_run[0]
-    if lifecycle_events[0][0][3] != "run.start" or lifecycle_events[-1][0][3] != "run.end":
+    expected_lifecycle_types = ["run.start", *[f"agent.{role}" for role in ROLES], "run.end"]
+    if [row[3] for row, _ in lifecycle_events] != expected_lifecycle_types:
         return fail("run lifecycle ordering mismatch")
     if start_payload.get("schema") != "ola.run-lifecycle/v1" or end_payload.get("schema") != "ola.run-lifecycle/v1":
         return fail("run lifecycle schema mismatch")
@@ -127,10 +128,16 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
         return fail("run lifecycle replay nonce mismatch")
     if expected_nonce is not None and start_nonce != expected_nonce:
         return fail("run lifecycle challenge mismatch")
+    recorded_task = json.loads(run_rows[0][4]).get("task")
+    if not isinstance(recorded_task, str):
+        return fail("run lifecycle task is missing")
+    recorded_task_digest = hashlib.sha256(recorded_task.encode("utf-8")).hexdigest()
+    if start_payload.get("task_digest") != recorded_task_digest or end_payload.get("task_digest") != recorded_task_digest:
+        return fail("run lifecycle task digest mismatch")
     if expected_task is not None:
         expected_task_digest = hashlib.sha256(expected_task.encode("utf-8")).hexdigest()
-        if start_payload.get("task_digest") != expected_task_digest or end_payload.get("task_digest") != expected_task_digest:
-            return fail("run lifecycle task digest mismatch")
+        if expected_task != recorded_task or recorded_task_digest != expected_task_digest:
+            return fail("run lifecycle expected task mismatch")
     if end_payload.get("agent_event_count") != len(run_rows):
         return fail("run lifecycle agent event count mismatch")
     pre_end = [row for row, _ in lifecycle_events if row[3] != "run.end"]
@@ -167,6 +174,8 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
         payload = json.loads(row[4])
         payloads.append(payload)
         agent = payload.get("agent")
+        if row[3] != f"agent.{agent}":
+            return fail(f"agent record type does not match role for {agent}")
         required = {
             "capability", "tool", "tool_output", "result", "status",
             "agent_instance_id", "execution_boundary", "source_commit", "context_digest",
@@ -216,6 +225,11 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
 
     if starts != sorted(starts) or ends != sorted(ends):
         return fail("agent execution timestamps are not monotonic")
+    previous_end = run_started_at
+    for started_at, ended_at in zip(starts, ends):
+        if started_at < previous_end or ended_at > run_ended_at:
+            return fail("agent execution timestamp is outside the run lifecycle")
+        previous_end = ended_at
     if len(instance_ids) != len(ROLES):
         return fail("agent instance identities are not unique")
     source_commits = {payload.get("source_commit") for payload in payloads}
