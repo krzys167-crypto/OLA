@@ -197,11 +197,14 @@ def verify_replay(records, expected_run_id, expected_tenant_id,
             "agent_instance_id", "execution_boundary", "context_digest",
             "input_digest", "task", "started_at", "ended_at",
             "source_commit", "replay_nonce", "status",
+            "provider", "model", "invocation_type",
         }
         if not required_agent_fields.issubset(payload):
             return {"status": "BLOCK", "reason": "run agent evidence incomplete", "event_count": len(records)}
         if payload.get("execution_boundary") != "independent":
             return {"status": "BLOCK", "reason": "run agent execution boundary mismatch", "event_count": len(records)}
+        if not all(isinstance(payload.get(field), str) and payload[field] for field in ("provider", "model", "invocation_type")):
+            return {"status": "BLOCK", "reason": "run agent invocation metadata missing", "event_count": len(records)}
         instance_id = payload.get("agent_instance_id")
         context_digest = payload.get("context_digest")
         input_digest = payload.get("input_digest")
@@ -211,12 +214,18 @@ def verify_replay(records, expected_run_id, expected_tenant_id,
             return {"status": "BLOCK", "reason": "run agent context digest malformed", "event_count": len(records)}
         if not isinstance(input_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", input_digest):
             return {"status": "BLOCK", "reason": "run agent input digest malformed", "event_count": len(records)}
+        if not isinstance(payload.get("task"), str):
+            return {"status": "BLOCK", "reason": "run agent task must be text", "event_count": len(records)}
         agent_instance_ids.add(instance_id)
         context_digests.add(context_digest)
         if payload.get("invocation_type") == "real_llm":
             real_llm_events.append(payload)
             if not (payload.get("response_id") or payload.get("response_digest")):
                 return {"status": "BLOCK", "reason": "real LLM response identity missing", "event_count": len(records)}
+            if not re.fullmatch(r"[0-9a-f]{64}", payload.get("replay_nonce", "")):
+                return {"status": "BLOCK", "reason": "real LLM replay challenge missing or malformed", "event_count": len(records)}
+        elif payload.get("invocation_type") not in {"local_deterministic_model", "agent_error"}:
+            return {"status": "BLOCK", "reason": "run agent invocation type unsupported", "event_count": len(records)}
     if len(agent_instance_ids) != len(agent_events) or len(context_digests) != len(agent_events):
         return {"status": "BLOCK", "reason": "run agent identities or contexts are not unique", "event_count": len(records)}
 
@@ -259,7 +268,7 @@ def verify_replay(records, expected_run_id, expected_tenant_id,
         if (
             failure_payload.get("error_type") is None
             or not isinstance(failure_payload.get("error_digest"), str)
-            or len(failure_payload["error_digest"]) != 64
+            or not re.fullmatch(r"[0-9a-f]{64}", failure_payload["error_digest"])
             or end.get("failed_agent") != failed_agent
             or end.get("error_type") != failure_payload.get("error_type")
             or end.get("error_digest") != failure_payload.get("error_digest")
@@ -308,7 +317,7 @@ def verify_replay(records, expected_run_id, expected_tenant_id,
     for record, payload in agent_events:
         agent_started = _parse_timestamp(payload.get("started_at"))
         agent_ended = _parse_timestamp(payload.get("ended_at"))
-        if agent_started is None or agent_ended is None or agent_ended < agent_started:
+        if agent_started is None or agent_ended is None or agent_ended <= agent_started:
             return {"status": "BLOCK", "reason": "agent lifecycle timestamps invalid", "event_count": len(records)}
         if agent_started < previous_agent_end or agent_ended > ended_at:
             return {"status": "BLOCK", "reason": "agent lifecycle timing/order mismatch", "event_count": len(records)}
