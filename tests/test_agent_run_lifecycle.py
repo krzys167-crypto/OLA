@@ -101,12 +101,14 @@ def test_agent_exception_is_recorded_and_run_closes_as_failed(monkeypatch):
     assert types == ["run.start", "agent.codeact", "agent.react", "run.end"]
     assert result["status"] == "BLOCK"
     assert failure["status"] == "BLOCK"
+    assert failure["execution_status"] == "FAILED"
     assert failure["error_type"] == "TimeoutError"
     assert failure["error_digest"] == hashlib.sha256(
-        b"TimeoutError:provider timeout with secret=do-not-store"
+        f"ola.agent-failure/v1|{result['run_id']}|react|TimeoutError".encode()
     ).hexdigest()
     assert "do-not-store" not in failure.values()
     assert end["outcome"] == "FAILED"
+    assert end["error_digest"] == failure["error_digest"]
     assert end["failed_agent"] == "react"
     assert end["completed_agent_roles"] == ["codeact"]
     assert agent_runtime.verify_agent_run(tenant_id, result["run_id"])["status"] == "BLOCK"
