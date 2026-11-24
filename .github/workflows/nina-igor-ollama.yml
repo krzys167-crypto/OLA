@@ -191,8 +191,12 @@ jobs:
           assert body["provenance"]["llm_invocations"]==6, body
           assert len(body["provenance"]["response_ids"]) + len(body["provenance"].get("response_digests", []))==6, body
           assert body["replay_verification"]["status"]=="VERIFIED", body
-          assert body["replay_verification"]["event_count"]==7, body
-          assert len(body["replay"])==7, body
+          assert body["replay_verification"]["execution_status"]=="SUCCEEDED", body
+          assert body["replay_verification"]["lifecycle"]["status"]=="VERIFIED", body
+          assert body["replay_verification"]["run_event_count"]==8, body
+          assert len(body["replay"])==body["replay_verification"]["event_count"], body
+          run_events=[event for event in body["replay"] if event.get("run_id")==body["run_id"] and (event.get("record_type") in {"run.start","run.end"} or (event.get("record_type") or "").startswith("agent."))]
+          assert [event["record_type"] for event in run_events]==["run.start","agent.codeact","agent.react","agent.agentic_rag","agent.mcp_tool_use","agent.self_reflection","agent.multi_agent","run.end"], run_events
           assert body["policy"]["status"]=="VERIFIED", body
           # HumanGate remains fail-closed until the separate approval endpoint is used.
           assert body["human_gate"]["status"]=="BLOCK", body
