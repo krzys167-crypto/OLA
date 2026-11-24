@@ -1,8 +1,10 @@
 import hashlib
 import json
 import math
+import os
 import re
 import uuid
+from datetime import datetime, timezone
 from decimal import Context, Decimal, ROUND_HALF_UP
 
 from sqlalchemy import select
@@ -10,6 +12,7 @@ from sqlalchemy import select
 from .database import SessionLocal
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
 from .models import EvidenceRecord
+from .replay import run_event_digest, verify_replay
 
 
 AGENT_ROLES = [
@@ -77,10 +80,9 @@ def money(net, vat_rate):
 
 
 def _append(tenant_id, run_id, record_type, payload):
-    # same chain, same hashing (v2, type-bound), through the retrying append; imported here because pipeline_bridge
-    # imports modules that import this one
+    """Append one business-run event to the tenant's shared append-only chain."""
     from .pipeline_bridge import append_evidence
-    return append_evidence(tenant_id, record_type, {"run_id": run_id, **payload}, attempts=96)["id"]
+    return append_evidence(tenant_id, record_type, {"run_id": run_id, **payload}, attempts=96)
 
 
 def _invoice_from_task(task):
@@ -98,12 +100,20 @@ def _invoice_from_task(task):
 
 def run_invoice_task(tenant_id, task):
     invoice = _invoice_from_task(task)
+    net, vat_rate = validate_invoice(invoice)
+    expected_vat, gross, policy_match = money(net, vat_rate)
+
     run_id = str(uuid.uuid4())
+    source_commit = os.getenv("OLA_SOURCE_COMMIT", os.getenv("OLA_RUNTIME_COMMIT", "UNKNOWN"))
+    replay_nonce = os.getenv("OLA_REPLAY_NONCE") or "NOT_REQUIRED"
+    task_digest = hashlib.sha256(task.encode("utf-8")).hexdigest()
+    started_at = datetime.now(timezone.utc).isoformat()
     execution = []
     evidence_ids = []
-
-    net, vat_rate = validate_invoice(invoice)
-    expected_vat, gross, policy_match = money(net, vat_rate)     # policy_match False -> the controlled policy REJECTS it
+    blocked_agent_roles = []
+    failed_agent = None
+    failure_type = None
+    failure_digest = None
 
     checks = {
         "codeact": {
@@ -158,8 +168,20 @@ def run_invoice_task(tenant_id, task):
         },
     }
 
+    from .pipeline_bridge import load_chain
+    start_record = _append(tenant_id, run_id, "run.start", {
+        "schema": "ola.run-lifecycle/v1",
+        "started_at": started_at,
+        "task_digest": task_digest,
+        "source_commit": source_commit,
+        "replay_nonce": replay_nonce,
+        "expected_agent_roles": list(AGENT_ROLES),
+        "runtime_kind": "business_invoice",
+    })
+
     previous = {"task": task}
     for agent in AGENT_ROLES:
+        agent_started_at = datetime.now(timezone.utc).isoformat()
         instance_id = str(uuid.uuid4())
         output = {
             "agent": agent,
@@ -167,15 +189,103 @@ def run_invoice_task(tenant_id, task):
             "execution_boundary": "independent",
             "context_digest": hashlib.sha256(canonical_json({"run_id": run_id, "agent": agent, "previous": previous}).encode()).hexdigest(),
             "task": task,
+            "input_digest": hashlib.sha256(canonical_json(previous).encode("utf-8")).hexdigest(),
+            "started_at": agent_started_at,
+            "ended_at": datetime.now(timezone.utc).isoformat(),
+            "source_commit": source_commit,
+            "replay_nonce": replay_nonce,
+            "execution_status": "VERIFIED",
             **checks[agent],
             "provider": "local",
             "model": "deterministic-business-runtime-v1",
             "invocation_type": "local_deterministic_model",
             "status": "VERIFIED" if (policy_match or agent != "self_reflection") else "BLOCK",
         }
-        evidence_ids.append(_append(tenant_id, run_id, f"agent.{agent}", output))
+        try:
+            record = _append(tenant_id, run_id, f"agent.{agent}", output)
+        except Exception as exc:
+            failed_agent = agent
+            failure_type = type(exc).__name__
+            failure_digest = hashlib.sha256(f"{failure_type}:{exc}".encode("utf-8")).hexdigest()
+            failure = {
+                "agent": agent,
+                "agent_instance_id": instance_id,
+                "execution_boundary": "independent",
+                "context_digest": output["context_digest"],
+                "task": task,
+                "input_digest": output["input_digest"],
+                "started_at": agent_started_at,
+                "ended_at": datetime.now(timezone.utc).isoformat(),
+                "source_commit": source_commit,
+                "replay_nonce": replay_nonce,
+                "execution_status": "FAILED",
+                "capability": "agent_execution_failed",
+                "tool": "agent.error",
+                "tool_output": "",
+                "result": "business agent invocation failed; output was not accepted",
+                "provider": "local",
+                "model": "deterministic-business-runtime-v1",
+                "invocation_type": "agent_error",
+                "status": "BLOCK",
+                "error_type": failure_type,
+                "error_digest": failure_digest,
+            }
+            try:
+                record = _append(tenant_id, run_id, f"agent.{agent}", failure)
+                evidence_ids.append(record["id"])
+                execution.append(failure)
+            except Exception as append_exc:
+                failure_type = type(append_exc).__name__
+                failure_digest = hashlib.sha256(f"{failure_type}:{append_exc}".encode("utf-8")).hexdigest()
+            break
+        evidence_ids.append(record["id"])
         execution.append(output)
+        if output["status"] == "BLOCK":
+            blocked_agent_roles.append(agent)
         previous = output
+
+    run_rows = [
+        record for record in load_chain(tenant_id)
+        if (
+            record["record_type"] == "run.start"
+            or record["record_type"].startswith("agent.")
+        )
+        and json.loads(record["payload_json"]).get("run_id") == run_id
+    ]
+    agent_rows = [record for record in run_rows if record["record_type"].startswith("agent.")]
+    completed_agent_roles = [
+        json.loads(record["payload_json"])["agent"]
+        for record in agent_rows
+        if json.loads(record["payload_json"]).get("execution_status", "VERIFIED") == "VERIFIED"
+    ]
+    if failed_agent:
+        outcome = "FAILED"
+    elif blocked_agent_roles:
+        outcome = "COMPLETED_BLOCKED"
+    else:
+        outcome = "SUCCEEDED"
+
+    end_record = _append(tenant_id, run_id, "run.end", {
+        "schema": "ola.run-lifecycle/v1",
+        "started_at": started_at,
+        "ended_at": datetime.now(timezone.utc).isoformat(),
+        "task_digest": task_digest,
+        "source_commit": source_commit,
+        "replay_nonce": replay_nonce,
+        "expected_agent_roles": list(AGENT_ROLES),
+        "outcome": outcome,
+        "completed_agent_roles": completed_agent_roles,
+        "blocked_agent_roles": blocked_agent_roles,
+        "failed_agent": failed_agent,
+        "error_type": failure_type,
+        "error_digest": failure_digest,
+        "start_record_id": start_record["id"],
+        "start_record_hash": start_record["record_hash"],
+        "agent_event_count": len(agent_rows),
+        "run_event_count": len(run_rows),
+        "run_event_digest": run_event_digest(run_rows),
+        "runtime_kind": "business_invoice",
+    })
 
     with SessionLocal() as db:
         rows = db.scalars(
@@ -183,27 +293,57 @@ def run_invoice_task(tenant_id, task):
             .where(EvidenceRecord.tenant_id == tenant_id)
             .order_by(EvidenceRecord.seq.asc())
         ).all()
-    chain = [{"tenant_id": r.tenant_id, "seq": r.seq, "prev_hash": r.prev_hash, "record_hash": r.record_hash, "record_type": r.record_type, "payload_json": r.payload_json} for r in rows]
+    chain = [{
+        "id": row.id,
+        "tenant_id": row.tenant_id,
+        "seq": row.seq,
+        "prev_hash": row.prev_hash,
+        "record_hash": row.record_hash,
+        "record_type": row.record_type,
+        "payload_json": row.payload_json,
+    } for row in rows]
     chain_ok, reason = verify_chain(chain)
-    final_result = execution[-1]["final_result"]
-    status = "VERIFIED" if (chain_ok and policy_match) else "BLOCK"
-    if chain_ok and not policy_match:
-        reason = "invoice VAT rate differs from the controlled policy; payment rejected"
-    if policy_match and not chain_ok:
-        # the evidence was written (it is append-only) before the chain could be re-checked, so its multi_agent record
-        # says "approve": the RESPONSE must not repeat that. A caller that reads final_result must see no payment.
-        final_result = {**final_result, "payment_decision": "NOT_APPROVED", "transfer_amount": 0.0,
-                        "transfer_status": "NOT_SENT"}
-        execution = execution[:-1] + [{**execution[-1], "final_result": final_result,
-                                       "result": f"six-agent invoice decision BLOCKED: evidence chain verification failed ({reason})"}]
+    replay = verify_replay(
+        chain,
+        expected_run_id=run_id,
+        expected_tenant_id=tenant_id,
+        expected_record_count=len(chain),
+        expected_tip_hash=chain[-1]["record_hash"] if chain else None,
+    )
+    final_result = execution[-1].get("final_result") if execution and not failed_agent else None
+    if failed_agent:
+        status = "BLOCK"
+        reason = f"agent execution failed: {failed_agent}"
+    elif chain_ok and replay["status"] == "VERIFIED" and policy_match:
+        status = "VERIFIED"
+    else:
+        status = "BLOCK"
+        if chain_ok and not policy_match:
+            reason = "invoice VAT rate differs from the controlled policy; payment rejected"
+        elif not chain_ok:
+            reason = f"evidence hash-chain verification failed: {reason}"
+        else:
+            reason = replay.get("reason", "run replay verification failed")
+    if policy_match and (not chain_ok or replay["status"] != "VERIFIED" or failed_agent):
+        final_result = {
+            **(final_result or checks["multi_agent"]["final_result"]),
+            "payment_decision": "NOT_APPROVED",
+            "transfer_amount": 0.0,
+            "transfer_status": "NOT_SENT",
+        }
+
     return {
         "run_id": run_id,
         "task": task,
         "status": status,
         "reason": reason,
         "agents": AGENT_ROLES,
-        "evidence_count": len(evidence_ids),
+        "evidence_count": len(agent_rows),
         "evidence_ids": evidence_ids,
+        "lifecycle": replay.get("lifecycle", {"status": "BLOCK"}),
+        "replay_verification": replay,
+        "execution_status": replay.get("execution_status", "FAILED"),
         "execution": execution,
         "final_result": final_result,
     }
+
