@@ -97,17 +97,23 @@ jobs:
           assert all(item["provider"]=="openai" for item in result["execution"]),result
           assert all(item["model"]==os.environ["OLA_LLM_MODEL"] for item in result["execution"]),result
           assert all(item.get("response_id") or item.get("response_digest") for item in result["execution"]),result
-          db=sqlite3.connect(db_path); rows=db.execute("SELECT id,tenant_id,seq,record_type,payload_json,prev_hash,record_hash FROM evidence_records WHERE tenant_id=? ORDER BY seq",(tenant_id,)).fetchall(); db.close()
-          assert [r[0] for r in rows]==result["evidence_ids"]
+          db=sqlite3.connect(db_path); all_rows=db.execute("SELECT id,tenant_id,seq,record_type,payload_json,prev_hash,record_hash FROM evidence_records WHERE tenant_id=? ORDER BY seq",(tenant_id,)).fetchall(); db.close()
+          run_rows=[row for row in all_rows if json.loads(row[4]).get("run_id")==result["run_id"]]
+          agent_rows=[row for row in run_rows if row[3].startswith("agent.")]
+          lifecycle_rows=[row for row in run_rows if row[3]=="run.start" or row[3]=="run.end" or row[3].startswith("agent.")]
+          assert [r[0] for r in agent_rows]==result["evidence_ids"]
+          assert [r[3] for r in agent_rows]==["agent.codeact","agent.react","agent.agentic_rag","agent.mcp_tool_use","agent.self_reflection","agent.multi_agent"]
+          assert [r[3] for r in lifecycle_rows]==["run.start","agent.codeact","agent.react","agent.agentic_rag","agent.mcp_tool_use","agent.self_reflection","agent.multi_agent","run.end"]
+          assert result["lifecycle"]["status"]=="VERIFIED"
           expected_prev="0"*64
-          for expected_seq,row in enumerate(rows):
+          for expected_seq,row in enumerate(all_rows):
             _,row_tenant,seq,rtype,payload_json,prev_hash,record_hash=row
             assert row_tenant==tenant_id and seq==expected_seq and prev_hash==expected_prev
             assert record_hash==hashlib.sha256(f"ola.chain/2|{tenant_id}|{seq}|{prev_hash}|{len(rtype)}:{rtype}|{payload_json}".encode()).hexdigest()
             expected_prev=record_hash
           verifier=subprocess.run(["python","scripts/verify_agent_runtime.py","--tenant-id",tenant_id,"--run-id",result["run_id"],"--expected-commit",os.environ["EXPECTED_COMMIT"],"--expected-task",task,"--expected-result","391","--expected-provider","openai","--expected-model",os.environ["OLA_LLM_MODEL"],"--expected-invocation-type","real_llm"],capture_output=True,text=True)
           assert verifier.returncode==0,(verifier.stdout,verifier.stderr)
-          print(json.dumps({"status":"VERIFIED","commit":os.environ["EXPECTED_COMMIT"],"source_commit":os.environ["EXPECTED_COMMIT"],"task":task,"final_result":"391","agents":result["agents"],"evidence_ids":result["evidence_ids"],"evidence_count":len(rows),"hash_chain":"PASS","independent_verifier":"PASS","human_gate":"CONTRACT_ONLY","provider":"openai","model":os.environ["OLA_LLM_MODEL"],"invocation_type":"real_llm","llm_invocations":len(result["execution"]),"response_ids":[item["response_id"] for item in result["execution"] if item.get("response_id")],
+          print(json.dumps({"status":"VERIFIED","commit":os.environ["EXPECTED_COMMIT"],"source_commit":os.environ["EXPECTED_COMMIT"],"task":task,"final_result":"391","agents":result["agents"],"evidence_ids":result["evidence_ids"],"evidence_count":len(agent_rows),"tenant_chain_record_count":len(all_rows),"run_lifecycle_record_count":len(lifecycle_rows),"hash_chain":"PASS","independent_verifier":"PASS","human_gate":"CONTRACT_ONLY","provider":"openai","model":os.environ["OLA_LLM_MODEL"],"invocation_type":"real_llm","llm_invocations":len(result["execution"]),"response_ids":[item["response_id"] for item in result["execution"] if item.get("response_id")],
           "response_digests":[item["response_digest"] for item in result["execution"] if item.get("response_digest")],"run_id":result["run_id"]},sort_keys=True))
           PY
           cat runtime-proof.json
