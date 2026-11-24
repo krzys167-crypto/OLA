@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import json
 
 from .hashchain import verify_chain
+from .replay import verify_replay
 
 
 def _payload(record):
@@ -38,7 +39,7 @@ class IgorVerifier:
     classification from the supplied records and expected provenance/outcome.
     """
 
-    def verify_records(self, records, expected_commit, expected_task, expected_result, expected_provider=None, expected_model=None, expected_run_id=None, expected_invocation_type=None, expected_nonce=None):
+    def verify_records(self, records, expected_commit, expected_task, expected_result, expected_provider=None, expected_model=None, expected_run_id=None, expected_invocation_type=None, expected_nonce=None, require_lifecycle=False):
         if not records:
             return IgorVerification("UNKNOWN", "missing evidence", {"chain": False})
 
@@ -46,6 +47,32 @@ class IgorVerifier:
         checks = {"chain": chain_ok}
         if not chain_ok:
             return IgorVerification("BLOCK", chain_reason, checks)
+
+        if require_lifecycle:
+            tenant_ids = {record.get("tenant_id") for record in records}
+            if expected_run_id is None or len(tenant_ids) != 1 or None in tenant_ids:
+                checks["lifecycle"] = False
+                return IgorVerification("BLOCK", "run lifecycle tenant or run identity is missing", checks)
+            replay = verify_replay(
+                records,
+                expected_run_id=expected_run_id,
+                expected_tenant_id=next(iter(tenant_ids)),
+                expected_record_count=len(records),
+                expected_tip_hash=records[-1].get("record_hash"),
+            )
+            checks["lifecycle"] = (
+                replay.get("status") == "VERIFIED"
+                and replay.get("lifecycle", {}).get("status") == "VERIFIED"
+            )
+            checks["execution_status"] = replay.get("execution_status")
+            if not checks["lifecycle"]:
+                return IgorVerification("BLOCK", replay.get("reason", "run lifecycle verification failed"), checks)
+            if checks["execution_status"] != "SUCCEEDED":
+                return IgorVerification(
+                    "BLOCK",
+                    f"run execution is not successful: {checks['execution_status']}",
+                    checks,
+                )
 
         # A chain-verified record whose payload is not a JSON object is not evidence (and must not crash the verifier).
         parsed = [(record, _payload(record)) for record in records]
