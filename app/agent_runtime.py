@@ -372,7 +372,10 @@ def _append_failed_agent_evidence(tenant_id, run_id, agent, task, previous_outpu
     }
     ended_at = datetime.now(timezone.utc).isoformat()
     error_type = type(exc).__name__
-    error_digest = _digest(f"{error_type}:{exc}")
+    # Exception messages can contain credentials, request fragments or PII. Bind a
+    # stable failure identity without hashing (and thereby retaining a fingerprint of)
+    # the provider's raw message.
+    error_digest = _digest(f"ola.agent-failure/v1|{run_id}|{agent}|{error_type}")
     output = {
         "agent": agent,
         "agent_instance_id": instance_id,
@@ -445,17 +448,19 @@ def run_agent_task(tenant_id, task):
         except Exception as exc:
             failed_agent = agent
             failure_type = type(exc).__name__
-            failure_digest = _digest(f"{failure_type}:{exc}")
+            failure_digest = _digest(f"ola.agent-failure/v1|{run_id}|{agent}|{failure_type}")
             try:
                 evidence_id, output = _append_failed_agent_evidence(
                     tenant_id, run_id, agent, task, previous_output, execution,
                     replay_nonce, agent_started_at, exc
                 )
+                failure_type = output["error_type"]
+                failure_digest = output["error_digest"]
             except Exception as append_exc:
                 # Terminal evidence records that the role failed and that its dedicated
                 # event could not be appended; replay therefore remains BLOCK.
                 failure_type = type(append_exc).__name__
-                failure_digest = _digest(f"{failure_type}:{append_exc}")
+                failure_digest = _digest(f"ola.agent-failure/v1|{run_id}|{agent}|{failure_type}")
                 evidence_id = None
                 output = None
             if evidence_id is not None:
