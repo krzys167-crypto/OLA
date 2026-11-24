@@ -51,6 +51,14 @@ def fail(reason, **extra):
     return {"status": "BLOCK", "reason": reason, **extra}
 
 
+def _json_object(raw):
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_result=None, db_path=None, expected_provider="local", expected_model="deterministic-runtime-v1", expected_invocation_type="local_deterministic_model", expected_nonce=None):
     # A blank or "UNKNOWN" expected commit would "agree" with a record written without commit provenance
     # (OLA_SOURCE_COMMIT unset -> "UNKNOWN") and report source_commit_verified: True. That is no provenance.
@@ -76,30 +84,28 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
     chain_ok, chain_reason = verify_hash_chain(rows)
     if not chain_ok:
         return fail(chain_reason)
-
-    run_rows = []
+    parsed_rows = []
     for row in rows:
-        try:
-            payload = json.loads(row[4])
-        except json.JSONDecodeError:
-            continue
-        if payload.get("run_id") == run_id and row[3].startswith("agent."):
-            run_rows.append(row)
+        payload = _json_object(row[4])
+        if payload is None:
+            return fail("evidence payload is not a valid JSON object")
+        parsed_rows.append((row, payload))
+
+    run_rows = [
+        row for row, payload in parsed_rows
+        if payload.get("run_id") == run_id and row[3].startswith("agent.")
+    ]
 
     expected_types = [f"agent.{role}" for role in ROLES]
     if [row[3] for row in run_rows] != expected_types:
         return fail("six-agent evidence missing or out of order")
 
-    lifecycle_events = []
-    for row in rows:
-        try:
-            payload = json.loads(row[4])
-        except json.JSONDecodeError:
-            continue
-        if payload.get("run_id") == run_id and (
-            row[3] in {"run.start", "run.end"} or row[3].startswith("agent.")
-        ):
-            lifecycle_events.append((row, payload))
+    lifecycle_events = [
+        (row, payload)
+        for row, payload in parsed_rows
+        if payload.get("run_id") == run_id
+        and (row[3] in {"run.start", "run.end"} or row[3].startswith("agent."))
+    ]
     starts_run = [(row, payload) for row, payload in lifecycle_events if row[3] == "run.start"]
     ends_run = [(row, payload) for row, payload in lifecycle_events if row[3] == "run.end"]
     if len(starts_run) != 1 or len(ends_run) != 1:
