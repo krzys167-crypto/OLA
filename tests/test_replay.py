@@ -111,6 +111,34 @@ def test_replay_verifies_raw_records_full_hash_chain_and_run_lifecycle():
     assert len(build_replay(rows)) == len(rows)
 
 
+def test_completed_policy_block_has_verified_integrity_but_blocked_execution():
+    rows = _chain(count=6)
+    self_reflection = json.loads(rows[5]["payload_json"])
+    self_reflection["status"] = "BLOCK"
+    self_reflection["execution_status"] = "VERIFIED"
+    rows[5]["payload_json"] = json.dumps(
+        self_reflection, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    end = json.loads(rows[-1]["payload_json"])
+    end["outcome"] = "COMPLETED_BLOCKED"
+    end["blocked_agent_roles"] = ["self_reflection"]
+    end["failed_agent"] = None
+    end["completed_agent_roles"] = [
+        "codeact", "react", "agentic_rag", "mcp_tool_use", "self_reflection", "multi_agent"
+    ]
+    rows[-1]["payload_json"] = json.dumps(end, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    _reseal(rows)
+    end = json.loads(rows[-1]["payload_json"])
+    end["run_event_digest"] = run_event_digest(rows[:-1])
+    rows[-1]["payload_json"] = json.dumps(end, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    _reseal(rows)
+
+    result = _verify(rows)
+    assert result["status"] == "VERIFIED"
+    assert result["execution_status"] == "BLOCKED"
+    assert result["blocked_agent_roles"] == ["self_reflection"]
+
+
 def test_replay_requires_expected_tip_hash():
     rows = _chain(count=2)
     result = verify_replay(
