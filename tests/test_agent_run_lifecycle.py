@@ -4,6 +4,7 @@ import uuid
 
 import app.agent_runtime as agent_runtime
 from app.database import SessionLocal
+from app.igor import IgorVerifier
 from app.hashchain import compute_record_hash
 from app.models import Tenant
 from app.pipeline_bridge import load_chain
@@ -79,6 +80,20 @@ def test_successful_run_has_auditable_start_end_and_replay(monkeypatch):
     assert replay["run_event_count"] == len(agent_runtime.AGENT_ROLES) + 2
 
 
+    igor = IgorVerifier().verify_records(
+        rows,
+        "test-source-commit",
+        "calculate 6 * 7",
+        "42",
+        expected_run_id=result["run_id"],
+        expected_nonce=result["replay_nonce"],
+        require_lifecycle=True,
+    )
+    assert igor.status == "VERIFIED", igor
+    assert igor.checks["lifecycle"] is True
+    assert igor.checks["execution_status"] == "SUCCEEDED"
+
+
 def test_agent_exception_is_recorded_and_run_closes_as_failed(monkeypatch):
     monkeypatch.setenv("OLA_LLM_MODE", "deterministic")
     monkeypatch.delenv("OLA_REPLAY_NONCE", raising=False)
@@ -117,6 +132,20 @@ def test_agent_exception_is_recorded_and_run_closes_as_failed(monkeypatch):
     assert replay["status"] == "VERIFIED"
     assert replay["execution_status"] == "FAILED"
     assert replay["failed_agent"] == "react"
+
+
+    igor = IgorVerifier().verify_records(
+        chain,
+        "test-source-commit",
+        "calculate 6 * 7",
+        "42",
+        expected_run_id=result["run_id"],
+        expected_nonce=result["replay_nonce"],
+        require_lifecycle=True,
+    )
+    assert igor.status == "BLOCK"
+    assert igor.checks["lifecycle"] is True
+    assert igor.checks["execution_status"] == "FAILED"
 
 
 def test_replay_rejects_a_missing_run_end_record(monkeypatch):
