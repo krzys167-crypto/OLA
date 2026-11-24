@@ -13,7 +13,7 @@ on:
       - "app/nina.py"
       - "app/main.py"
       - "scripts/verify_agent_runtime.py"
-      - "tests/test_run_lifecycle.py"
+      - "tests/test_agent_run_lifecycle.py"
       - "tests/test_agent_runtime.py"
       - "tests/test_replay.py"
       - "tests/test_igor.py"
@@ -29,7 +29,7 @@ on:
       - "app/nina.py"
       - "app/main.py"
       - "scripts/verify_agent_runtime.py"
-      - "tests/test_run_lifecycle.py"
+      - "tests/test_agent_run_lifecycle.py"
       - "tests/test_agent_runtime.py"
       - "tests/test_replay.py"
       - "tests/test_igor.py"
@@ -58,7 +58,11 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q \
-            tests/test_run_lifecycle.py \
+            tests/test_agent_run_lifecycle.py \
+            tests/test_replay.py \
+            tests/test_agent_runtime.py \
+            tests/test_igor.py \
+            tests/test_nina_run_endpoint_contract.py \
             tests/test_agent_runtime.py \
             tests/test_replay.py \
             tests/test_igor.py \
