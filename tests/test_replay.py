@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 from app.hashchain import GENESIS_HASH, compute_record_hash
@@ -34,12 +35,14 @@ def _chain(count=2, run_id="r1", tenant_id="tenant-1"):
         "schema": "ola.run-lifecycle/v1",
         "run_id": run_id,
         "started_at": started_at,
-        "task_digest": __import__("hashlib").sha256(task.encode()).hexdigest(),
+        "task_digest": hashlib.sha256(task.encode()).hexdigest(),
         "source_commit": source_commit,
         "replay_nonce": nonce,
         "expected_agent_roles": roles,
     }, tenant_id)
-    for role in roles:
+    for index, role in enumerate(roles):
+        agent_started_at = f"2026-11-24T19:00:00.{100000 + index * 200000:06d}+00:00"
+        agent_ended_at = f"2026-11-24T19:00:00.{150000 + index * 200000:06d}+00:00"
         _append(records, f"agent.{role}", {
             "run_id": run_id,
             "agent": role,
@@ -49,6 +52,11 @@ def _chain(count=2, run_id="r1", tenant_id="tenant-1"):
             "source_commit": source_commit,
             "tool": "safe_expression",
             "input_digest": f"in-{role}",
+            "started_at": agent_started_at,
+            "ended_at": agent_ended_at,
+            "agent_instance_id": f"instance-{role}",
+            "context_digest": hashlib.sha256(role.encode()).hexdigest(),
+            "execution_boundary": "independent",
         }, tenant_id)
     start_record = records[0]
     pre_end = list(records)
