@@ -145,6 +145,13 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
     ).hexdigest()
     if end_payload.get("run_event_digest") != expected_event_digest:
         return fail("run lifecycle event digest mismatch")
+    try:
+        run_started_at = datetime.fromisoformat(str(start_payload["started_at"]).replace("Z", "+00:00"))
+        run_ended_at = datetime.fromisoformat(str(end_payload["ended_at"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError):
+        return fail("run lifecycle timestamps invalid")
+    if run_ended_at < run_started_at or end_payload.get("started_at") != start_payload.get("started_at"):
+        return fail("run lifecycle timestamps invalid")
     for _, payload in lifecycle_events:
         if payload.get("replay_nonce") != start_nonce or payload.get("source_commit") != expected_commit:
             return fail("run lifecycle agent provenance mismatch")
@@ -157,7 +164,7 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
     starts = []
     ends = []
     for row in run_rows:
-        payload = json.loads(row[3])
+        payload = json.loads(row[4])
         payloads.append(payload)
         agent = payload.get("agent")
         required = {
