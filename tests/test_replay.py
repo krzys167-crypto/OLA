@@ -59,6 +59,9 @@ def _chain(count=2, run_id="r1", tenant_id="tenant-1"):
             "agent_instance_id": f"instance-{role}",
             "context_digest": hashlib.sha256(role.encode()).hexdigest(),
             "execution_boundary": "independent",
+            "provider": "local",
+            "model": "deterministic-runtime-v1",
+            "invocation_type": "local_deterministic_model",
         }, tenant_id)
     start_record = records[0]
     pre_end = list(records)
