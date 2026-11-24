@@ -643,14 +643,20 @@ def verify_agent_run(tenant_id, run_id):
         }
 
     agent_rows = [record for record in matching if record["record_type"].startswith("agent.")]
-    if replay["execution_status"] == "FAILED":
+    if replay["execution_status"] in {"FAILED", "BLOCKED"}:
+        reason = (
+            f"agent execution failed: {replay.get('failed_agent')}"
+            if replay["execution_status"] == "FAILED"
+            else f"agent decision blocked by policy: {', '.join(replay.get('blocked_agent_roles', []))}"
+        )
         return {
             "status": "BLOCK",
-            "reason": f"agent execution failed: {replay.get('failed_agent')}",
+            "reason": reason,
             "evidence_count": len(agent_rows),
             "lifecycle": replay["lifecycle"],
-            "execution_status": "FAILED",
+            "execution_status": replay["execution_status"],
             "failed_agent": replay.get("failed_agent"),
+            "blocked_agent_roles": replay.get("blocked_agent_roles", []),
         }
 
     instance_ids = set()
