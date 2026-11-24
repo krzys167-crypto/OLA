@@ -185,7 +185,7 @@ def test_replay_blocks_agent_record_type_payload_mismatch_after_valid_reseal():
     _reseal(rows)
     result = _verify(rows)
     assert result["status"] == "BLOCK"
-    assert result["reason"] == "run agent order mismatch"
+    assert result["reason"] == "run agent record type mismatch"
 
 
 def test_replay_blocks_non_object_payload_without_exception():
