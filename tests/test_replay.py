@@ -152,6 +152,28 @@ def test_completed_policy_block_has_verified_integrity_but_blocked_execution():
     assert result["blocked_agent_roles"] == ["self_reflection"]
 
 
+def test_replay_rejects_a_matching_but_noncanonical_agent_roster():
+    rows = _chain()
+    short_roster = [
+        "codeact", "react", "agentic_rag", "mcp_tool_use", "self_reflection"
+    ]
+    start = json.loads(rows[0]["payload_json"])
+    end = json.loads(rows[-1]["payload_json"])
+    start["expected_agent_roles"] = short_roster
+    end["expected_agent_roles"] = short_roster
+    rows[0]["payload_json"] = json.dumps(
+        start, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    rows[-1]["payload_json"] = json.dumps(
+        end, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    _reseal(rows)
+
+    result = _verify(rows)
+    assert result["status"] == "BLOCK"
+    assert result["reason"] == "run lifecycle agent roster is not the canonical six-agent roster"
+
+
 def test_replay_requires_expected_tip_hash():
     rows = _chain()
     result = verify_replay(
