@@ -263,6 +263,15 @@ def verify_replay(records, expected_run_id, expected_tenant_id,
         return {"status": "BLOCK", "reason": "run lifecycle timestamps invalid", "event_count": len(records)}
     if end.get("started_at") != start.get("started_at"):
         return {"status": "BLOCK", "reason": "run lifecycle start timestamp mismatch", "event_count": len(records)}
+    previous_agent_end = started_at
+    for record, payload in agent_events:
+        agent_started = _parse_timestamp(payload.get("started_at"))
+        agent_ended = _parse_timestamp(payload.get("ended_at"))
+        if agent_started is None or agent_ended is None or agent_ended < agent_started:
+            return {"status": "BLOCK", "reason": "agent lifecycle timestamps invalid", "event_count": len(records)}
+        if agent_started < previous_agent_end or agent_ended > ended_at:
+            return {"status": "BLOCK", "reason": "agent lifecycle timing/order mismatch", "event_count": len(records)}
+        previous_agent_end = agent_ended
     if end.get("start_record_id") != start_record.get("id") or end.get("start_record_hash") != start_record.get("record_hash"):
         return {"status": "BLOCK", "reason": "run lifecycle start anchor mismatch", "event_count": len(records)}
 
