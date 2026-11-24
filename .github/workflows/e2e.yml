@@ -155,15 +155,19 @@ jobs:
           assert result["execution"][0]["tool_output"] == expected_result, result
           assert result["execution"][-1]["final_result"] == expected_result, result
           db = sqlite3.connect(db_path)
-          rows = db.execute("SELECT id, tenant_id, seq, record_type, payload_json, prev_hash, record_hash FROM evidence_records WHERE tenant_id=? ORDER BY seq", (tenant_id,)).fetchall(); db.close()
-          assert [r[0] for r in rows] == result["evidence_ids"], (rows, result)
-          assert [r[3] for r in rows] == ["agent.codeact","agent.react","agent.agentic_rag","agent.mcp_tool_use","agent.self_reflection","agent.multi_agent"], rows
-          payloads = [json.loads(r[4]) for r in rows]
+          all_rows = db.execute("SELECT id, tenant_id, seq, record_type, payload_json, prev_hash, record_hash FROM evidence_records WHERE tenant_id=? ORDER BY seq", (tenant_id,)).fetchall(); db.close()
+          run_rows = [row for row in all_rows if json.loads(row[4]).get("run_id") == result["run_id"]]
+          agent_rows = [row for row in run_rows if row[3].startswith("agent.")]
+          lifecycle_rows = [row for row in run_rows if row[3] == "run.start" or row[3] == "run.end" or row[3].startswith("agent.")]
+          assert [r[0] for r in agent_rows] == result["evidence_ids"], (agent_rows, result)
+          assert [r[3] for r in agent_rows] == ["agent.codeact","agent.react","agent.agentic_rag","agent.mcp_tool_use","agent.self_reflection","agent.multi_agent"], agent_rows
+          assert [r[3] for r in lifecycle_rows] == ["run.start","agent.codeact","agent.react","agent.agentic_rag","agent.mcp_tool_use","agent.self_reflection","agent.multi_agent","run.end"], lifecycle_rows
+          payloads = [json.loads(r[4]) for r in agent_rows]
           assert all(p["task"] == task for p in payloads), payloads
           assert payloads[0]["tool_output"] == expected_result, payloads[0]
           assert payloads[-1]["final_result"] == expected_result, payloads[-1]
           expected_prev = "0" * 64
-          for expected_seq, row in enumerate(rows):
+          for expected_seq, row in enumerate(all_rows):
               _, row_tenant, seq, rtype, payload_json, prev_hash, record_hash = row
               assert row_tenant == tenant_id; assert seq == expected_seq; assert prev_hash == expected_prev
               # independent recomputation of hash v2 (the record type is bound into the hash)
