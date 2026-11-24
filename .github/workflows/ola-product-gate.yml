@@ -48,6 +48,20 @@ jobs:
           OLA_LLM_MODE=deterministic python -m pytest -q
       - name: Build exact-source runtime
         run: docker build --tag "ola-product:${SOURCE_SHA}" .
+      - name: Issue fresh anti-replay challenge
+        shell: bash
+        run: |
+          set -euo pipefail
+          OLA_REPLAY_NONCE="$(openssl rand -hex 32)"
+          echo "OLA_REPLAY_NONCE=$OLA_REPLAY_NONCE" >> "$GITHUB_ENV"
+          cat > "$RUNNER_TEMP/ola-run-challenge.json" <<EOF
+          {
+            "schema": "ola-run-challenge/v1",
+            "challenge_id": "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
+            "source_commit": "${SOURCE_SHA}",
+            "replay_nonce": "${OLA_REPLAY_NONCE}"
+          }
+          EOF
       - name: Start runtime
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -59,6 +73,7 @@ jobs:
             -e OPENAI_API_KEY="$OPENAI_API_KEY" \
             -e OLA_LLM_MODE="$OLA_LLM_MODE" \
             -e OLA_LLM_MODEL="$OLA_LLM_MODEL" \
+            -e OLA_REPLAY_NONCE="$OLA_REPLAY_NONCE" \
             -e OLA_SOURCE_COMMIT="${SOURCE_SHA}" -e OLA_RUNTIME_COMMIT="${SOURCE_SHA}" \
             "ola-product:${SOURCE_SHA}"
           for i in $(seq 1 30); do curl --fail --silent http://127.0.0.1:8000/health >/dev/null && break; sleep 1; done
@@ -74,7 +89,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola-product python - <<'PY'
+          docker exec -i -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola-product python - <<'PY'
           import hashlib,json,os,sqlite3,urllib.request,uuid
           tid=str(uuid.uuid4()); key="product-gate-key"; db=sqlite3.connect("/data/ola.db")
           db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tid,"product-gate"))
@@ -96,7 +111,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" -e OLA_RUNTIME_COMMIT="${GITHUB_SHA}" ola-product python - <<'PY'
+          docker exec -i -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola-product python - <<'PY'
           import hashlib,json,sqlite3,urllib.request,uuid
           tid=str(uuid.uuid4()); key="nina-chain-key"; db=sqlite3.connect("/data/ola.db")
           db.execute("INSERT INTO tenants(id,name) VALUES (?,?)",(tid,"nina-chain"))
@@ -120,7 +135,8 @@ jobs:
         run: |
           docker inspect ola-product > docker-inspect.json 2>&1 || true
           docker logs ola-product > docker-runtime.log 2>&1 || true
-          sha256sum docker-inspect.json docker-runtime.log > product-file-hashes.txt || true
+          cp "$RUNNER_TEMP/ola-run-challenge.json" ola-run-challenge.json 2>/dev/null || true
+          sha256sum docker-inspect.json docker-runtime.log ola-run-challenge.json > product-file-hashes.txt || true
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -130,6 +146,7 @@ jobs:
             docker-inspect.json
             docker-runtime.log
             product-file-hashes.txt
+            ola-run-challenge.json
       - name: Stop runtime
         if: always()
         run: docker stop ola-product || true
