@@ -6,7 +6,7 @@ import app.agent_runtime as agent_runtime
 from app.database import SessionLocal
 from app.igor import IgorVerifier
 from app.hashchain import compute_record_hash
-from app.models import Tenant
+from app.models import EvidenceRecord, Tenant
 from app.pipeline_bridge import load_chain
 from app.replay import verify_replay
 
@@ -196,3 +196,35 @@ def test_replay_rejects_a_resealed_but_inconsistent_run_event_digest(monkeypatch
     replay = _replay(chain, result["run_id"], tenant_id)
     assert replay["status"] == "BLOCK"
     assert replay["reason"] == "run event digest mismatch"
+
+
+def test_malformed_tenant_payload_fails_closed_during_run_verification(monkeypatch):
+    monkeypatch.setenv("OLA_LLM_MODE", "deterministic")
+    tenant_id = _tenant()
+    result = agent_runtime.run_agent_task(tenant_id, "calculate 2 + 2")
+    chain = load_chain(tenant_id)
+    previous = chain[-1]
+    payload_json = "{malformed-json"
+    record_type = "diagnostic.invalid"
+    row = EvidenceRecord(
+        id=str(uuid.uuid4()),
+        tenant_id=tenant_id,
+        seq=previous["seq"] + 1,
+        record_type=record_type,
+        payload_json=payload_json,
+        prev_hash=previous["record_hash"],
+        record_hash=compute_record_hash(
+            tenant_id,
+            previous["seq"] + 1,
+            previous["record_hash"],
+            payload_json,
+            record_type,
+        ),
+    )
+    with SessionLocal() as db:
+        db.add(row)
+        db.commit()
+
+    verified = agent_runtime.verify_agent_run(tenant_id, result["run_id"])
+    assert verified["status"] == "BLOCK"
+    assert "payload" in verified["reason"]
