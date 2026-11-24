@@ -206,7 +206,9 @@ def run_invoice_task(tenant_id, task):
         except Exception as exc:
             failed_agent = agent
             failure_type = type(exc).__name__
-            failure_digest = hashlib.sha256(f"{failure_type}:{exc}".encode("utf-8")).hexdigest()
+            failure_digest = hashlib.sha256(
+                f"ola.agent-failure/v1|{run_id}|{agent}|{failure_type}".encode("utf-8")
+            ).hexdigest()
             failure = {
                 "agent": agent,
                 "agent_instance_id": instance_id,
@@ -236,7 +238,9 @@ def run_invoice_task(tenant_id, task):
                 execution.append(failure)
             except Exception as append_exc:
                 failure_type = type(append_exc).__name__
-                failure_digest = hashlib.sha256(f"{failure_type}:{append_exc}".encode("utf-8")).hexdigest()
+                failure_digest = hashlib.sha256(
+                    f"ola.agent-failure/v1|{run_id}|{agent}|{failure_type}".encode("utf-8")
+                ).hexdigest()
             break
         evidence_ids.append(record["id"])
         execution.append(output)
