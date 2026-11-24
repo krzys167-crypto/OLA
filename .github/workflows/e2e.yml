@@ -38,8 +38,29 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
+      - name: Issue fresh runtime replay challenge
+        shell: bash
+        run: |
+          set -euo pipefail
+          OLA_REPLAY_NONCE="$(openssl rand -hex 32)"
+          echo "OLA_REPLAY_NONCE=$OLA_REPLAY_NONCE" >> "$GITHUB_ENV"
+          printf '{"schema":"ola-run-challenge/v1","source_commit":"$SOURCE_SHA","replay_nonce":"%s"}\n' "$OLA_REPLAY_NONCE" > "$RUNNER_TEMP/ola-run-challenge.json"
+
       - name: Run pytest E2E
-        run: python -m pytest -q
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q --junitxml=pytest-report.xml 2>&1 | tee pytest.log
+
+      - name: Upload pytest diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ola-pytest-e2e
+          path: |
+            pytest.log
+            pytest-report.xml
+          if-no-files-found: ignore
 
       - name: Run independent README guarantee gate
         run: python scripts/verify_readme_claims.py
@@ -48,8 +69,17 @@ jobs:
         run: docker build --tag ola:${SOURCE_SHA} .
 
       - name: Run deployment image
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          docker run --detach --rm --name ola-e2e --publish 8000:8000 -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" -e OLA_SOURCE_COMMIT="$SOURCE_SHA" -e OLA_RUNTIME_COMMIT="$SOURCE_SHA" -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola:${SOURCE_SHA}
+          if [ -n "$OPENAI_API_KEY" ]; then RUNTIME_LLM_MODE=required; RUNTIME_LLM_MODEL=gpt-5.6-luna; else RUNTIME_LLM_MODE=deterministic; RUNTIME_LLM_MODEL=deterministic-runtime-v1; fi
+          docker run --detach --rm --name ola-e2e --publish 8000:8000 \
+            -e STRIPE_WEBHOOK_SECRET="whsec_ci_ola" \
+            -e OLA_STRIPE_TENANT_ID="00000000-0000-0000-0000-000000000001" \
+            -e OLA_SOURCE_COMMIT="$SOURCE_SHA" -e OLA_RUNTIME_COMMIT="$SOURCE_SHA" \
+            -e OLA_REPLAY_NONCE="$OLA_REPLAY_NONCE" -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+            -e OLA_LLM_MODE="$RUNTIME_LLM_MODE" -e OLA_LLM_MODEL="$RUNTIME_LLM_MODEL" \
+            ola:${SOURCE_SHA}
           for i in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8000/health >/dev/null; then
               exit 0
@@ -103,7 +133,7 @@ jobs:
           OLA_LLM_MODEL: gpt-5.6-luna
         run: |
           set -euo pipefail
-          docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola-e2e python - <<'PY'
+          docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_REPLAY_NONCE="$OLA_REPLAY_NONCE" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" ola-e2e python - <<'PY'
           import hashlib, json, os, sqlite3, urllib.request, uuid
           db_path="/data/ola.db"; tenant_id=str(uuid.uuid4()); raw_key="ci-real-llm-key"
           db=sqlite3.connect(db_path)
@@ -133,7 +163,7 @@ jobs:
           EXPECTED_RESULT: "391"
         run: |
           set -euo pipefail
-          docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" -e EXPECTED_COMMIT="$EXPECTED_COMMIT" -e EXPECTED_TASK="$EXPECTED_TASK" -e EXPECTED_RESULT="$EXPECTED_RESULT" ola-e2e python - <<'PY' > agent-runtime-proof.json
+          docker exec -i -e OPENAI_API_KEY="$OPENAI_API_KEY" -e OLA_REPLAY_NONCE="$OLA_REPLAY_NONCE" -e OLA_LLM_MODE="$OLA_LLM_MODE" -e OLA_LLM_MODEL="$OLA_LLM_MODEL" -e EXPECTED_NONCE="$OLA_REPLAY_NONCE" -e EXPECTED_COMMIT="$EXPECTED_COMMIT" -e EXPECTED_TASK="$EXPECTED_TASK" -e EXPECTED_RESULT="$EXPECTED_RESULT" ola-e2e python - <<'PY' > agent-runtime-proof.json
           import hashlib, json, os, sqlite3, subprocess, urllib.request, uuid
           db_path = "/data/ola.db"
           tenant_id = str(uuid.uuid4())
@@ -177,7 +207,7 @@ jobs:
               ["python", "scripts/verify_agent_runtime.py", "--tenant-id", tenant_id,
                "--run-id", result["run_id"], "--expected-commit", os.environ["EXPECTED_COMMIT"],
                "--expected-task", task, "--expected-result", expected_result,
-               "--expected-provider", "openai", "--expected-model", os.environ["OLA_LLM_MODEL"], "--expected-invocation-type", "real_llm"],
+               "--expected-provider", "openai", "--expected-model", os.environ["OLA_LLM_MODEL"], "--expected-invocation-type", "real_llm", "--expected-nonce", os.environ["EXPECTED_NONCE"]],
               capture_output=True, text=True,
           )
           print(verifier.stdout)
@@ -263,7 +293,8 @@ jobs:
         run: |
           docker inspect ola-e2e > docker-inspect.json 2>&1 || true
           docker logs ola-e2e > docker-runtime.log 2>&1 || true
-          sha256sum docker-inspect.json docker-runtime.log agent-runtime-proof.json business-invoice-proof.json > runtime-file-hashes.txt || true
+          cp "$RUNNER_TEMP/ola-run-challenge.json" ola-run-challenge.json 2>/dev/null || true
+          sha256sum docker-inspect.json docker-runtime.log agent-runtime-proof.json business-invoice-proof.json ola-run-challenge.json > runtime-file-hashes.txt || true
           printf '%s\n' "commit=${SOURCE_SHA}" "run=${GITHUB_RUN_ID}" > provenance.txt
           sha256sum provenance.txt >> runtime-file-hashes.txt || true
 
@@ -277,6 +308,7 @@ jobs:
             docker-runtime.log
             agent-runtime-proof.json
             business-invoice-proof.json
+            ola-run-challenge.json
             runtime-file-hashes.txt
             provenance.txt
           if-no-files-found: warn
