@@ -13,6 +13,10 @@ from sqlalchemy import select
 from .database import SessionLocal
 from .hashchain import GENESIS_HASH, canonical_json, compute_record_hash, verify_chain
 from .models import EvidenceRecord
+from .replay import run_event_digest, verify_replay
+
+
+RUN_LIFECYCLE_SCHEMA = "ola.run-lifecycle/v1"
 
 
 AGENT_ROLES = [
@@ -336,7 +340,7 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
         "agent": agent,
         "agent_instance_id": agent_instance_id,
         "execution_boundary": "independent",
-        "source_commit": os.getenv("OLA_SOURCE_COMMIT", "UNKNOWN"),
+        "source_commit": os.getenv("OLA_SOURCE_COMMIT", os.getenv("OLA_RUNTIME_COMMIT", "UNKNOWN")),
         "replay_nonce": replay_nonce,
         "context_digest": _digest(canonical_json(context)),
         "task": task,
@@ -354,36 +358,178 @@ def _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, exec
     return record["id"], output
 
 
+def _append_failed_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution,
+                                   replay_nonce, started_at, exc):
+    """Persist a failed invocation without retaining exception text that could contain secrets."""
+    instance_id = str(uuid.uuid4())
+    context = {
+        "run_id": run_id,
+        "agent": agent,
+        "agent_instance_id": instance_id,
+        "task": task,
+        "previous_output": previous_output,
+        "upstream_agents": [item["agent"] for item in execution],
+    }
+    ended_at = datetime.now(timezone.utc).isoformat()
+    error_type = type(exc).__name__
+    # Exception messages can contain credentials, request fragments or PII. Bind a
+    # stable failure identity without hashing (and thereby retaining a fingerprint of)
+    # the provider's raw message.
+    error_digest = _digest(f"ola.agent-failure/v1|{run_id}|{agent}|{error_type}")
+    output = {
+        "agent": agent,
+        "agent_instance_id": instance_id,
+        "execution_boundary": "independent",
+        "source_commit": os.getenv("OLA_SOURCE_COMMIT", os.getenv("OLA_RUNTIME_COMMIT", "UNKNOWN")),
+        "replay_nonce": replay_nonce,
+        "context_digest": _digest(canonical_json(context)),
+        "task": task,
+        "input_digest": _digest(canonical_json(previous_output)),
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "capability": "agent_execution_failed",
+        "tool": "agent.error",
+        "tool_output": "",
+        "result": "agent invocation failed; output was not accepted",
+        "provider": os.getenv("OLA_LLM_PROVIDER", "openai"),
+        "model": os.getenv("OLA_LLM_MODEL", "NOT_INVOKED"),
+        "invocation_type": "agent_error",
+        "prompt_digest": _digest(canonical_json({"agent": agent, "task": task, "context": context})),
+        "response_id": None,
+        "response_digest": None,
+        "response_id_source": None,
+        "error_type": error_type,
+        "error_digest": error_digest,
+        "execution_status": "FAILED",
+        "status": "BLOCK",
+        "llm_required": os.getenv("OLA_LLM_MODE", "deterministic") == "required",
+    }
+    from .pipeline_bridge import append_evidence
+    record = append_evidence(tenant_id, f"agent.{agent}", {"run_id": run_id, **output}, attempts=96)
+    return record["id"], output
+
+
 def run_agent_task(tenant_id, task):
     run_id = str(uuid.uuid4())
     replay_nonce = _replay_nonce()
+    source_commit = os.getenv("OLA_SOURCE_COMMIT", os.getenv("OLA_RUNTIME_COMMIT", "UNKNOWN"))
+    task_digest = _digest(task)
+    started_at = datetime.now(timezone.utc).isoformat()
+    from .pipeline_bridge import append_evidence, load_chain
+
+    start_record = append_evidence(
+        tenant_id,
+        "run.start",
+        {
+            "schema": RUN_LIFECYCLE_SCHEMA,
+            "run_id": run_id,
+            "started_at": started_at,
+            "task_digest": task_digest,
+            "source_commit": source_commit,
+            "replay_nonce": replay_nonce,
+            "expected_agent_roles": list(AGENT_ROLES),
+        },
+        attempts=96,
+    )
+
     evidence_ids = []
     execution = []
     previous_output = {"task": task}
+    failed_agent = None
+    failure_type = None
+    failure_digest = None
+
     for agent in AGENT_ROLES:
-        evidence_id, output = _append_agent_evidence(tenant_id, run_id, agent, task, previous_output, execution, replay_nonce)
+        agent_started_at = datetime.now(timezone.utc).isoformat()
+        try:
+            evidence_id, output = _append_agent_evidence(
+                tenant_id, run_id, agent, task, previous_output, execution, replay_nonce
+            )
+        except Exception as exc:
+            failed_agent = agent
+            failure_type = type(exc).__name__
+            failure_digest = _digest(f"ola.agent-failure/v1|{run_id}|{agent}|{failure_type}")
+            try:
+                evidence_id, output = _append_failed_agent_evidence(
+                    tenant_id, run_id, agent, task, previous_output, execution,
+                    replay_nonce, agent_started_at, exc
+                )
+                failure_type = output["error_type"]
+                failure_digest = output["error_digest"]
+            except Exception as append_exc:
+                # Terminal evidence records that the role failed and that its dedicated
+                # event could not be appended; replay therefore remains BLOCK.
+                failure_type = type(append_exc).__name__
+                failure_digest = _digest(f"ola.agent-failure/v1|{run_id}|{agent}|{failure_type}")
+                evidence_id = None
+                output = None
+            if evidence_id is not None:
+                evidence_ids.append(evidence_id)
+                execution.append(output)
+            break
         evidence_ids.append(evidence_id)
         execution.append(output)
         previous_output = output
+
+    run_rows = [
+        record for record in load_chain(tenant_id)
+        if record["record_type"] == "run.start"
+        or record["record_type"].startswith("agent.")
+        if json.loads(record["payload_json"]).get("run_id") == run_id
+    ]
+    agent_rows = [record for record in run_rows if record["record_type"].startswith("agent.")]
+    completed_agent_roles = [
+        json.loads(record["payload_json"])["agent"]
+        for record in agent_rows
+        if json.loads(record["payload_json"]).get("status") == "VERIFIED"
+    ]
+    end_record = append_evidence(
+        tenant_id,
+        "run.end",
+        {
+            "schema": RUN_LIFECYCLE_SCHEMA,
+            "run_id": run_id,
+            "started_at": started_at,
+            "ended_at": datetime.now(timezone.utc).isoformat(),
+            "task_digest": task_digest,
+            "source_commit": source_commit,
+            "replay_nonce": replay_nonce,
+            "expected_agent_roles": list(AGENT_ROLES),
+            "outcome": "FAILED" if failed_agent else "SUCCEEDED",
+            "completed_agent_roles": completed_agent_roles,
+            "blocked_agent_roles": [],
+            "failed_agent": failed_agent,
+            "error_type": failure_type,
+            "error_digest": failure_digest,
+            "start_record_id": start_record["id"],
+            "start_record_hash": start_record["record_hash"],
+            "agent_event_count": len(agent_rows),
+            "run_event_count": len(run_rows),
+            "run_event_digest": run_event_digest(run_rows),
+        },
+        attempts=96,
+    )
+
     verification = verify_agent_run(tenant_id, run_id)
-    final_result = execution[-1].get("final_result") if execution else None
-    # "task accepted: ..." means nothing was computed. The evidence chain is intact (integrity), but the run did not
-    # *do* anything, so it must not be reported as VERIFIED work.
-    computed = not (execution and str(execution[0].get("tool_output", "")).startswith(NOT_COMPUTED))
+    final_result = execution[-1].get("final_result") if execution and not failed_agent else None
+    computed = bool(execution) and not str(execution[0].get("tool_output", "")).startswith(NOT_COMPUTED)
     status = verification["status"]
     if status == "VERIFIED" and not computed:
         status = "UNKNOWN"
     result = {
         "computation": "PERFORMED" if computed else "NOT_PERFORMED",
         "run_id": run_id,
-        "source_commit": os.getenv("OLA_SOURCE_COMMIT", os.getenv("OLA_RUNTIME_COMMIT", "UNKNOWN")),
+        "source_commit": source_commit,
         "replay_nonce": replay_nonce,
         "task": task,
         "final_result": final_result,
         "status": status,
         "agents": AGENT_ROLES,
-        "evidence_count": len(evidence_ids),
+        "completed_agents": completed_agent_roles,
+        "failed_agent": failed_agent,
+        "evidence_count": len(agent_rows),
         "evidence_ids": evidence_ids,
+        "lifecycle": verification.get("lifecycle", {}),
         "execution": execution,
     }
     return result
@@ -457,50 +603,94 @@ def run_multi_agent_task(tenant_id, task, agents):
 
 def verify_agent_run(tenant_id, run_id):
     with SessionLocal() as db:
-        rows = db.scalars(select(EvidenceRecord).where(EvidenceRecord.tenant_id == tenant_id).order_by(EvidenceRecord.seq.asc())).all()
-    run_rows = []
-    for row in rows:
-        try:
-            payload = json.loads(row.payload_json)
-        except json.JSONDecodeError:
-            continue
-        if payload.get("run_id") == run_id and row.record_type.startswith("agent."):
-            run_rows.append(row)
-    if len(run_rows) != len(AGENT_ROLES):
-        return {"status": "UNKNOWN", "reason": "missing agent evidence", "evidence_count": len(run_rows)}
-    expected_types = [f"agent.{role}" for role in AGENT_ROLES]
-    if [row.record_type for row in run_rows] != expected_types:
-        return {"status": "BLOCK", "reason": "agent order mismatch", "evidence_count": len(run_rows)}
+        rows = db.scalars(
+            select(EvidenceRecord)
+            .where(EvidenceRecord.tenant_id == tenant_id)
+            .order_by(EvidenceRecord.seq.asc())
+        ).all()
+
+    record_dicts = [
+        {
+            "id": row.id,
+            "tenant_id": row.tenant_id,
+            "seq": row.seq,
+            "prev_hash": row.prev_hash,
+            "record_hash": row.record_hash,
+            "record_type": row.record_type,
+            "payload_json": row.payload_json,
+        }
+        for row in rows
+    ]
+    matching = [
+        record for record in record_dicts
+        if (
+            record["record_type"] in {"run.start", "run.end"}
+            or record["record_type"].startswith("agent.")
+        )
+        and json.loads(record["payload_json"]).get("run_id") == run_id
+    ]
+    if not any(record["record_type"] == "run.start" for record in matching):
+        return {"status": "UNKNOWN", "reason": "run lifecycle start missing", "evidence_count": 0}
+
+    replay = verify_replay(
+        record_dicts,
+        expected_run_id=run_id,
+        expected_tenant_id=tenant_id,
+        expected_record_count=len(record_dicts),
+        expected_tip_hash=record_dicts[-1]["record_hash"] if record_dicts else None,
+    )
+    if replay["status"] != "VERIFIED":
+        return {
+            "status": "BLOCK",
+            "reason": replay.get("reason", "run replay verification failed"),
+            "evidence_count": replay.get("run_event_count", 0),
+            "lifecycle": replay.get("lifecycle", {"status": "BLOCK"}),
+        }
+
+    agent_rows = [record for record in matching if record["record_type"].startswith("agent.")]
+    if replay["execution_status"] in {"FAILED", "BLOCKED"}:
+        reason = (
+            f"agent execution failed: {replay.get('failed_agent')}"
+            if replay["execution_status"] == "FAILED"
+            else f"agent decision blocked by policy: {', '.join(replay.get('blocked_agent_roles', []))}"
+        )
+        return {
+            "status": "BLOCK",
+            "reason": reason,
+            "evidence_count": len(agent_rows),
+            "lifecycle": replay["lifecycle"],
+            "execution_status": replay["execution_status"],
+            "failed_agent": replay.get("failed_agent"),
+            "blocked_agent_roles": replay.get("blocked_agent_roles", []),
+        }
+
     instance_ids = set()
     context_digests = set()
-    for row in run_rows:
-        payload = json.loads(row.payload_json)
-        required = {"capability", "tool", "tool_output", "result", "status", "agent_instance_id", "execution_boundary", "source_commit", "replay_nonce", "context_digest", "invocation_type", "model", "provider", "response_id", "response_digest", "started_at", "ended_at"}
+    for record in agent_rows:
+        payload = json.loads(record["payload_json"])
+        required = {
+            "capability", "tool", "tool_output", "result", "status",
+            "agent_instance_id", "execution_boundary", "source_commit",
+            "replay_nonce", "context_digest", "invocation_type", "model",
+            "provider", "response_id", "response_digest", "started_at", "ended_at",
+        }
         if not required.issubset(payload):
-            return {"status": "BLOCK", "reason": "agent execution evidence incomplete", "evidence_count": len(run_rows)}
+            return {"status": "BLOCK", "reason": "agent execution evidence incomplete", "evidence_count": len(agent_rows)}
         if payload["status"] != "VERIFIED":
-            return {"status": "BLOCK", "reason": "agent execution not verified", "evidence_count": len(run_rows)}
+            return {"status": "BLOCK", "reason": "agent execution not verified", "evidence_count": len(agent_rows)}
         if payload["execution_boundary"] != "independent":
-            return {"status": "BLOCK", "reason": "agent execution boundary is not independent", "evidence_count": len(run_rows)}
+            return {"status": "BLOCK", "reason": "agent execution boundary is not independent", "evidence_count": len(agent_rows)}
         if payload["invocation_type"] == "real_llm" and not (payload.get("response_id") or payload.get("response_digest")):
-            return {"status": "BLOCK", "reason": "real LLM response identity missing", "evidence_count": len(run_rows)}
-        if payload["invocation_type"] == "real_llm" and not (payload.get("response_id") or payload.get("response_digest")):
-            return {"status": "BLOCK", "reason": "real LLM response identity missing", "evidence_count": len(run_rows)}
+            return {"status": "BLOCK", "reason": "real LLM response identity missing", "evidence_count": len(agent_rows)}
         instance_ids.add(payload["agent_instance_id"])
         context_digests.add(payload["context_digest"])
+
     if len(instance_ids) != len(AGENT_ROLES) or len(context_digests) != len(AGENT_ROLES):
-        return {"status": "BLOCK", "reason": "agent instances or contexts are not unique", "evidence_count": len(run_rows)}
-    source_commits = {json.loads(row.payload_json).get("source_commit") for row in run_rows}
-    if len(source_commits) != 1 or None in source_commits:
-        return {"status": "BLOCK", "reason": "source commit binding is missing or inconsistent", "evidence_count": len(run_rows)}
-    source_commits = {json.loads(row.payload_json).get("source_commit") for row in run_rows}
-    if len(source_commits) != 1 or None in source_commits:
-        return {"status": "BLOCK", "reason": "source commit binding is missing or inconsistent", "evidence_count": len(run_rows)}
-    replay_nonces = {json.loads(row.payload_json).get("replay_nonce") for row in run_rows}
-    if len(replay_nonces) != 1:
-        return {"status": "BLOCK", "reason": "replay nonce mismatch across evidence", "evidence_count": len(run_rows)}
-    chain = [{"tenant_id": row.tenant_id, "seq": row.seq, "prev_hash": row.prev_hash, "record_hash": row.record_hash, "record_type": row.record_type, "payload_json": row.payload_json} for row in rows]
-    chain_ok, reason = verify_chain(chain)
-    if not chain_ok:
-        return {"status": "BLOCK", "reason": reason, "evidence_count": len(run_rows)}
-    return {"status": "VERIFIED", "reason": "independent agent identities, contexts, execution evidence and hash-chain verification passed", "evidence_count": len(run_rows)}
+        return {"status": "BLOCK", "reason": "agent instances or contexts are not unique", "evidence_count": len(agent_rows)}
+    return {
+        "status": "VERIFIED",
+        "reason": "independent agent identities, execution evidence, run lifecycle and tenant hash-chain verified",
+        "evidence_count": len(agent_rows),
+        "lifecycle": replay["lifecycle"],
+        "execution_status": replay["execution_status"],
+    }
