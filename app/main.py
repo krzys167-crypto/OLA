@@ -582,6 +582,7 @@ def create_nina_run(body: dict, x_api_key: str | None = Header(default=None)):
         expected_model=expected_model,
         expected_run_id=run_id,
         expected_nonce=replay_nonce,
+        require_lifecycle=True,
     )
     replay = build_replay(record_dicts)
     replay_verification = verify_replay(
