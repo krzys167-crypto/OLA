@@ -113,19 +113,18 @@ def _open_read_only(db_path):
 
 
 def _scan(db_path, tenant_id, run_id):
-    """One pass over the tenant's COMPLETE chain in seq order. Integrity is established over everything before the
-    run's rows are picked out by run_id, so a tampered record cannot hide behind the filter, and a tenant that has
-    other records (a second run, payment evidence) still verifies. Returns [(record_type, payload)] of the run."""
+    """Verify the complete tenant chain, then return the selected run's agent and lifecycle evidence."""
     db = _open_read_only(db_path)
-    run_rows = []
+    agent_rows = []
+    lifecycle_events = []
     try:
         cursor = db.execute(
-            "SELECT tenant_id, seq, record_type, payload_json, prev_hash, record_hash "
+            "SELECT id, tenant_id, seq, record_type, payload_json, prev_hash, record_hash "
             "FROM evidence_records WHERE tenant_id=? ORDER BY seq", (tenant_id,))
         expected_prev = GENESIS
         seen_v2 = False
         for expected_seq, row in enumerate(cursor):
-            row_tenant, seq, record_type, payload_json, prev_hash, record_hash = row
+            record_id, row_tenant, seq, record_type, payload_json, prev_hash, record_hash = row
             if row_tenant != tenant_id or seq != expected_seq:
                 fail("tenant or sequence mismatch")
             if prev_hash != expected_prev:
@@ -135,21 +134,133 @@ def _scan(db_path, tenant_id, run_id):
                 f"ola.chain/2|{row_tenant}|{seq}|{prev_hash}|{len(record_type)}:{record_type}|{payload_json}".encode("utf-8")).hexdigest()
             if record_hash == v2:
                 seen_v2 = True
-            elif seen_v2 or record_hash != v1:      # legacy v1 only before the first type-bound (v2) record
+            elif seen_v2 or record_hash != v1:
                 fail("hash-chain record hash mismatch")
             expected_prev = record_hash
-            if isinstance(record_type, str) and record_type.startswith("agent."):
-                try:
-                    payload = json.loads(payload_json)
-                except (TypeError, ValueError, RecursionError):
-                    continue
-                if isinstance(payload, dict) and payload.get("run_id") == run_id:
-                    run_rows.append((record_type, payload))
+            if not isinstance(record_type, str) or not (
+                record_type in {"run.start", "run.end"} or record_type.startswith("agent.")
+            ):
+                continue
+            try:
+                payload = json.loads(payload_json)
+            except (TypeError, ValueError, RecursionError):
+                fail("run event payload is not valid JSON")
+            if not isinstance(payload, dict):
+                fail("run event payload must be a JSON object")
+            if payload.get("run_id") == run_id:
+                record = {
+                    "id": record_id,
+                    "tenant_id": row_tenant,
+                    "seq": seq,
+                    "record_type": record_type,
+                    "payload_json": payload_json,
+                    "prev_hash": prev_hash,
+                    "record_hash": record_hash,
+                }
+                lifecycle_events.append((record, payload))
+                if record_type.startswith("agent."):
+                    agent_rows.append((record_type, payload))
     except (sqlite3.Error, UnicodeError) as exc:
         fail(f"cannot read the evidence database: {exc}")
     finally:
         db.close()
-    return run_rows
+    return agent_rows, lifecycle_events
+
+
+def _verify_lifecycle(lifecycle_events, tenant_id, run_id, task, source_commit, policy_match):
+    starts = [(record, payload) for record, payload in lifecycle_events if record["record_type"] == "run.start"]
+    ends = [(record, payload) for record, payload in lifecycle_events if record["record_type"] == "run.end"]
+    if len(starts) != 1 or len(ends) != 1:
+        fail("run lifecycle start/end missing or duplicated")
+    start_record, start = starts[0]
+    end_record, end = ends[0]
+    if lifecycle_events[0][0]["record_type"] != "run.start" or lifecycle_events[-1][0]["record_type"] != "run.end":
+        fail("run lifecycle ordering mismatch")
+    if [record["record_type"] for record, _ in lifecycle_events] != [
+        "run.start", *[f"agent.{role}" for role in ROLES], "run.end"
+    ]:
+        fail("run lifecycle event order mismatch")
+    if start.get("schema") != "ola.run-lifecycle/v1" or end.get("schema") != "ola.run-lifecycle/v1":
+        fail("run lifecycle schema mismatch")
+    if start.get("run_id") != run_id or end.get("run_id") != run_id:
+        fail("run lifecycle run id mismatch")
+    if start.get("expected_agent_roles") != ROLES or end.get("expected_agent_roles") != ROLES:
+        fail("run lifecycle agent roster mismatch")
+
+    expected_outcome = "SUCCEEDED" if policy_match else "COMPLETED_BLOCKED"
+    expected_blocked_roles = [] if policy_match else ["self_reflection"]
+    if end.get("outcome") != expected_outcome:
+        fail("run lifecycle outcome mismatch")
+    if end.get("completed_agent_roles") != ROLES:
+        fail("run lifecycle completed-agent roster mismatch")
+    if end.get("blocked_agent_roles") != expected_blocked_roles or end.get("failed_agent") is not None:
+        fail("run lifecycle blocked/failed-agent roster mismatch")
+    if end.get("agent_event_count") != len(ROLES):
+        fail("run lifecycle agent event count mismatch")
+    if end.get("start_record_id") != start_record["id"] or end.get("start_record_hash") != start_record["record_hash"]:
+        fail("run lifecycle start anchor mismatch")
+
+    task_digest = hashlib.sha256(task.encode("utf-8")).hexdigest()
+    if start.get("task_digest") != task_digest or end.get("task_digest") != task_digest:
+        fail("run lifecycle task digest mismatch")
+    if not isinstance(source_commit, str) or not source_commit:
+        fail("run lifecycle source commit missing")
+    nonce = start.get("replay_nonce")
+    if not isinstance(nonce, str) or not nonce:
+        fail("run lifecycle replay nonce missing")
+    if end.get("source_commit") != source_commit or start.get("source_commit") != source_commit:
+        fail("run lifecycle source commit mismatch")
+    if end.get("replay_nonce") != nonce:
+        fail("run lifecycle replay nonce mismatch")
+
+    for index, (record, payload) in enumerate(lifecycle_events[1:-1]):
+        role = ROLES[index]
+        if payload.get("agent") != role or record["record_type"] != f"agent.{role}":
+            fail("run lifecycle agent identity/order mismatch")
+        if payload.get("task") != task:
+            fail(f"run lifecycle task mismatch for {role}")
+        if payload.get("task") is None or hashlib.sha256(payload["task"].encode("utf-8")).hexdigest() != task_digest:
+            fail(f"run lifecycle task digest mismatch for {role}")
+        if payload.get("source_commit") != source_commit or payload.get("replay_nonce") != nonce:
+            fail(f"run lifecycle provenance mismatch for {role}")
+        if payload.get("execution_status", "VERIFIED") != "VERIFIED":
+            fail(f"run lifecycle invocation did not complete for {role}")
+
+    pre_end = [record for record, _ in lifecycle_events[:-1]]
+    if end.get("run_event_count") != len(pre_end):
+        fail("run lifecycle event count mismatch")
+    projection = [
+        {
+            "id": record["id"],
+            "seq": record["seq"],
+            "record_type": record["record_type"],
+            "record_hash": record["record_hash"],
+        }
+        for record in pre_end
+    ]
+    expected_digest = hashlib.sha256(canonical(projection).encode("utf-8")).hexdigest()
+    if end.get("run_event_digest") != expected_digest:
+        fail("run lifecycle event digest mismatch")
+
+    try:
+        started_at = datetime.fromisoformat(str(start.get("started_at", "")).replace("Z", "+00:00"))
+        ended_at = datetime.fromisoformat(str(end.get("ended_at", "")).replace("Z", "+00:00"))
+    except ValueError:
+        fail("run lifecycle timestamps invalid")
+    if started_at.tzinfo is None or ended_at.tzinfo is None or ended_at < started_at:
+        fail("run lifecycle timestamps invalid")
+    if end.get("started_at") != start.get("started_at"):
+        fail("run lifecycle start timestamp mismatch")
+
+    return {
+        "status": "VERIFIED",
+        "execution_status": "SUCCEEDED" if policy_match else "BLOCKED",
+        "outcome": expected_outcome,
+        "run_event_count": len(lifecycle_events),
+        "run_event_digest": expected_digest,
+        "start_record_id": start_record["id"],
+        "end_record_id": end_record["id"],
+    }
 
 
 def verify(db_path, tenant_id, run_id, invoice):
@@ -157,7 +268,16 @@ def verify(db_path, tenant_id, run_id, invoice):
     net, vat_rate = validate_invoice(invoice)
     expected_net = net
     expected_vat, expected_gross, policy_match = money(net, vat_rate)     # policy_match False: the payment must be REJECTED
-    run_rows = _scan(db_path, tenant_id, run_id)
+    run_rows, lifecycle_events = _scan(db_path, tenant_id, run_id)
+    task = "INVOICE_JSON:" + canonical(invoice)
+    lifecycle = _verify_lifecycle(
+        lifecycle_events,
+        tenant_id,
+        run_id,
+        task,
+        "UNKNOWN" if not lifecycle_events else lifecycle_events[0][1].get("source_commit"),
+        policy_match,
+    )
 
     if not run_rows:
         fail("no agent evidence found for this run id")
@@ -166,7 +286,6 @@ def verify(db_path, tenant_id, run_id, invoice):
     if [record_type for record_type, _ in run_rows] != [f"agent.{role}" for role in ROLES]:
         fail("agent evidence order/type mismatch")
 
-    task = "INVOICE_JSON:" + canonical(invoice)
     instances = set()
     contexts = set()
     payloads = []
@@ -227,11 +346,12 @@ def verify(db_path, tenant_id, run_id, invoice):
         "vat": expected_vat,
         "gross": expected_gross,
         "evidence_count": len(run_rows),
+        "lifecycle": lifecycle,
         "independent_instance_count": len(instances),
         "independent_context_count": len(contexts),
         "payment_decision": final["payment_decision"],
         "transfer_status": final["transfer_status"],
-        "reason": "standalone verifier independently recomputed invoice arithmetic, policy, roles, capabilities, invocation metadata, identities, final result and hash-chain",
+        "reason": "standalone verifier independently recomputed invoice arithmetic, policy, roles, capabilities, invocation metadata, identities, final result, run lifecycle digest and full tenant hash-chain",
     }
 
 
