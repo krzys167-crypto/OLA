@@ -2,6 +2,9 @@ import hashlib
 import os
 import uuid
 
+import app.agent_runtime as agent_runtime
+from app.pipeline_bridge import load_chain
+
 from fastapi.testclient import TestClient
 
 from app.database import SessionLocal
@@ -75,3 +78,70 @@ def test_nina_run_executes_chain_but_does_not_self_approve():
     ]
     assert body["replay_verification"]["execution_status"] == "SUCCEEDED"
     assert body["replay_verification"]["lifecycle"]["status"] == "VERIFIED"
+    assert body["igor"]["checks"]["lifecycle"] is True
+    assert body["igor"]["checks"]["execution_status"] == "SUCCEEDED"
+
+
+def test_nina_run_reports_agent_failure_with_verified_audit_but_blocked_execution(monkeypatch):
+    commit = "TEST_NINA_FAILURE_COMMIT"
+    os.environ["OLA_SOURCE_COMMIT"] = commit
+    os.environ["OLA_RUNTIME_COMMIT"] = commit
+    tenant_id = str(uuid.uuid4())
+    api_key = "nina-failure-" + uuid.uuid4().hex
+    with SessionLocal() as db:
+        db.add(Tenant(id=tenant_id, name="nina-failure-e2e"))
+        db.add(ApiKey(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
+        ))
+        db.commit()
+
+    original_execute = agent_runtime._execute_agent
+
+    def fail_react(agent, *args, **kwargs):
+        if agent == "react":
+            raise TimeoutError("provider timeout secret=do-not-store")
+        return original_execute(agent, *args, **kwargs)
+
+    monkeypatch.setattr(agent_runtime, "_execute_agent", fail_react)
+    response = TestClient(app).post(
+        "/nina-run",
+        headers={"X-API-Key": api_key},
+        json={
+            "task": "Calculate 17 * 23 and return the verified result.",
+            "requested_tools": ["safe_expression"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["nina"]["status"] == "BLOCK", body
+    assert body["igor"]["status"] == "BLOCK", body
+    assert body["igor"]["checks"]["lifecycle"] is True, body
+    assert body["igor"]["checks"]["execution_status"] == "FAILED", body
+    assert body["replay_verification"]["status"] == "VERIFIED", body
+    assert body["replay_verification"]["execution_status"] == "FAILED", body
+    assert body["human_gate"]["status"] == "BLOCK", body
+    assert body["status"] == "BLOCK", body
+    assert "do-not-store" not in response.text
+
+    rows = load_chain(tenant_id)
+    run_events = []
+    for record in rows:
+        try:
+            payload = json.loads(record["payload_json"])
+        except json.JSONDecodeError:
+            continue
+        if payload.get("run_id") == body["run_id"] and (
+            record["record_type"] in {"run.start", "run.end"}
+            or record["record_type"].startswith("agent.")
+        ):
+            run_events.append((record["record_type"], payload))
+    assert [record_type for record_type, _ in run_events] == [
+        "run.start", "agent.codeact", "agent.react", "run.end"
+    ]
+    failure = run_events[-2][1]
+    assert failure["execution_status"] == "FAILED"
+    assert failure["status"] == "BLOCK"
+    assert failure["error_type"] == "TimeoutError"
