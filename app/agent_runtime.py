@@ -54,6 +54,15 @@ def _digest(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _record_payload(record):
+    """Return a JSON object payload, or None for malformed/non-object records."""
+    try:
+        payload = json.loads(record.get("payload_json", ""))
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _safe_expression(task):
     # searched in the ORIGINAL string: an offset taken from task.lower() is wrong when lower() changes the length
     # (U+0130 becomes two characters) and used to evaluate a different expression than the one written
@@ -471,17 +480,23 @@ def run_agent_task(tenant_id, task):
         execution.append(output)
         previous_output = output
 
-    run_rows = [
-        record for record in load_chain(tenant_id)
-        if record["record_type"] == "run.start"
-        or record["record_type"].startswith("agent.")
-        if json.loads(record["payload_json"]).get("run_id") == run_id
-    ]
+    run_rows = []
+    for record in load_chain(tenant_id):
+        payload = _record_payload(record)
+        record_type = record.get("record_type", "")
+        if (
+            payload is not None
+            and payload.get("run_id") == run_id
+            and (record_type == "run.start" or record_type.startswith("agent."))
+        ):
+            run_rows.append(record)
     agent_rows = [record for record in run_rows if record["record_type"].startswith("agent.")]
     completed_agent_roles = [
-        json.loads(record["payload_json"])["agent"]
+        payload["agent"]
         for record in agent_rows
-        if json.loads(record["payload_json"]).get("status") == "VERIFIED"
+        if (payload := _record_payload(record)) is not None
+        and payload.get("status") == "VERIFIED"
+        and isinstance(payload.get("agent"), str)
     ]
     end_record = append_evidence(
         tenant_id,
@@ -621,14 +636,16 @@ def verify_agent_run(tenant_id, run_id):
         }
         for row in rows
     ]
-    matching = [
-        record for record in record_dicts
+    matching = []
+    for record in record_dicts:
+        payload = _record_payload(record)
+        record_type = record.get("record_type", "")
         if (
-            record["record_type"] in {"run.start", "run.end"}
-            or record["record_type"].startswith("agent.")
-        )
-        and json.loads(record["payload_json"]).get("run_id") == run_id
-    ]
+            payload is not None
+            and payload.get("run_id") == run_id
+            and (record_type in {"run.start", "run.end"} or record_type.startswith("agent."))
+        ):
+            matching.append(record)
     if not any(record["record_type"] == "run.start" for record in matching):
         return {"status": "UNKNOWN", "reason": "run lifecycle start missing", "evidence_count": 0}
 
