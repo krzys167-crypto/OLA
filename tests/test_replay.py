@@ -53,7 +53,7 @@ def _chain(count=2, run_id="r1", tenant_id="tenant-1"):
             "replay_nonce": nonce,
             "source_commit": source_commit,
             "tool": "safe_expression",
-            "input_digest": f"in-{role}",
+            "input_digest": hashlib.sha256(f"in-{role}".encode()).hexdigest(),
             "started_at": agent_started_at,
             "ended_at": agent_ended_at,
             "agent_instance_id": f"instance-{role}",
@@ -177,6 +177,15 @@ def test_replay_rejects_agent_type_and_status_mutations():
     result = _verify(rows)
     assert result["status"] == "BLOCK"
     assert result["reason"] == "successful run has incomplete agent evidence"
+
+
+def test_replay_blocks_agent_record_type_payload_mismatch_after_valid_reseal():
+    rows = _chain(count=2)
+    rows[1]["record_type"] = "agent.react"
+    _reseal(rows)
+    result = _verify(rows)
+    assert result["status"] == "BLOCK"
+    assert result["reason"] == "run agent order mismatch"
 
 
 def test_replay_blocks_non_object_payload_without_exception():
