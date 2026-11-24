@@ -25,8 +25,8 @@ def _append(records, record_type, payload, tenant_id="tenant-1"):
     return record
 
 
-def _chain(count=2, run_id="r1", tenant_id="tenant-1"):
-    roles = ["codeact", "react", "agentic_rag", "mcp_tool_use", "self_reflection", "multi_agent"][:count]
+def _chain(run_id="r1", tenant_id="tenant-1"):
+    roles = ["codeact", "react", "agentic_rag", "mcp_tool_use", "self_reflection", "multi_agent"]
     records = []
     task = "calculate 2 + 2"
     nonce = "a" * 64
@@ -81,7 +81,7 @@ def _chain(count=2, run_id="r1", tenant_id="tenant-1"):
         "error_digest": None,
         "start_record_id": start_record["id"],
         "start_record_hash": start_record["record_hash"],
-        "agent_event_count": count,
+        "agent_event_count": len(roles),
         "run_event_count": len(pre_end),
         "run_event_digest": run_event_digest(pre_end),
     }, tenant_id)
@@ -110,12 +110,12 @@ def _verify(rows, run_id="r1", tenant_id="tenant-1"):
 
 
 def test_replay_verifies_raw_records_full_hash_chain_and_run_lifecycle():
-    rows = _chain(count=2)
+    rows = _chain()
     result = _verify(rows)
 
     assert result["status"] == "VERIFIED"
     assert result["event_count"] == len(rows)
-    assert result["run_event_count"] == 4
+    assert result["run_event_count"] == 8
     assert result["execution_status"] == "SUCCEEDED"
     assert result["lifecycle"]["status"] == "VERIFIED"
     assert result["first_seq"] == 0
@@ -125,7 +125,7 @@ def test_replay_verifies_raw_records_full_hash_chain_and_run_lifecycle():
 
 
 def test_completed_policy_block_has_verified_integrity_but_blocked_execution():
-    rows = _chain(count=6)
+    rows = _chain()
     self_reflection = json.loads(rows[5]["payload_json"])
     self_reflection["status"] = "BLOCK"
     self_reflection["execution_status"] = "VERIFIED"
@@ -153,7 +153,7 @@ def test_completed_policy_block_has_verified_integrity_but_blocked_execution():
 
 
 def test_replay_requires_expected_tip_hash():
-    rows = _chain(count=2)
+    rows = _chain()
     result = verify_replay(
         rows, expected_run_id="r1", expected_tenant_id="tenant-1",
         expected_record_count=len(rows), expected_tip_hash="f" * 64,
@@ -163,13 +163,13 @@ def test_replay_requires_expected_tip_hash():
 
 
 def test_replay_rejects_agent_type_and_status_mutations():
-    rows = _chain(count=2)
+    rows = _chain()
     rows[1]["record_type"] = "agent.tampered"
     result = _verify(rows)
     assert result["status"] == "BLOCK"
     assert result["reason"] == "record hash mismatch"
 
-    rows = _chain(count=2)
+    rows = _chain()
     payload = json.loads(rows[2]["payload_json"])
     payload["status"] = "BLOCK"
     rows[2]["payload_json"] = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -183,7 +183,7 @@ def test_replay_rejects_agent_type_and_status_mutations():
 
 
 def test_replay_blocks_agent_record_type_payload_mismatch_after_valid_reseal():
-    rows = _chain(count=2)
+    rows = _chain()
     rows[1]["record_type"] = "agent.react"
     _reseal(rows)
     result = _verify(rows)
@@ -192,7 +192,7 @@ def test_replay_blocks_agent_record_type_payload_mismatch_after_valid_reseal():
 
 
 def test_replay_blocks_non_object_payload_without_exception():
-    rows = _chain(count=1)
+    rows = _chain()
     rows[1]["payload_json"] = json.dumps(["not", "an", "object"])
     _reseal(rows)
     result = _verify(rows)
@@ -201,7 +201,7 @@ def test_replay_blocks_non_object_payload_without_exception():
 
 
 def test_replay_uses_existing_verify_chain(monkeypatch):
-    rows = _chain(count=2)
+    rows = _chain()
 
     def reject_chain(_records):
         return False, "forced verify_chain failure"
@@ -213,7 +213,7 @@ def test_replay_uses_existing_verify_chain(monkeypatch):
 
 
 def test_replay_blocks_tampered_record_hash():
-    rows = _chain(count=2)
+    rows = _chain()
     rows[2]["record_hash"] = "f" * 64
     result = _verify(rows)
     assert result["status"] == "BLOCK"
@@ -221,7 +221,7 @@ def test_replay_blocks_tampered_record_hash():
 
 
 def test_replay_blocks_tampered_predecessor_hash():
-    rows = _chain(count=2)
+    rows = _chain()
     rows[2]["prev_hash"] = "e" * 64
     result = _verify(rows)
     assert result["status"] == "BLOCK"
@@ -229,7 +229,7 @@ def test_replay_blocks_tampered_predecessor_hash():
 
 
 def test_replay_requires_genesis_hash_at_sequence_zero():
-    rows = _chain(count=2)
+    rows = _chain()
     rows[0]["prev_hash"] = "1" * 64
     result = _verify(rows)
     assert result["status"] == "BLOCK"
@@ -237,7 +237,7 @@ def test_replay_requires_genesis_hash_at_sequence_zero():
 
 
 def test_replay_requires_sequence_to_start_at_zero():
-    rows = _chain(count=2)
+    rows = _chain()
     rows[0]["seq"] = 1
     result = _verify(rows)
     assert result["status"] == "BLOCK"
@@ -245,7 +245,7 @@ def test_replay_requires_sequence_to_start_at_zero():
 
 
 def test_replay_blocks_wrong_tenant():
-    rows = _chain(count=2)
+    rows = _chain()
     result = verify_replay(
         rows, expected_run_id="r1", expected_tenant_id="tenant-other",
         expected_record_count=len(rows), expected_tip_hash=rows[-1]["record_hash"],
@@ -255,7 +255,7 @@ def test_replay_blocks_wrong_tenant():
 
 
 def test_replay_blocks_wrong_expected_record_count():
-    rows = _chain(count=2)
+    rows = _chain()
     result = verify_replay(
         rows, expected_run_id="r1", expected_tenant_id="tenant-1",
         expected_record_count=len(rows) + 1, expected_tip_hash=rows[-1]["record_hash"],
@@ -265,7 +265,7 @@ def test_replay_blocks_wrong_expected_record_count():
 
 
 def test_replay_blocks_wrong_run_id():
-    rows = _chain(count=2, run_id="actual-run")
+    rows = _chain(run_id="actual-run")
     result = _verify(rows, run_id="expected-run")
     assert result["status"] == "BLOCK"
     assert result["reason"] == "run lifecycle start missing or duplicated"
