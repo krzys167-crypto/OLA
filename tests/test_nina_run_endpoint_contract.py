@@ -62,4 +62,16 @@ def test_nina_run_executes_chain_but_does_not_self_approve():
     assert body["status_fields"]["EXECUTION_ALLOWED"] == "REVIEW", body
     assert body["status"] == "REVIEW", body
     assert body["replay_verification"]["status"] == "VERIFIED", body
-    assert len(body["replay"]) == 7
+    replay_for_run = [event for event in body["replay"] if event.get("run_id") == body["run_id"]]
+    assert [event["record_type"] for event in replay_for_run[:8]] == [
+        "run.start",
+        "agent.codeact",
+        "agent.react",
+        "agent.agentic_rag",
+        "agent.mcp_tool_use",
+        "agent.self_reflection",
+        "agent.multi_agent",
+        "run.end",
+    ]
+    assert body["replay_verification"]["execution_status"] == "SUCCEEDED"
+    assert body["replay_verification"]["lifecycle"]["status"] == "VERIFIED"
