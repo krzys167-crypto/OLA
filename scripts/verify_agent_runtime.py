@@ -36,7 +36,7 @@ def verify_hash_chain(rows):
     expected_prev = GENESIS_HASH
     seen_v2 = False
     for expected_seq, row in enumerate(rows):
-        tenant_id, seq, record_type, payload_json, prev_hash, record_hash = row
+        _record_id, tenant_id, seq, record_type, payload_json, prev_hash, record_hash = row
         if seq != expected_seq or prev_hash != expected_prev:
             return False, "sequence or predecessor mismatch"
         if record_hash == compute_record_hash(tenant_id, seq, prev_hash, payload_json, record_type):
@@ -64,7 +64,7 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
     }
     db = sqlite3.connect(db_path)
     rows = db.execute(
-        "SELECT tenant_id, seq, record_type, payload_json, prev_hash, record_hash "
+        "SELECT id, tenant_id, seq, record_type, payload_json, prev_hash, record_hash "
         "FROM evidence_records WHERE tenant_id=? ORDER BY seq",
         (tenant_id,),
     ).fetchall()
@@ -80,15 +80,88 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
     run_rows = []
     for row in rows:
         try:
-            payload = json.loads(row[3])
+            payload = json.loads(row[4])
         except json.JSONDecodeError:
             continue
-        if payload.get("run_id") == run_id and row[2].startswith("agent."):
+        if payload.get("run_id") == run_id and row[3].startswith("agent."):
             run_rows.append(row)
 
     expected_types = [f"agent.{role}" for role in ROLES]
-    if [row[2] for row in run_rows] != expected_types:
+    if [row[3] for row in run_rows] != expected_types:
         return fail("six-agent evidence missing or out of order")
+
+    lifecycle_events = []
+    for row in rows:
+        try:
+            payload = json.loads(row[4])
+        except json.JSONDecodeError:
+            continue
+        if payload.get("run_id") == run_id and (
+            row[3] in {"run.start", "run.end"} or row[3].startswith("agent.")
+        ):
+            lifecycle_events.append((row, payload))
+    starts_run = [(row, payload) for row, payload in lifecycle_events if row[3] == "run.start"]
+    ends_run = [(row, payload) for row, payload in lifecycle_events if row[3] == "run.end"]
+    if len(starts_run) != 1 or len(ends_run) != 1:
+        return fail("run lifecycle start/end missing or duplicated")
+    start_row, start_payload = starts_run[0]
+    end_row, end_payload = ends_run[0]
+    expected_lifecycle_types = ["run.start", *[f"agent.{role}" for role in ROLES], "run.end"]
+    if [row[3] for row, _ in lifecycle_events] != expected_lifecycle_types:
+        return fail("run lifecycle ordering mismatch")
+    if start_payload.get("schema") != "ola.run-lifecycle/v1" or end_payload.get("schema") != "ola.run-lifecycle/v1":
+        return fail("run lifecycle schema mismatch")
+    if start_payload.get("expected_agent_roles") != ROLES or end_payload.get("expected_agent_roles") != ROLES:
+        return fail("run lifecycle agent roster mismatch")
+    if end_payload.get("outcome") != "SUCCEEDED" or end_payload.get("failed_agent") is not None:
+        return fail("run execution did not succeed")
+    if end_payload.get("completed_agent_roles") != ROLES:
+        return fail("run lifecycle completed-agent roster mismatch")
+    if end_payload.get("start_record_id") != start_row[0] or end_payload.get("start_record_hash") != start_row[6]:
+        return fail("run lifecycle start anchor mismatch")
+    if start_payload.get("source_commit") != expected_commit or end_payload.get("source_commit") != expected_commit:
+        return fail("run lifecycle source commit mismatch")
+    start_nonce = start_payload.get("replay_nonce")
+    if not isinstance(start_nonce, str) or not re.fullmatch(r"[0-9a-f]{64}", start_nonce):
+        return fail("run lifecycle replay nonce missing or malformed")
+    if end_payload.get("replay_nonce") != start_nonce:
+        return fail("run lifecycle replay nonce mismatch")
+    if expected_nonce is not None and start_nonce != expected_nonce:
+        return fail("run lifecycle challenge mismatch")
+    recorded_task = json.loads(run_rows[0][4]).get("task")
+    if not isinstance(recorded_task, str):
+        return fail("run lifecycle task is missing")
+    recorded_task_digest = hashlib.sha256(recorded_task.encode("utf-8")).hexdigest()
+    if start_payload.get("task_digest") != recorded_task_digest or end_payload.get("task_digest") != recorded_task_digest:
+        return fail("run lifecycle task digest mismatch")
+    if expected_task is not None:
+        expected_task_digest = hashlib.sha256(expected_task.encode("utf-8")).hexdigest()
+        if expected_task != recorded_task or recorded_task_digest != expected_task_digest:
+            return fail("run lifecycle expected task mismatch")
+    if end_payload.get("agent_event_count") != len(run_rows):
+        return fail("run lifecycle agent event count mismatch")
+    pre_end = [row for row, _ in lifecycle_events if row[3] != "run.end"]
+    if end_payload.get("run_event_count") != len(pre_end):
+        return fail("run lifecycle event count mismatch")
+    digest_projection = [
+        {"id": row[0], "seq": row[2], "record_type": row[3], "record_hash": row[6]}
+        for row in pre_end
+    ]
+    expected_event_digest = hashlib.sha256(
+        json.dumps(digest_projection, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    if end_payload.get("run_event_digest") != expected_event_digest:
+        return fail("run lifecycle event digest mismatch")
+    try:
+        run_started_at = datetime.fromisoformat(str(start_payload["started_at"]).replace("Z", "+00:00"))
+        run_ended_at = datetime.fromisoformat(str(end_payload["ended_at"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError):
+        return fail("run lifecycle timestamps invalid")
+    if run_ended_at < run_started_at or end_payload.get("started_at") != start_payload.get("started_at"):
+        return fail("run lifecycle timestamps invalid")
+    for _, payload in lifecycle_events:
+        if payload.get("replay_nonce") != start_nonce or payload.get("source_commit") != expected_commit:
+            return fail("run lifecycle agent provenance mismatch")
 
     capabilities = {}
     instance_ids = set()
@@ -98,9 +171,11 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
     starts = []
     ends = []
     for row in run_rows:
-        payload = json.loads(row[3])
+        payload = json.loads(row[4])
         payloads.append(payload)
         agent = payload.get("agent")
+        if row[3] != f"agent.{agent}":
+            return fail(f"agent record type does not match role for {agent}")
         required = {
             "capability", "tool", "tool_output", "result", "status",
             "agent_instance_id", "execution_boundary", "source_commit", "context_digest",
@@ -150,6 +225,11 @@ def verify(tenant_id, run_id, expected_commit, expected_task=None, expected_resu
 
     if starts != sorted(starts) or ends != sorted(ends):
         return fail("agent execution timestamps are not monotonic")
+    previous_end = run_started_at
+    for started_at, ended_at in zip(starts, ends):
+        if started_at < previous_end or ended_at > run_ended_at:
+            return fail("agent execution timestamp is outside the run lifecycle")
+        previous_end = ended_at
     if len(instance_ids) != len(ROLES):
         return fail("agent instance identities are not unique")
     source_commits = {payload.get("source_commit") for payload in payloads}
