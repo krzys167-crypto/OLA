@@ -397,6 +397,7 @@ def _append_failed_agent_evidence(tenant_id, run_id, agent, task, previous_outpu
         "response_id_source": None,
         "error_type": error_type,
         "error_digest": error_digest,
+        "execution_status": "FAILED",
         "status": "BLOCK",
         "llm_required": os.getenv("OLA_LLM_MODE", "deterministic") == "required",
     }
@@ -491,6 +492,7 @@ def run_agent_task(tenant_id, task):
             "expected_agent_roles": list(AGENT_ROLES),
             "outcome": "FAILED" if failed_agent else "SUCCEEDED",
             "completed_agent_roles": completed_agent_roles,
+            "blocked_agent_roles": [],
             "failed_agent": failed_agent,
             "error_type": failure_type,
             "error_digest": failure_digest,
