@@ -1,1 +1,77 @@
+name: OLA Main CI
 
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-compat:
+    name: Python ${{ matrix.python }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, macos-15-intel]
+        python: ["3.11", "3.13"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Prepare Intel macOS source-build toolchain
+        if: matrix.os == 'macos-15-intel'
+        shell: bash
+        run: |
+          test "$(uname -m)" = "x86_64"
+          brew install rust openssl@3
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          echo "PIP_NO_BINARY=cryptography" >> "$GITHUB_ENV"
+          echo "::notice::Intel macOS has no cryptography 50.x wheel; validating the source-build path."
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: Verify cryptography runtime and policy
+        run: |
+          python - <<'PY'
+          import cryptography
+          import platform
+          assert cryptography.__version__ == "50.0.2", cryptography.__version__
+          print({
+              "cryptography": cryptography.__version__,
+              "python": platform.python_version(),
+              "platform": platform.platform(),
+              "machine": platform.machine(),
+          })
+          PY
+          python -m pytest -q tests/test_requirements_lock.py tests/test_crypto_dependency_policy.py
+
+      - name: Report deprecated cryptography API references for review
+        shell: bash
+        run: |
+          set +e
+          git grep -nEi 'sect[0-9]|TripleDES|dh\.|pkcs7' -- '*.py' > crypto-deprecations.txt
+          status=$?
+          set -e
+          if [[ "$status" -eq 0 ]]; then
+            cat crypto-deprecations.txt
+            echo "::warning::Review the cryptography deprecation matches above before merge."
+          else
+            echo "No deprecated API markers found in Python sources."
+          fi
