@@ -42,7 +42,7 @@ jobs:
             echo "::notice::Intel macOS has no cryptography 50.x wheel; validating the supported source-build path."
           fi
 
-      - name: Install locked runtime dependencies
+      - name: Install runtime dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
@@ -67,7 +67,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          git grep -nEi 'sect[0-9]|TripleDES|dh\\.|pkcs7' -- '*.py' > crypto-deprecations.txt
+          git grep -nEi 'sect[0-9]|TripleDES|dh\.|pkcs7' -- '*.py' > crypto-deprecations.txt
           status=$?
           set -e
           if [[ "$status" -eq 0 ]]; then
