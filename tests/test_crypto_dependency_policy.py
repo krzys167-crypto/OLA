@@ -35,3 +35,10 @@ def test_cryptography_lock_entry_contains_sha256_hashes():
             break
     hashes = [line for line in block if "--hash=sha256:" in line]
     assert len(hashes) >= 2
+
+
+def test_macos_ci_covers_arm64_and_intel_source_build():
+    workflow = (ROOT / ".github/workflows/main.yml").read_text(encoding="utf-8")
+    assert "os: [ubuntu-latest, macos-15, macos-15-intel]" in workflow
+    assert "if: matrix.os == 'macos-15-intel'" in workflow
+    assert 'echo "PIP_NO_BINARY=cryptography"' in workflow
