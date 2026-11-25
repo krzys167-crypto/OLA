@@ -27,7 +27,7 @@ def test_project_python_floor_and_container_runtime_are_supported():
 
 def test_cryptography_lock_entry_contains_sha256_hashes():
     lines = (ROOT / "requirements.lock").read_text(encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if line == "cryptography==50.0.2 \\")
+    start = next(i for i, line in enumerate(lines) if line.startswith("cryptography==50.0.2"))
     block = []
     for line in lines[start:]:
         block.append(line)
